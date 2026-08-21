@@ -170,10 +170,22 @@ spend.
 feature vector, classification reasoning, ranked candidates with forecasts, and
 every rejection with its cause — without dispatching a completion.
 
+## Tier rescue
+
+The tier envelopes (price ceilings, quality floors, trust bar) are tuned against
+the full catalog, but OpenRouter guardrails can shrink a key's *available* set
+down to a handful of models — all of which may fail every strict tier. When that
+happens the router does not fail the turn; it progressively relaxes the
+economic constraints (price ceilings → quality floors → trust bar) until some
+**available** model qualifies. The hard capability filters (tool/image/context
+support) and the key-scoped allowlist are never lifted, so the rescue can never
+select a model the key cannot serve. Every rescue is recorded in the decision
+trail (`tier rescue: strict config excluded all available models; relaxed …`).
+
 ## Status
 
-Working end to end against a mock upstream; not yet exercised against a live
-`OPENROUTER_API_KEY`. Contracts are frozen in `src/**/types.ts`.
+Working end to end against a live `OPENROUTER_API_KEY` and a guardrail-limited
+account; contracts are frozen in `src/**/types.ts`.
 
 Known gaps:
 
