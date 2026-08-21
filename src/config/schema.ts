@@ -28,6 +28,7 @@ const openrouter = z.strictObject({
 	title: z.string().optional(),
 	timeoutMs: z.number().positive().optional(),
 	catalogTtlMs: z.number().positive().optional(),
+	catalogRefreshMs: z.number().nonnegative().optional(),
 });
 
 const tierConfig = z.strictObject({

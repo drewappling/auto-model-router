@@ -20,6 +20,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Agent turns are long; a frontier model with tools can stream for minutes.
 		timeoutMs: 600_000,
 		catalogTtlMs: 6 * 60 * 60 * 1000,
+		// Refetch the key-scoped catalog every 5 minutes in the background so
+		// guardrail changes are picked up without waiting for traffic + TTL.
+		catalogRefreshMs: 5 * 60 * 1000,
 	},
 	tiers: {
 		// minQuality 0 ⇒ unscored models are eligible here; the floor does the

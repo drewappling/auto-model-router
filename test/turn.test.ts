@@ -28,7 +28,7 @@ import type {
 function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
 		server: { host: "127.0.0.1", port: 8787 },
-		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000 },
+		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000, catalogRefreshMs: 0 },
 		tiers: {
 			trivial: { minQuality: 0, maxInputPerMtok: 0.3, qualityExponent: 0, pin: [] },
 			simple: { minQuality: 40, maxInputPerMtok: 1.5, qualityExponent: 0, pin: [] },

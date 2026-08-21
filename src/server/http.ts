@@ -174,6 +174,21 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	}, 60_000);
 	pruneTimer.unref();
 
+	// Periodically refetch the (key-scoped) catalog in the background so
+	// guardrail/preference changes are picked up without needing traffic and a
+	// TTL expiry. catalogRefreshMs === 0 disables this.
+	let catalogRefreshTimer: ReturnType<typeof setInterval> | undefined;
+	if (cfg.openrouter.catalogRefreshMs > 0) {
+		catalogRefreshTimer = setInterval(() => {
+			catalog.refresh().catch((err: unknown) => {
+				log.warn("periodic catalog refresh failed; keeping last snapshot", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+		}, cfg.openrouter.catalogRefreshMs);
+		catalogRefreshTimer.unref();
+	}
+
 	const handleChatCompletions = async (req: Request): Promise<Response> => {
 		let normReq: NormRequest;
 		try {
@@ -258,6 +273,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		server,
 		stop: async () => {
 			clearInterval(pruneTimer);
+			clearInterval(catalogRefreshTimer);
 			await server.stop(true);
 			db.close();
 		},

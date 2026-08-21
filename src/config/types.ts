@@ -27,8 +27,10 @@ export interface OpenRouterConfig {
 	title: string;
 	/** Per-request timeout, ms. */
 	timeoutMs: number;
-	/** Catalog refresh interval, ms. */
+	/** Catalog freshness threshold, ms: refetch on traffic when older than this. */
 	catalogTtlMs: number;
+	/** Background catalog refresh cadence, ms. 0 disables the periodic refresh. */
+	catalogRefreshMs: number;
 }
 
 /** Quality/price envelope for one complexity tier. */
