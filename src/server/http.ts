@@ -8,6 +8,7 @@ import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import { createOpenRouterClient } from "../upstream/openrouter.ts";
 import { UpstreamError } from "../upstream/types.ts";
+import { apiKeySource } from "../config/load.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
 import { openDb } from "../util/sqlite.ts";
@@ -233,6 +234,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					return json({
 						status: "ok",
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
+						// Provenance only; never the key itself.
+						apiKeySource: apiKeySource(cfg).source,
 						catalog: snap === null
 							? null
 							: { models: snap.models.length, fetchedAtMs: snap.fetchedAtMs, ageMs: Date.now() - snap.fetchedAtMs },

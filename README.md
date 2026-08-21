@@ -71,9 +71,27 @@ transport, `POST /v1/pi/stream`) can be added later without touching routing.
 
 ```bash
 bun install
-export OPENROUTER_API_KEY=sk-or-...
 bun run serve
 ```
+
+### The OpenRouter key
+
+There should be exactly one OpenRouter key on the machine, and omp already owns
+a credential store. Resolution order:
+
+1. `openrouter.apiKey` in `$OMP_ROUTER_HOME/config.yml`
+2. `OPENROUTER_API_KEY` (including any `.env` omp loaded into the environment)
+3. **omp's own auth store** — `~/.omp/agent/agent.db`, provider `openrouter`
+
+So `/login openrouter` inside omp is sufficient setup; nothing needs copying.
+The store is opened read-only and never written: omp owns it, including OAuth
+refresh. An expired OAuth access token is rejected rather than sent, because
+refreshing is omp's job and a stale bearer just burns a turn on a 401. Under
+`OMP_AUTH_BROKER_URL` the local store is not consulted at all, since a broker
+replaces it.
+
+`omp-router serve` prints the provenance at startup and `GET /health` reports
+`apiKeySource` (`config` | `env` | `omp-auth-store` | `none`) — never the key.
 
 Register it with omp (`omp-router config` prints this block; `--write` merges it
 into `~/.omp/agent/models.yml` between guard comments, after a backup):

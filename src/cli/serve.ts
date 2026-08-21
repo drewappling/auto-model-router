@@ -1,4 +1,4 @@
-import { loadConfig } from "../config/load.ts";
+import { apiKeySource, loadConfig } from "../config/load.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { startServer } from "../server/http.ts";
 import { createLogger } from "../util/log.ts";
@@ -32,6 +32,16 @@ export async function serveCommand(args: CliArgs): Promise<void> {
 	const addr = `http://${cfg.server.host}:${server.port}`;
 	console.log(`omp-router listening on ${addr} (OpenAI-compatible endpoint at ${addr}/v1)`);
 	console.log("Register with omp: `omp-router config --write` merges the provider into models.yml");
+
+	// State the credential provenance up front. Silence here is how you end up
+	// debugging 401s that were really "the key was never found".
+	const credential = apiKeySource(cfg);
+	if (credential.source === "none") {
+		console.warn(`WARNING: no OpenRouter key resolved - ${credential.detail}`);
+		console.warn("         the catalog will still load, but every completion will fail at dispatch");
+	} else {
+		console.log(`OpenRouter key: ${credential.detail}`);
+	}
 
 	let stopping = false;
 	const shutdown = (signal: string): void => {

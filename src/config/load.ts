@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { DEFAULT_CONFIG } from "./defaults.ts";
 import { configInputSchema } from "./schema.ts";
+import { resolveOpenRouterKey, type ResolvedCredential } from "./omp-credentials.ts";
 import type { RouterConfig } from "./types.ts";
 
 const LOG_LEVELS: readonly RouterConfig["logLevel"][] = ["silent", "error", "warn", "info", "debug"];
@@ -114,5 +115,29 @@ export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterCon
 	if (cfg.ledger.path === "") cfg.ledger.path = join(home, "router.db");
 	cfg.ledger.path = resolveTilde(cfg.ledger.path);
 
+	// Last resort for the OpenRouter key: borrow omp's own stored credential, so
+	// `/login openrouter` in omp is all the setup this router needs. Explicit
+	// config and environment already won above, so this only fills a blank.
+	const credential = resolveOpenRouterKey(cfg.openrouter.apiKey);
+	cfg.openrouter.apiKey = credential.apiKey;
+	apiKeyProvenance.set(cfg, credential);
+
 	return cfg;
+}
+
+/**
+ * Where a config's OpenRouter key came from, for startup logs and `/health`.
+ * Keyed weakly off the config object so the provenance never has to travel
+ * through `RouterConfig` itself and risk being serialized next to the secret.
+ */
+const apiKeyProvenance = new WeakMap<RouterConfig, ResolvedCredential>();
+
+export function apiKeySource(cfg: RouterConfig): ResolvedCredential {
+	return (
+		apiKeyProvenance.get(cfg) ?? {
+			apiKey: cfg.openrouter.apiKey,
+			source: cfg.openrouter.apiKey === "" ? "none" : "config",
+			detail: cfg.openrouter.apiKey === "" ? "no key configured" : "config",
+		}
+	);
 }
