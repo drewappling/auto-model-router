@@ -129,3 +129,118 @@ describe("normalizeCatalogModel", () => {
 		expect(normalizeCatalogModel({ id: "x/y", pricing: { prompt: "0.1" } })).toBeNull();
 	});
 });
+
+describe("createCatalog key-scoped availability", () => {
+	test("prefers fetchModelsForUser when an API key is configured", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+
+		let userCalls = 0;
+		let publicCalls = 0;
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => {
+				publicCalls++;
+				return RAW;
+			},
+			fetchModelsForUser: async () => {
+				userCalls++;
+				return [rawFor("anthropic/claude-sonnet-4.5")];
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-test" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		const snapshot = await catalog.get();
+		expect(userCalls).toBe(1);
+		expect(publicCalls).toBe(0);
+		expect(snapshot.keyScoped).toBe(true);
+		expect(snapshot.models.length).toBe(1);
+		expect(snapshot.models[0]?.slug).toBe("anthropic/claude-sonnet-4.5");
+		db.close();
+	});
+
+	test("uses public fetchModels when no API key is configured", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+
+		let userCalls = 0;
+		let publicCalls = 0;
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => {
+				publicCalls++;
+				return RAW;
+			},
+			fetchModelsForUser: async () => {
+				userCalls++;
+				return [];
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		const snapshot = await catalog.get();
+		expect(userCalls).toBe(0);
+		expect(publicCalls).toBe(1);
+		expect(snapshot.keyScoped).toBe(false);
+		expect(snapshot.models.length).toBeGreaterThan(50);
+		db.close();
+	});
+
+	test("re-throws 401/403 authorization failures rather than falling back to un-scoped catalog", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+		const { UpstreamError } = await import("../src/upstream/types.ts");
+
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => RAW,
+			fetchModelsForUser: async () => {
+				throw new UpstreamError("auth", 401, "Unauthorized", false);
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-invalid" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		expect(catalog.get()).rejects.toThrow("Unauthorized");
+		db.close();
+	});
+
+	test("falls back to public catalog on transient (500) key-scoped fetch failure", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+		const { UpstreamError } = await import("../src/upstream/types.ts");
+
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => [rawFor("anthropic/claude-sonnet-4.5")],
+			fetchModelsForUser: async () => {
+				throw new UpstreamError("upstream_error", 500, "Internal Server Error", true);
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-test" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		const snapshot = await catalog.get();
+		expect(snapshot.models.length).toBe(1);
+		expect(snapshot.keyScoped).toBe(false);
+		db.close();
+	});
+});

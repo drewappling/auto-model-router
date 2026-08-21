@@ -238,7 +238,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						apiKeySource: apiKeySource(cfg).source,
 						catalog: snap === null
 							? null
-							: { models: snap.models.length, fetchedAtMs: snap.fetchedAtMs, ageMs: Date.now() - snap.fetchedAtMs },
+							: {
+									models: snap.models.length,
+									fetchedAtMs: snap.fetchedAtMs,
+									ageMs: Date.now() - snap.fetchedAtMs,
+									keyScoped: snap.keyScoped === true,
+								},
 					});
 				}
 				return wireErrorResponse({ status: 404, code: "not_found", message: `no route for ${req.method} ${url.pathname}` });

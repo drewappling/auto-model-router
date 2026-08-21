@@ -180,6 +180,7 @@ function mkUpstream(plans: FakePlan[]): { upstream: UpstreamClient; calls: Dispa
 		},
 		complete: () => Promise.reject(new Error("not used by runTurn")),
 		fetchModels: () => Promise.resolve([]),
+		fetchModelsForUser: () => Promise.resolve([]),
 	};
 	return { upstream, calls };
 }

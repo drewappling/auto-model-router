@@ -202,5 +202,20 @@ export function createOpenRouterClient(cfg: RouterConfig): UpstreamClient {
 			}
 			return data;
 		},
+
+		async fetchModelsForUser(signal?: AbortSignal): Promise<unknown[]> {
+			let res: Response;
+			try {
+				res = await fetch(`${baseUrl}/models/user`, { headers: headers({}), signal: composeSignal(signal) });
+			} catch (err) {
+				throw transportError(err);
+			}
+			if (!res.ok) throw await httpError(res);
+			const data = asRec(await res.json())?.data;
+			if (!Array.isArray(data)) {
+				throw new UpstreamError("upstream_error", res.status, "models/user payload had no data array", true);
+			}
+			return data;
+		},
 	};
 }

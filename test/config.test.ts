@@ -42,6 +42,7 @@ describe("loadConfig", () => {
 	test("loads defaults with no config file and no API key", () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
 		setEnv("OMP_ROUTER_HOME", tempDir());
+		setEnv("PI_CODING_AGENT_DIR", tempDir());
 		const cfg = loadConfig({});
 		expect(cfg.server.port).toBe(DEFAULT_CONFIG.server.port);
 		expect(cfg.openrouter.apiKey).toBe("");

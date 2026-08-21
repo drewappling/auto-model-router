@@ -83,6 +83,11 @@ export interface CatalogSnapshot {
 	models: CatalogModel[];
 	/** When this snapshot was fetched. */
 	fetchedAtMs: number;
+	/**
+	 * True when the snapshot was fetched via key-scoped `GET /models/user`.
+	 * False when fetched from the public `GET /models` endpoint.
+	 */
+	keyScoped?: boolean;
 	/** Upstream ETag, when served. */
 	etag?: string;
 }

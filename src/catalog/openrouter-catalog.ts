@@ -215,8 +215,13 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, fetched_at_ms = excluded.fetched_at_ms, etag = NULL`,
 	);
 
-	function install(models: CatalogModel[], fetchedAtMs: number, etag: string | null): CatalogSnapshot {
-		const next: CatalogSnapshot = { models, fetchedAtMs };
+	function install(
+		models: CatalogModel[],
+		fetchedAtMs: number,
+		etag: string | null,
+		keyScoped = false,
+	): CatalogSnapshot {
+		const next: CatalogSnapshot = { models, fetchedAtMs, keyScoped };
 		if (etag !== null) next.etag = etag;
 		snapshot = next;
 		const map = new Map<string, CatalogModel>();
@@ -235,7 +240,7 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		try {
 			const payload: unknown = JSON.parse(row.payload);
 			if (!Array.isArray(payload)) return null;
-			return install(normalizeAll(payload), row.fetched_at_ms, row.etag);
+			return install(normalizeAll(payload), row.fetched_at_ms, row.etag, cfg.openrouter.apiKey !== "");
 		} catch (err) {
 			log.warn("catalog cache unreadable; treating as empty", { error: String(err) });
 			return null;
@@ -243,13 +248,39 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 	}
 
 	async function doRefresh(): Promise<CatalogSnapshot> {
-		const raw = await upstream.fetchModels();
+		let raw: unknown[];
+		let keyScoped = false;
+
+		if (cfg.openrouter.apiKey !== "") {
+			try {
+				raw = await upstream.fetchModelsForUser();
+				keyScoped = true;
+				log.debug("fetched key-scoped model catalog", { models: raw.length });
+			} catch (err) {
+				// 401/403: auth failed on this key. Re-throw so callers do NOT silently
+				// fall back to public catalog models that this key cannot run.
+				if (err instanceof Error && "status" in err && (err.status === 401 || err.status === 403)) {
+					log.error("key-scoped catalog fetch unauthorized; rejecting refresh", {
+						status: err.status,
+						message: err.message,
+					});
+					throw err;
+				}
+				log.warn("key-scoped catalog fetch failed; falling back to public /models", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+				raw = await upstream.fetchModels();
+			}
+		} else {
+			raw = await upstream.fetchModels();
+		}
+
 		const models = normalizeAll(raw);
 		const fetchedAtMs = Date.now();
 		// Persist the RAW payload: normalization improvements apply on the next
 		// boot without a network fetch. The client returns no headers, so no etag.
 		writeCache.run(JSON.stringify(raw), fetchedAtMs);
-		return install(models, fetchedAtMs, null);
+		return install(models, fetchedAtMs, null, keyScoped);
 	}
 
 	/** Concurrent refreshes share one in-flight fetch. */

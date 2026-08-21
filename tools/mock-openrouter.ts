@@ -29,12 +29,16 @@ export interface MockControl {
 	echoToolCall: Record<string, { name: string; arguments: string }>;
 	/** Slugs that fail with this HTTP status before streaming. */
 	failWith: Record<string, number>;
+	/**
+	 * Guardrail allowlist: when non-empty, `/models/user` returns ONLY models
+	 * matching these slugs.
+	 */
+	allowedModels: string[];
 	/** Fraction of prompt tokens reported as cache reads. */
 	cacheHitRate: number;
 	/** Artificial delay before the first content chunk, ms. */
 	ttftMs: number;
 }
-
 const DEFAULT_CONTROL: MockControl = {
 	truncateToolArgs: [],
 	truncateFirstN: 0,
@@ -42,6 +46,7 @@ const DEFAULT_CONTROL: MockControl = {
 	refuse: [],
 	echoToolCall: {},
 	failWith: {},
+	allowedModels: [],
 	cacheHitRate: 0,
 	ttftMs: 0,
 };
@@ -77,6 +82,18 @@ export async function startMockOpenRouter(fixturePath: string, port = 0): Promis
 				return Response.json({ ok: true, control });
 			}
 			if (url.pathname === "/__requests") return Response.json(requests);
+			if (url.pathname.endsWith("/models/user")) {
+				if (control.allowedModels.length === 0) {
+					return new Response(catalog, { headers: { "content-type": "application/json" } });
+				}
+				try {
+					const parsed = JSON.parse(catalog) as { data: Array<{ id?: string }> };
+					const filtered = parsed.data.filter((m) => typeof m.id === "string" && control.allowedModels.includes(m.id));
+					return Response.json({ ...parsed, data: filtered });
+				} catch {
+					return new Response(catalog, { headers: { "content-type": "application/json" } });
+				}
+			}
 			if (url.pathname.endsWith("/models")) {
 				return new Response(catalog, { headers: { "content-type": "application/json" } });
 			}

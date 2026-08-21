@@ -51,6 +51,9 @@ function forbiddenUpstream(): UpstreamClient {
 		fetchModels(): Promise<unknown[]> {
 			return Promise.resolve([]);
 		},
+		fetchModelsForUser(): Promise<unknown[]> {
+			return Promise.resolve([]);
+		},
 	};
 }
 
@@ -63,11 +66,13 @@ function scriptedUpstream(behaviour: () => Promise<{ text: string; costUsd: numb
 		fetchModels(): Promise<unknown[]> {
 			return Promise.resolve([]);
 		},
+		fetchModelsForUser(): Promise<unknown[]> {
+			return Promise.resolve([]);
+		},
 	};
 }
 
 const tierIdx = (t: Tier): number => TIER_ORDER.indexOf(t);
-
 describe("scoreHeuristic", () => {
 	test("a mechanical tool-result continuation scores cheaper than a fresh architecture question", () => {
 		// The single most valuable signal in agent traffic: most turns are

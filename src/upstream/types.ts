@@ -67,4 +67,9 @@ export interface UpstreamClient {
 	complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }>;
 	/** Raw catalog fetch. Returns the parsed `data` array untouched. */
 	fetchModels(signal?: AbortSignal): Promise<unknown[]>;
+	/**
+	 * Key-scoped catalog fetch (`GET /models/user`). Returns the models
+	 * available to the configured key under active guardrails and preferences.
+	 */
+	fetchModelsForUser(signal?: AbortSignal): Promise<unknown[]>;
 }
