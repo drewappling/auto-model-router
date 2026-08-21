@@ -4,6 +4,7 @@ import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { ProfileConfig, RouterConfig } from "../src/config/types.ts";
+import type { Ledger } from "../src/cost/types.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { scoreHeuristic } from "../src/router/classify.ts";
 import { BudgetExceededError, select } from "../src/router/select.ts";
@@ -284,6 +285,111 @@ describe("decision shape", () => {
 			cfg: BASE,
 			nowMs: Date.now(),
 		});
-		expect(["trivial", "simple"]).toContain(d.tier);
+	expect(["trivial", "simple"]).toContain(d.tier);
+	});
+});
+
+describe("tier rescue under a guardrail-constrained catalog", () => {
+	// A tiny catalog containing only models that all fail the strict `trivial`
+	// tier config: they exceed its price ceiling or fail its trust/quality bar.
+	// Under the full catalog the cheap alternatives masked this; a guardrail
+	// can remove them entirely.
+	const pick = (slug: string): CatalogModel => {
+		const m = MODELS.find((x) => x.slug === slug);
+		if (m === undefined) throw new Error(`fixture missing ${slug}`);
+		return m;
+	};
+	const constrained: CatalogSnapshot = {
+		models: [pick("z-ai/glm-5.3"), pick("qwen/qwen3.8-2.4t-a95b"), pick("x-ai/grok-4.6")],
+		fetchedAtMs: Date.now(),
+		keyScoped: true,
+	};
+
+	function runConstrained(ledger: Ledger | null = null) {
+		const req = request("refactor the service layer and explain the cache coherence contract");
+		const features = extractFeatures(req, 4000);
+		const heuristic = scoreHeuristic(features, BASE);
+		return select({
+			req,
+			features,
+			classification: { ...heuristic, tier: "trivial" as Tier },
+			profile: PROFILE,
+			state: state(),
+			snapshot: constrained,
+			ledger,
+			cfg: BASE,
+			nowMs: Date.now(),
+		});
+	}
+
+	/** Every model is probed-and-failed: below the trust floor at every tier. */
+	function untrustedLedger(): Ledger {
+		return {
+			record: () => {},
+			conversationSpend: () => 0,
+			spendSince: () => 0,
+			blendedRate: () => null,
+			trust: (slug) => ({
+				slug,
+				attempts: 40,
+				escalations: 30,
+				errors: 30,
+				successRate: 0.1,
+				meanCostError: 0.2,
+			}),
+			allTrust: () => [],
+			tokenRatio: () => null,
+			recentEntries: () => [],
+		};
+	}
+
+	test("rescues a model instead of throwing when no strict tier admits the catalog", () => {
+		const d = runConstrained(untrustedLedger());
+		// It must pick one of the available models, not throw `catalog exhausted`.
+		expect(constrained.models.some((m) => m.slug === d.slug)).toBe(true);
+	});
+
+	test("records the rescue in the reasoning trail", () => {
+		const d = runConstrained(untrustedLedger());
+		expect(d.reasons.some((r) => r.startsWith("tier rescue:"))).toBe(true);
+	});
+
+	test("the rescue chooses the cheapest available model when quality is secondary", () => {
+		const d = runConstrained(untrustedLedger());
+		const chosen = MODELS.find((m) => m.slug === d.slug);
+		expect(chosen).toBeDefined();
+		// Price ceilings are relaxed first; the cheapest surviving model wins.
+		const cheapest = constrained.models.reduce((a, b) => (a.price.prompt <= b.price.prompt ? a : b));
+		expect(d.slug).toBe(cheapest.slug);
+	});
+
+	test("a guardrail that leaves every model below the trust bar is rescued by relaxing it", () => {
+		// Reproduces the real failure: a tiny guardrail catalog whose models are
+		// all marked untrusted (probed and failed). The trust floor (minTrust 0.7
+		// over minTrustSamples 12) excludes them at EVERY tier, so strict widening
+		// finds nothing; the rescue relaxes trust and picks a model.
+		const d = runConstrained(untrustedLedger());
+		expect(constrained.models.some((m) => m.slug === d.slug)).toBe(true);
+		expect(d.reasons.some((r) => r.startsWith("tier rescue:"))).toBe(true);
+	});
+
+	test("still throws when the catalog is empty after relaxing all economic constraints", () => {
+		const empty: CatalogSnapshot = { models: [], fetchedAtMs: Date.now(), keyScoped: true };
+		const req = request("anything");
+		const features = extractFeatures(req, 4000);
+		const heuristic = scoreHeuristic(features, BASE);
+		expect(() =>
+			select({
+				req,
+				features,
+				classification: { ...heuristic, tier: "trivial" as Tier },
+				profile: PROFILE,
+				state: state(),
+				snapshot: empty,
+				ledger: null,
+				cfg: BASE,
+				nowMs: Date.now(),
+			}),
+		).toThrow(/catalog exhausted/);
 	});
 });

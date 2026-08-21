@@ -144,7 +144,7 @@ export function select(args: SelectArgs): Decision {
 		state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs
 			? state.cacheWarmSlug
 			: null;
-	const build = (t: Tier): { candidates: Candidate[]; rejected: Rejection[] } =>
+	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,
 			features,
@@ -155,6 +155,7 @@ export function select(args: SelectArgs): Decision {
 			cfg,
 			expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 			warmSlug,
+			relaxLevel,
 		});
 	let chosenTier = effective;
 	let built: { candidates: Candidate[]; rejected: Rejection[] } | null = null;
@@ -168,11 +169,48 @@ export function select(args: SelectArgs): Decision {
 		reasons.push(`no candidates in ${t} (${b.rejected.length} rejected)`);
 		built ??= b;
 	}
+	// Tier rescue: the configured envelopes (price ceilings, quality floors,
+	// trust bar) were tuned against the full catalog, and a guardrail can shrink
+	// availability so no configured tier admits anything. Rather than 500, relax
+	// the tier's economic constraints — in order, price → quality → trust — until
+	// some AVAILABLE model qualifies. Hard capability filters (tools/images/
+	// context) and the key-scoped allowlist are never lifted.
 	if (built === null || built.candidates.length === 0) {
-		throw new Error(`no viable model: catalog exhausted across profile ${profile.id}`);
+		const envelope = wideningOrder(effective, profile.minTier, profile.maxTier);
+		let rescued = false;
+		let rescuedRelax = 0;
+		for (let relax = 1; relax <= 3 && !rescued; relax++) {
+			for (const t of envelope) {
+				const b = build(t, relax);
+				if (b.candidates.length > 0) {
+					built = b;
+					chosenTier = t;
+					rescued = true;
+					rescuedRelax = relax;
+					break;
+				}
+			}
+		}
+		if (rescued) {
+			const first = built!.candidates[0];
+			const label =
+				rescuedRelax === 1
+					? "price ceilings"
+					: rescuedRelax === 2
+						? "price ceilings + quality floors"
+						: "price ceilings + quality floors + trust bar";
+			reasons.push(
+				`tier rescue: strict config excluded all available models; relaxed ${label} to pick ${first!.model.slug} (${chosenTier})`,
+			);
+		} else if (built === null || built.candidates.length === 0) {
+			throw new Error(`no viable model: catalog exhausted across profile ${profile.id}`);
+		}
 	}
 	if (chosenTier !== effective) reasons.push(`widened ${effective} → ${chosenTier}`);
-	let candidates = built.candidates;
+	// After the rescue block, `built` is guaranteed non-null: the branch either
+	// rescued a non-empty candidate set, or threw the `catalog exhausted` error.
+	const resolved = built as { candidates: Candidate[]; rejected: Rejection[] };
+	let candidates = resolved.candidates;
 	const first = candidates[0];
 	if (first === undefined) throw new Error(`no viable model: catalog exhausted across profile ${profile.id}`);
 	let chosen = first;
@@ -308,7 +346,7 @@ export function select(args: SelectArgs): Decision {
 		stripAssistantReasoning,
 		probe,
 		considered: candidates,
-		rejected: built.rejected,
+		rejected: resolved.rejected,
 		reasons,
 		budgetDowngraded,
 	};

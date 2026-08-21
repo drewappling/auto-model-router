@@ -22,6 +22,14 @@ export interface BuildCandidatesArgs {
 	expectedCompletionTokens: number;
 	/** Slug whose prompt cache is warm this turn; wins score ties. */
 	warmSlug: string | null;
+	/**
+	 * Tier rescue depth when the strict config excludes every available model.
+	 * 0 = strict (price ceiling + quality floor + trust bar all enforced).
+	 * Higher levels drop constraints in order: 1 removes price ceilings, 2 also
+	 * drops the quality floor, 3 also ignores the trust bar. Never lifts the
+	 * hard capability filters (tools/images/context) or the key-scoped allowlist.
+	 */
+	relaxLevel?: number;
 }
 
 /** Tiny glob: `*` matches any run of characters; everything else is literal. */
@@ -53,9 +61,12 @@ function resolveQuality(model: CatalogModel, axis: QualityAxis): { score: number
 const UNMEASURED_TRUST = 0.9;
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
-	const { req, features, tier, axis, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug } = args;
+	const { req, features, tier, axis, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
 	const tierCfg = cfg.tiers[tier];
 	const filters = cfg.filters;
+	const relaxPrice = relaxLevel >= 1;
+	const relaxQuality = relaxLevel >= 2;
+	const relaxTrust = relaxLevel >= 3;
 	const allowRes = filters.allow.map(globToRe);
 	const denyRes = filters.deny.map(globToRe);
 	const needTools = req.tools.length > 0 && filters.requireToolSupport;
@@ -112,7 +123,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 
 		const pinned = tierCfg.pin.includes(slug);
 		const quality = resolveQuality(model, axis);
-		if (!pinned && tierCfg.minQuality > 0) {
+		if (!pinned && !relaxQuality && tierCfg.minQuality > 0) {
 			if (quality === null) {
 				rejected.push({ slug, reason: "below_quality_floor", detail: "no published quality score" });
 				continue;
@@ -127,7 +138,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// push a model over the ceiling exactly when conversations get long.
 		// Catalog prices are per-token; ceilings are per million tokens.
 		const price = priceAt(model, Math.max(1, features.promptTokens));
-		if (tierCfg.maxInputPerMtok !== undefined && price.prompt * 1e6 > tierCfg.maxInputPerMtok) {
+		if (!relaxPrice && tierCfg.maxInputPerMtok !== undefined && price.prompt * 1e6 > tierCfg.maxInputPerMtok) {
 			rejected.push({
 				slug,
 				reason: "over_price_ceiling",
@@ -135,7 +146,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			});
 			continue;
 		}
-		if (tierCfg.maxOutputPerMtok !== undefined && price.completion * 1e6 > tierCfg.maxOutputPerMtok) {
+		if (!relaxPrice && tierCfg.maxOutputPerMtok !== undefined && price.completion * 1e6 > tierCfg.maxOutputPerMtok) {
 			rejected.push({
 				slug,
 				reason: "over_price_ceiling",
@@ -145,7 +156,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		}
 
 		const trust = ledger?.trust(slug) ?? null;
-		if (trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
+		if (!relaxTrust && trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
 			rejected.push({
 				slug,
 				reason: "untrusted",
