@@ -1,0 +1,27 @@
+{
+  "name": "omp-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
+  "type": "module",
+  "bin": {
+    "omp-router": "./src/index.ts"
+  },
+  "scripts": {
+    "serve": "bun run src/index.ts serve",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "smoke": "bun run tools/smoke.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.7.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}

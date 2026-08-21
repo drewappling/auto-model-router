@@ -1,0 +1,118 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { DEFAULT_CONFIG } from "./defaults.ts";
+import { configInputSchema } from "./schema.ts";
+import type { RouterConfig } from "./types.ts";
+
+const LOG_LEVELS: readonly RouterConfig["logLevel"][] = ["silent", "error", "warn", "info", "debug"];
+
+/** Expands a leading `~` (or `~/`) to the user's home directory. */
+export function resolveTilde(p: string): string {
+	if (p === "~") return homedir();
+	if (p.startsWith("~/") || p.startsWith("~\\")) return join(homedir(), p.slice(2));
+	return p;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Recursive merge with omp's settings semantics: plain objects merge key by
+ * key, arrays REPLACE wholesale (they never union or concatenate), and
+ * scalars overwrite. `undefined` override values leave the base untouched.
+ */
+function mergeValue(base: unknown, override: unknown): unknown {
+	if (override === undefined) return base;
+	if (Array.isArray(override)) return override.slice();
+	if (isPlainObject(override) && isPlainObject(base)) {
+		const out: Record<string, unknown> = { ...base };
+		for (const [k, v] of Object.entries(override)) out[k] = mergeValue(out[k], v);
+		return out;
+	}
+	return override;
+}
+
+function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
+	return mergeValue(base, override) as RouterConfig;
+}
+
+/**
+ * Resolves the effective configuration:
+ *   DEFAULT_CONFIG
+ *   <- `$OMP_ROUTER_HOME/config.yml|config.yaml` (or `opts.path`)
+ *   <- environment (`OPENROUTER_API_KEY`, `OMP_ROUTER_PORT`,
+ *      `OMP_ROUTER_HOST`, `OMP_ROUTER_LOG`, `OMP_ROUTER_DB`)
+ *   <- `opts.overrides`
+ *
+ * A missing OpenRouter API key is NOT an error here: catalog refresh and
+ * `omp-router config` work keyless; `serve` warns at startup and completions
+ * fail at dispatch time.
+ */
+export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterConfig> }): RouterConfig {
+	const home = resolveTilde(process.env.OMP_ROUTER_HOME ?? "~/.omp-router");
+
+	// Config file, when present.
+	const filePath = opts?.path !== undefined
+		? resolveTilde(opts.path)
+		: [join(home, "config.yml"), join(home, "config.yaml")].find((p) => existsSync(p));
+
+	let fileInput: unknown = {};
+	if (filePath !== undefined) {
+		const raw: unknown = parseYaml(readFileSync(filePath, "utf8"));
+		if (raw !== null && raw !== undefined) {
+			const parsed = configInputSchema.safeParse(raw);
+			if (!parsed.success) {
+				const lines = parsed.error.issues.map(
+					(issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`,
+				);
+				throw new Error(`Invalid configuration in ${filePath}:\n${lines.join("\n")}`);
+			}
+			fileInput = parsed.data;
+		}
+	}
+
+	// structuredClone: merge copies only along override paths, so untouched
+	// default branches would otherwise be shared (and mutable) by reference.
+	let cfg = deepMerge(structuredClone(DEFAULT_CONFIG), fileInput);
+
+	// Environment overrides.
+	const envInput: Record<string, unknown> = {};
+	const putSection = (section: string, key: string, value: unknown): void => {
+		const s = (envInput[section] ??= {}) as Record<string, unknown>;
+		s[key] = value;
+	};
+	const envApiKey = process.env.OPENROUTER_API_KEY;
+	if (envApiKey !== undefined && envApiKey !== "") putSection("openrouter", "apiKey", envApiKey);
+	const envPort = process.env.OMP_ROUTER_PORT;
+	if (envPort !== undefined && envPort !== "") {
+		const port = Number.parseInt(envPort, 10);
+		if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+			throw new Error(`OMP_ROUTER_PORT must be an integer between 0 and 65535, got "${envPort}"`);
+		}
+		putSection("server", "port", port);
+	}
+	const envHost = process.env.OMP_ROUTER_HOST;
+	if (envHost !== undefined && envHost !== "") putSection("server", "host", envHost);
+	const envLog = process.env.OMP_ROUTER_LOG;
+	if (envLog !== undefined && envLog !== "") {
+		if (!(LOG_LEVELS as readonly string[]).includes(envLog)) {
+			throw new Error(`OMP_ROUTER_LOG must be one of ${LOG_LEVELS.join(", ")}, got "${envLog}"`);
+		}
+		envInput.logLevel = envLog;
+	}
+	const envDb = process.env.OMP_ROUTER_DB;
+	if (envDb !== undefined && envDb !== "") putSection("ledger", "path", envDb);
+	cfg = deepMerge(cfg, envInput);
+
+	// Explicit programmatic overrides win last.
+	if (opts?.overrides !== undefined) cfg = deepMerge(cfg, opts.overrides);
+
+	// The default ledger path is expressed relative to the resolved home.
+	if (cfg.ledger.path === "") cfg.ledger.path = join(home, "router.db");
+	cfg.ledger.path = resolveTilde(cfg.ledger.path);
+
+	return cfg;
+}

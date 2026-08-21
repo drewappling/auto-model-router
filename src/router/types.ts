@@ -1,0 +1,201 @@
+/**
+ * Routing brain contracts: features -> complexity tier -> concrete model.
+ *
+ * Every stage is a pure function of explicit inputs so decisions are
+ * reproducible and `omp-router explain` can replay them offline.
+ */
+
+import type { CatalogModel } from "../catalog/types.ts";
+import type { CostForecast } from "../cost/types.ts";
+import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
+
+export type Tier = "trivial" | "simple" | "moderate" | "hard";
+
+export const TIER_ORDER: readonly Tier[] = ["trivial", "simple", "moderate", "hard"] as const;
+
+/**
+ * Signals extracted from a request. Deliberately cheap: no tokenizer, no
+ * network, no model call. Field names are stable because they are logged
+ * verbatim into the ledger for later calibration.
+ */
+export interface Features {
+	/** Estimated prompt tokens (see `tokens/estimate.ts`). */
+	promptTokens: number;
+	/** Estimated tokens in the newest user-authored content only. */
+	newContentTokens: number;
+	/** Assistant + user turns in history (excludes system). */
+	turnDepth: number;
+	/** Tools offered. omp exposes ~15-25; a bare chat request offers none. */
+	toolCount: number;
+	/** Total bytes of tool JSON schemas — usually the largest prompt component. */
+	toolSchemaBytes: number;
+	/**
+	 * The last message is a tool result, i.e. this is a mechanical continuation
+	 * of an agent loop rather than fresh human intent. The single strongest
+	 * cheap-routing signal in agent traffic.
+	 */
+	isToolResultContinuation: boolean;
+	/** Consecutive tool-result messages at the tail — loop depth. */
+	toolLoopDepth: number;
+	/** Distinct tool names used across the conversation. */
+	distinctToolsUsed: number;
+	/** A tool result at the tail reports an error or non-zero exit. */
+	lastToolFailed: boolean;
+	/** The same tool was called with identical arguments twice in a row. */
+	repeatedToolCall: boolean;
+	hasImages: boolean;
+	/** Fenced code blocks in the newest user content. */
+	codeBlocks: number;
+	/** Bytes inside fenced code blocks in the newest user content. */
+	codeBytes: number;
+	/** Diff/patch markers in the newest user content. */
+	looksLikeDiff: boolean;
+	/** Matched complexity keywords (architecture, debug, why, race, optimize, ...). */
+	complexityKeywords: string[];
+	/** Matched triviality keywords (rename, format, typo, bump, ...). */
+	trivialityKeywords: string[];
+	/** Client asked for reasoning, a direct statement of expected difficulty. */
+	requestedReasoning: ReasoningLevel | undefined;
+	/** Question marks in the newest user content. */
+	questionCount: number;
+	/** Newest user content is a single short imperative sentence. */
+	isTerseInstruction: boolean;
+}
+
+export type ClassificationSource = "heuristic" | "llm" | "sticky" | "forced" | "escalation";
+
+export interface Classification {
+	tier: Tier;
+	/** 0-1. Below the config's ambiguity band, the LLM adjudicator is consulted. */
+	confidence: number;
+	source: ClassificationSource;
+	/** Ordered, human-readable justification. Logged and surfaced by `explain`. */
+	reasons: string[];
+	/** Raw heuristic score before tier bucketing, 0-1. */
+	score: number;
+}
+
+/** A model that survived capability filtering, with its economics attached. */
+export interface Candidate {
+	model: CatalogModel;
+	forecast: CostForecast;
+	/** Quality on the axis chosen for this request (coding/agentic/intelligence), 0-100. */
+	qualityScore: number;
+	/** Laplace-smoothed success rate from our ledger, 0-1. Defaults to a neutral prior. */
+	trustScore: number;
+	/** Final ranking score. Higher wins. */
+	score: number;
+	/** Why this candidate ranked where it did. */
+	reasons: string[];
+}
+
+export type RejectionReason =
+	| "no_tool_support"
+	| "context_too_small"
+	| "no_image_support"
+	| "below_quality_floor"
+	| "over_price_ceiling"
+	| "over_budget"
+	| "denylisted"
+	| "not_allowlisted"
+	| "free_tier_excluded"
+	| "reasoning_mandatory"
+	| "untrusted";
+
+export interface Rejection {
+	slug: string;
+	reason: RejectionReason;
+	detail?: string;
+}
+
+/** Per-conversation routing memory. Persisted so restarts do not reset hysteresis. */
+export interface ConversationState {
+	key: string;
+	/** Forwarded to OpenRouter as `session_id`. */
+	sessionId: string;
+	turn: number;
+	/** Slug that served the previous committed turn. */
+	currentSlug: string | null;
+	currentTier: Tier | null;
+	/**
+	 * Hold the current tier until this turn index, to stop per-turn flapping
+	 * that would repeatedly cold-start prompt caches.
+	 */
+	stickyUntilTurn: number;
+	escalations: number;
+	spentUsd: number;
+	/** Prompt tokens on the previous turn, for cache-warmth arithmetic. */
+	lastPromptTokens: number;
+	/** Model whose prompt cache we believe is still warm. */
+	cacheWarmSlug: string | null;
+	/** When that cache was last touched; OpenRouter sticky sessions expire in 5-10 min. */
+	cacheWarmAtMs: number;
+	updatedAtMs: number;
+}
+
+export interface ConversationStore {
+	get(key: string): ConversationState | null;
+	/** Loads existing state or creates a fresh record. */
+	load(key: string): ConversationState;
+	save(state: ConversationState): void;
+	/** Drops records untouched for longer than `maxAgeMs`. */
+	prune(maxAgeMs: number): number;
+}
+
+/** Guarded-probe configuration for one dispatch. */
+export interface ProbePlan {
+	enabled: boolean;
+	/** Hold output until this many text tokens have arrived. */
+	maxTokens: number;
+	/** Hard ceiling on hold time so a slow model cannot stall the client. */
+	maxHoldMs: number;
+	/** Tier to escalate to when the probe rejects the attempt. */
+	escalateTo: Tier | null;
+}
+
+/** The routing decision for one turn. */
+export interface Decision {
+	slug: string;
+	/** Same-tier fallbacks for OpenRouter's `models[]` array; transient-error only. */
+	fallbacks: string[];
+	tier: Tier;
+	classification: Classification;
+	/** The extracted feature vector, retained verbatim for `explain`. */
+	features: Features;
+	forecast: CostForecast;
+	sessionId: string;
+	/** Reused the previous turn's model because switching was not worth the cache loss. */
+	sticky: boolean;
+	/** Message indices to mark with cache breakpoints. */
+	cacheBreakpointMessageIndices: number[];
+	reasoning: ReasoningLevel | undefined;
+	maxTokens: number | undefined;
+	stripAssistantReasoning: boolean;
+	probe: ProbePlan;
+	/** Candidates considered, ranked. Retained for `explain`. */
+	considered: Candidate[];
+	/** Filtered-out models with cause. Retained for `explain`. */
+	rejected: Rejection[];
+	reasons: string[];
+	/** Budget guard forced a cheaper tier than the classifier asked for. */
+	budgetDowngraded: boolean;
+}
+
+/** Why a guarded probe rejected an attempt. */
+export type EscalationSignal =
+	| "malformed_tool_args"
+	| "refusal"
+	| "empty_completion"
+	| "repeat_tool_call"
+	| "length_stop"
+	| "missing_expected_tool_call"
+	| "upstream_error";
+
+export type ProbeVerdict =
+	| { action: "commit"; reason: string }
+	| { action: "escalate"; signal: EscalationSignal; reason: string };
+
+export interface Router {
+	/** Chooses a model for a request. Pure w.r.t. everything except the stores it reads. */
+	route(req: NormRequest, opts: { attempt: number; escalateFrom?: Tier }): Promise<Decision>;
+}
