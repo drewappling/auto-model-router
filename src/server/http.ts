@@ -220,6 +220,14 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const server: Server<undefined> = Bun.serve({
 		hostname: cfg.server.host,
 		port: cfg.server.port,
+		// Bun's default idleTimeout is 10s, which is far shorter than a real
+		// generation can sit silent: the escalation guard holds the first tokens
+		// for up to maxHoldMs while a reasoning model is still producing its
+		// first token, and frontier models can think for tens of seconds between
+		// chunks. A 10s gap would close the socket mid-stream and surface to omp
+		// as "socket connection was closed unexpectedly". idleTimeout is in
+		// SECONDS (max 255), so convert from the ms upstream timeout and cap.
+		idleTimeout: Math.min(Math.ceil(cfg.openrouter.timeoutMs / 1000), 255),
 		async fetch(req: Request): Promise<Response> {
 			if (cfg.server.apiKey !== undefined && cfg.server.apiKey !== "") {
 				if (req.headers.get("authorization") !== `Bearer ${cfg.server.apiKey}`) {
