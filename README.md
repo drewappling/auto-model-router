@@ -93,6 +93,34 @@ replaces it.
 `omp-router serve` prints the provenance at startup and `GET /health` reports
 `apiKeySource` (`config` | `env` | `omp-auth-store` | `none`) — never the key.
 
+## Toast notifications for the chosen model
+
+omp-router is headless and cannot draw into omp's TUI, so chosen-model toasts
+come from a small omp extension that polls the router's decision ledger:
+
+```ts
+// omp-extension/router-toast.ts  (shipped in this repo)
+```
+
+It raises a TUI toast (`ctx.ui.notify`) like
+`meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
+Install it by adding the file's absolute path to omp's `extensions:` list:
+
+```yaml
+# ~/.omp/agent/config.yml
+extensions:
+  - /path/to/omp-router/omp-extension/router-toast.ts
+```
+
+Then restart the omp session (extensions load at session start). The router
+base URL defaults to `http://127.0.0.1:8788`; override with `OMP_ROUTER_URL`.
+
+The toast logic is a pure, unit-tested module
+(`omp-extension/toast-logic.ts`, covered by `test/toast-logic.test.ts`): it
+toasts only entries newer than the last seen one, skips `wasted` escalation
+attempts, and prefers the actual serving slug over the requested one.
+
+
 Register it with omp (`omp-router config` prints this block; `--write` merges it
 into `~/.omp/agent/models.yml` between guard comments, after a backup):
 
