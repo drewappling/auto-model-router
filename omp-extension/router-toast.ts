@@ -10,17 +10,14 @@
  *
  *   # ~/.omp/agent/config.yml
  *   extensions:
+ *     - /path/to/omp-router/omp-extension/router-embed.ts
  *     - /path/to/omp-router/omp-extension/router-toast.ts
  *
- * The router base URL is resolved in this order:
- *   1. `OMP_ROUTER_URL`
- *   2. `server.host`/`server.port` from the router's own
- *      `$OMP_ROUTER_HOME/config.yml` — the same file the router reads, so the
- *      extension can never drift from the port the router actually listens on
- *   3. `http://127.0.0.1:8787` (the built-in default port)
- *
- * Step 2 matters: hardcoding 8787 silently polls whatever else happens to own
- * that port when the router has been moved, and the toasts just never appear.
+ * Because the embedded router binds a random OS-assigned port and writes it to
+ * the port file, the toast resolves the base URL fresh on EVERY poll: the port
+ * file first, then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`, then the router's
+ * own config.yml. Reading the port file each tick means the toast always polls
+ * the port the router actually bound, even though it changes every session.
  *
  * When the router is configured with `server.apiKey`, set OMP_ROUTER_API_KEY so
  * the poll authenticates.
@@ -34,6 +31,7 @@ import { parse as parseYaml } from "yaml";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
+import { embedPortPath, readEmbedPort } from "./embed-logic.ts";
 import { newestId, resolveRouterUrl, selectToasts, type ToastDecision } from "./toast-logic.ts";
 
 /** Raw router config.yml, or null when there is none to read. */
@@ -50,7 +48,14 @@ function readRouterConfig(): string | null {
 	}
 }
 
-const ROUTER_URL = resolveRouterUrl(process.env.OMP_ROUTER_URL, readRouterConfig(), parseYaml);
+/** Absolute path of the embed port file under the router home directory. */
+function embedPortFile(): string {
+	const raw = process.env.OMP_ROUTER_HOME ?? join(homedir(), ".omp-router");
+	const home =
+		raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
+	return embedPortPath(home);
+}
+
 const ROUTER_API_KEY = process.env.OMP_ROUTER_API_KEY;
 // This harness's id, matching the X-Omp-Harness header the router records.
 // Empty ⇒ toast every harness (single-harness default).
@@ -78,9 +83,21 @@ export default function (pi: ExtensionAPI): void {
 			if (polling) return;
 			polling = true;
 			try {
+				// The embedded router binds a free OS-assigned port, so the URL
+				// is resolved fresh each tick from the port file the embed
+				// extension writes at session_start.
+				const embedPort = readEmbedPort(embedPortFile());
+				const routerUrl = resolveRouterUrl(
+					process.env.OMP_ROUTER_URL,
+					readRouterConfig(),
+					parseYaml,
+					process.env.OMP_ROUTER_PORT,
+					embedPort,
+				);
+
 				let res: Response;
 				try {
-					res = await fetch(`${ROUTER_URL}/v1/router/decisions?limit=20`, {
+					res = await fetch(`${routerUrl}/v1/router/decisions?limit=20`, {
 						headers: ROUTER_API_KEY === undefined ? {} : { authorization: `Bearer ${ROUTER_API_KEY}` },
 						signal: AbortSignal.timeout(3_000),
 					});

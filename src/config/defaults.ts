@@ -10,7 +10,7 @@ import type { RouterConfig } from "./types.ts";
 export const DEFAULT_CONFIG: RouterConfig = {
 	server: {
 		host: "127.0.0.1",
-		port: 8787,
+		port: 8788,
 	},
 	openrouter: {
 		baseUrl: "https://openrouter.ai/api/v1",

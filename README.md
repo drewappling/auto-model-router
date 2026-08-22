@@ -71,8 +71,49 @@ transport, `POST /v1/pi/stream`) can be added later without touching routing.
 
 ```bash
 bun install
-bun run serve
 ```
+
+There are two ways to run the router. The primary one runs it **in-process
+inside omp** — no separate service, no orphaned process, no "is the server
+running?"; it lives and dies with the omp session. The standalone `serve` still
+exists for sharing one instance across several harnesses or machines.
+
+### Run it embedded in omp (primary)
+
+Add the embed extension to omp's `extensions:` list, plus the toast extension
+if you want chosen-model toasts:
+
+```yaml
+# ~/.omp/agent/config.yml
+extensions:
+  - /path/to/omp-router/omp-extension/router-embed.ts
+  - /path/to/omp-router/omp-extension/router-toast.ts
+```
+
+At session start the embed extension:
+
+- starts the router **inside the omp process**, binding a **free OS-assigned
+  port** (`Bun.serve({ port: 0 })`) so several omp sessions can run at once
+  without ever colliding on a fixed port;
+- writes the actual bound port to `$OMP_ROUTER_HOME/embed.port` so the toast
+  extension can find it;
+- registers an `omp-router` provider with omp (the `auto`, `auto-cheap`,
+  `auto-max` models) pointing at `http://127.0.0.1:$PORT/v1`, where `$PORT`
+  is the port it actually bound.
+
+Set `OMP_ROUTER_PORT` to pin a specific port instead of a random one (rarely
+needed). The router lives and dies with the session — no orphan process, no
+"is the router running?" The `X-Omp-Harness` header (from `server.harnessId`)
+scopes budgets, toasts, and optional trust per harness.
+
+### Run it as a separate service
+
+```bash
+bun run serve   # binds 127.0.0.1:8788 by default
+```
+
+Do not run `bun run serve` and the embed extension in the same process
+namespace on the same port — that is a bind conflict.
 
 ### The OpenRouter key
 
@@ -90,8 +131,9 @@ refreshing is omp's job and a stale bearer just burns a turn on a 401. Under
 `OMP_AUTH_BROKER_URL` the local store is not consulted at all, since a broker
 replaces it.
 
-`omp-router serve` prints the provenance at startup and `GET /health` reports
-`apiKeySource` (`config` | `env` | `omp-auth-store` | `none`) — never the key.
+The standalone `serve` prints the key provenance at startup and `GET /health`
+reports `apiKeySource` (`config` | `env` | `omp-auth-store` | `none`) — never
+the key itself.
 
 ## Toast notifications for the chosen model
 
@@ -104,20 +146,27 @@ come from a small omp extension that polls the router's decision ledger:
 
 It raises a TUI toast (`ctx.ui.notify`) like
 `meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
-Install it by adding the file's absolute path to omp's `extensions:` list:
+Install it by adding the file's absolute path to omp's `extensions:` list
+(alongside the embed extension above):
 
 ```yaml
 # ~/.omp/agent/config.yml
 extensions:
+  - /path/to/omp-router/omp-extension/router-embed.ts
   - /path/to/omp-router/omp-extension/router-toast.ts
 ```
 
-Then restart the omp session (extensions load at session start). The router
-base URL defaults to `http://127.0.0.1:8788`; override with `OMP_ROUTER_URL`.
+Then restart the omp session (extensions load at session start). Because the
+embedded router binds a random OS-assigned port, the toast resolves the router
+base URL on every poll in this order: the embedded router's port file
+(`$OMP_ROUTER_HOME/embed.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
+then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
+port file each tick means the toast always polls the port the router actually
+bound, even though it changes every session.
 
 The toast logic is a pure, unit-tested module
 (`omp-extension/toast-logic.ts`, covered by `test/toast-logic.test.ts`): it
-toasts only entries newer than the last seen one, skips `wasted` escalation
+toasts only decisions newer than the last seen one, skips `wasted` escalation
 attempts, and prefers the actual serving slug over the requested one.
 
 ## Multiple coding harnesses, one router
@@ -193,7 +242,7 @@ merges it into `~/.omp/agent/models.yml` between guard comments, after a backup)
 ```yaml
 providers:
   omp-router:
-    baseUrl: http://127.0.0.1:8787/v1
+    baseUrl: http://127.0.0.1:8788/v1
     api: openai-completions
     auth: none
     models:
@@ -317,10 +366,10 @@ eligible set is always explainable:
 
 This is usually the right dial for an agentic coding harness. Most turns after
 the first are tool-result continuations, which the complexity heuristic scores
-as mechanical (`-0.28` against a `0.30` base) — correct for a single file read,
-but it means a long, genuinely hard session keeps classifying `trivial`. A task
-floor lifts the *quality* of whatever tier is chosen without forcing every turn
-into an expensive tier, which is what raising the tier floors would do.
+as mechanical — correct for a single file read, but it means a long, genuinely
+hard session keeps classifying `trivial`. A task floor lifts the quality of
+whatever tier is chosen without forcing every turn into an expensive tier,
+which is what raising the tier floors would do.
 
 ## Tier rescue
 

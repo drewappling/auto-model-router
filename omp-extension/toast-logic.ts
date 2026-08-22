@@ -16,12 +16,17 @@
  * whatever else owns that port once the router has been moved, in which case
  * toasts simply never appear and nothing explains why.
  */
-export const DEFAULT_ROUTER_URL = "http://127.0.0.1:8787";
+export const DEFAULT_ROUTER_URL = "http://127.0.0.1:8788";
 
 /**
- * Resolves the router base URL from an explicit override, else the `server`
- * block of the router's own config — the same file the router reads, so the
- * extension cannot drift from the port the router actually listens on.
+ * Resolves the router base URL from, in precedence order:
+ *   1. an explicit `OMP_ROUTER_URL` override;
+ *   2. the embedded router's port file (`embedPort`, when it holds a valid
+ *      port) — the embed extension binds a free OS-assigned port and writes it
+ *      to the port file, so the toast must poll that actual address;
+ *   3. an explicit `OMP_ROUTER_PORT` (`envPort`);
+ *   4. the `server` block of the router's own config;
+ *   5. `DEFAULT_ROUTER_URL`.
  *
  * `configText` is the raw config.yml contents, or null when absent/unreadable.
  * `parseYaml` is injected so this stays dependency-free and testable.
@@ -30,26 +35,42 @@ export function resolveRouterUrl(
 	envUrl: string | undefined,
 	configText: string | null,
 	parseYaml: (text: string) => unknown,
+	envPort?: string,
+	embedPort?: number | null,
 ): string {
 	if (envUrl !== undefined && envUrl !== "") return envUrl;
-	if (configText === null) return DEFAULT_ROUTER_URL;
+
+	let port: number | undefined;
+	if (embedPort !== undefined && embedPort !== null) {
+		port = embedPort;
+	} else if (envPort !== undefined && envPort !== "") {
+		const parsedPort = Number.parseInt(envPort, 10);
+		if (Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65_535) port = parsedPort;
+	}
+	const envWins = port !== undefined;
+
+	if (configText === null) return envWins ? `http://127.0.0.1:${port}` : DEFAULT_ROUTER_URL;
 
 	let parsed: unknown;
 	try {
 		parsed = parseYaml(configText);
 	} catch {
-		return DEFAULT_ROUTER_URL;
+		return envWins ? `http://127.0.0.1:${port}` : DEFAULT_ROUTER_URL;
 	}
-	if (typeof parsed !== "object" || parsed === null) return DEFAULT_ROUTER_URL;
+	if (typeof parsed !== "object" || parsed === null) return envWins ? `http://127.0.0.1:${port}` : DEFAULT_ROUTER_URL;
 	const server: unknown = (parsed as Record<string, unknown>).server;
-	if (typeof server !== "object" || server === null) return DEFAULT_ROUTER_URL;
+	if (typeof server !== "object" || server === null) return envWins ? `http://127.0.0.1:${port}` : DEFAULT_ROUTER_URL;
 
 	const rec = server as Record<string, unknown>;
-	const port = typeof rec.port === "number" && Number.isInteger(rec.port) && rec.port > 0 ? rec.port : 8787;
+	const resolvedPort = envWins
+		? port!
+		: typeof rec.port === "number" && Number.isInteger(rec.port) && rec.port > 0
+			? rec.port
+			: 8788;
 	const rawHost = typeof rec.host === "string" && rec.host !== "" ? rec.host : "127.0.0.1";
 	// A wildcard listen address is not a connectable target.
 	const host = rawHost === "0.0.0.0" || rawHost === "::" ? "127.0.0.1" : rawHost;
-	return `http://${host}:${port}`;
+	return `http://${host}:${resolvedPort}`;
 }
 
 /** Subset of a ledger entry (see src/cost/types.ts LedgerEntry). */

@@ -15,12 +15,39 @@ describe("resolveRouterUrl", () => {
 	const resolve = (env: string | undefined, text: string | null): string =>
 		resolveRouterUrl(env, text, parseYaml);
 
-	test("an explicit override wins over the config", () => {
-		expect(resolve("http://host:9999", "server:\n  port: 8788\n")).toBe("http://host:9999");
+	test("the embed port file wins over OMP_ROUTER_PORT and the config", () => {
+		// The embedded router binds a free OS-assigned port and writes it to the
+		// port file; the toast must poll that actual address, not a stale config.
+		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "8812", 45678)).toBe(
+			"http://127.0.0.1:45678",
+		);
+	});
+
+	test("OMP_ROUTER_URL still beats the embed port file", () => {
+		expect(resolveRouterUrl("http://host:9999", "server:\n  port: 8788\n", parseYaml, "8812", 45678)).toBe(
+			"http://host:9999",
+		);
+	});
+
+	test("an embed port file of null falls back to OMP_ROUTER_PORT", () => {
+		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "8812", null)).toBe("http://127.0.0.1:8812");
+	});
+
+	test("OMP_ROUTER_URL still beats OMP_ROUTER_PORT", () => {
+		expect(resolveRouterUrl("http://host:9999", "server:\n  port: 8788\n", parseYaml, "8812")).toBe("http://host:9999");
+	});
+
+	test("an invalid OMP_ROUTER_PORT falls back to the config port", () => {
+		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "notaport")).toBe("http://127.0.0.1:8788");
+		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "70000")).toBe("http://127.0.0.1:8788");
+	});
+
+	test("OMP_ROUTER_PORT with no config uses loopback", () => {
+		expect(resolveRouterUrl(undefined, null, parseYaml, "8812")).toBe("http://127.0.0.1:8812");
 	});
 
 	test("reads host and port from the router's own config", () => {
-		// The bug this prevents: defaulting to 8787 polls whatever else owns that
+		// The bug this prevents: defaulting to 8788 polls whatever else owns that
 		// port once the router has been moved, and toasts silently never appear.
 		expect(resolve(undefined, "server:\n  host: 127.0.0.1\n  port: 8788\n")).toBe("http://127.0.0.1:8788");
 	});
