@@ -1,11 +1,55 @@
 import { describe, expect, test } from "bun:test";
 
+import { parse as parseYaml } from "yaml";
+
 import {
+	DEFAULT_ROUTER_URL,
 	newestId,
+	resolveRouterUrl,
 	selectToasts,
 	toToastText,
 	type ToastDecision,
 } from "../omp-extension/toast-logic.ts";
+
+describe("resolveRouterUrl", () => {
+	const resolve = (env: string | undefined, text: string | null): string =>
+		resolveRouterUrl(env, text, parseYaml);
+
+	test("an explicit override wins over the config", () => {
+		expect(resolve("http://host:9999", "server:\n  port: 8788\n")).toBe("http://host:9999");
+	});
+
+	test("reads host and port from the router's own config", () => {
+		// The bug this prevents: defaulting to 8787 polls whatever else owns that
+		// port once the router has been moved, and toasts silently never appear.
+		expect(resolve(undefined, "server:\n  host: 127.0.0.1\n  port: 8788\n")).toBe("http://127.0.0.1:8788");
+	});
+
+	test("a port-only config keeps the loopback default host", () => {
+		expect(resolve(undefined, "server:\n  port: 8790\n")).toBe("http://127.0.0.1:8790");
+	});
+
+	test("a wildcard listen address becomes loopback", () => {
+		expect(resolve(undefined, "server:\n  host: 0.0.0.0\n  port: 8788\n")).toBe("http://127.0.0.1:8788");
+		expect(resolve(undefined, "server:\n  host: '::'\n  port: 8788\n")).toBe("http://127.0.0.1:8788");
+	});
+
+	test("falls back when there is no config, no server block, or junk", () => {
+		expect(resolve(undefined, null)).toBe(DEFAULT_ROUTER_URL);
+		expect(resolve(undefined, "")).toBe(DEFAULT_ROUTER_URL);
+		expect(resolve(undefined, "logLevel: debug\n")).toBe(DEFAULT_ROUTER_URL);
+		expect(resolve(undefined, "server: 5\n")).toBe(DEFAULT_ROUTER_URL);
+	});
+
+	test("ignores a non-integer or non-positive port", () => {
+		expect(resolve(undefined, "server:\n  port: 0\n")).toBe(DEFAULT_ROUTER_URL);
+		expect(resolve(undefined, "server:\n  port: notaport\n")).toBe(DEFAULT_ROUTER_URL);
+	});
+
+	test("an empty env override does not shadow the config", () => {
+		expect(resolve("", "server:\n  port: 8788\n")).toBe("http://127.0.0.1:8788");
+	});
+});
 
 function dec(partial: Partial<ToastDecision>): ToastDecision {
 	return {

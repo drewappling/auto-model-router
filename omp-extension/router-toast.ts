@@ -12,17 +12,45 @@
  *   extensions:
  *     - /path/to/omp-router/omp-extension/router-toast.ts
  *
- * The router base URL can be overridden with the OMP_ROUTER_URL env var; it
- * defaults to http://127.0.0.1:8787 (the router's default port). When the
- * router is configured with `server.apiKey`, set OMP_ROUTER_API_KEY so the
- * poll authenticates.
+ * The router base URL is resolved in this order:
+ *   1. `OMP_ROUTER_URL`
+ *   2. `server.host`/`server.port` from the router's own
+ *      `$OMP_ROUTER_HOME/config.yml` — the same file the router reads, so the
+ *      extension can never drift from the port the router actually listens on
+ *   3. `http://127.0.0.1:8787` (the built-in default port)
+ *
+ * Step 2 matters: hardcoding 8787 silently polls whatever else happens to own
+ * that port when the router has been moved, and the toasts just never appear.
+ *
+ * When the router is configured with `server.apiKey`, set OMP_ROUTER_API_KEY so
+ * the poll authenticates.
  */
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { parse as parseYaml } from "yaml";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
+import { newestId, resolveRouterUrl, selectToasts, type ToastDecision } from "./toast-logic.ts";
 
-const ROUTER_URL = process.env.OMP_ROUTER_URL ?? "http://127.0.0.1:8787";
+/** Raw router config.yml, or null when there is none to read. */
+function readRouterConfig(): string | null {
+	const raw = process.env.OMP_ROUTER_HOME ?? join(homedir(), ".omp-router");
+	const home =
+		raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
+	const path = join(home, "config.yml");
+	if (!existsSync(path)) return null;
+	try {
+		return readFileSync(path, "utf8");
+	} catch {
+		return null;
+	}
+}
+
+const ROUTER_URL = resolveRouterUrl(process.env.OMP_ROUTER_URL, readRouterConfig(), parseYaml);
 const ROUTER_API_KEY = process.env.OMP_ROUTER_API_KEY;
 // This harness's id, matching the X-Omp-Harness header the router records.
 // Empty ⇒ toast every harness (single-harness default).
