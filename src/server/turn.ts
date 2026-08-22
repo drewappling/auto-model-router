@@ -24,6 +24,16 @@ import { UpstreamError, type Dispatch, type UpstreamClient } from "../upstream/t
 import { createLogger } from "../util/log.ts";
 import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk } from "../wire/types.ts";
 
+/**
+ * Same-tier failovers allowed per turn. A retryable upstream error (404
+ * model_unavailable, 429 rate_limit, 5xx upstream_error) indicts the slug,
+ * not the tier, so a failed model is first swapped for a sibling. Bounded
+ * because an exhausted tier must escalate rather than spin through the whole
+ * catalog while the client waits; `escalation.maxAttempts` caps total
+ * attempts regardless.
+ */
+const MAX_SAME_TIER_FAILOVERS = 2;
+
 export interface TurnDeps {
 	config: RouterConfig;
 	router: Router;
@@ -61,20 +71,33 @@ export async function runTurn(
 	const maxAttempts = Math.max(1, config.escalation.maxAttempts);
 	let escalateFrom: Tier | undefined;
 	let escalations = 0;
-	let sameTierRetryUsed = false;
+	// Slugs that returned a retryable upstream error on THIS turn, fed back
+	// into routing as excludeSlugs so a failover retry cannot re-pick the
+	// model that just failed.
+	const failedSlugs: string[] = [];
+	let sameTierFailovers = 0;
+	// A failover decision already routed inside onUpstreamError; the next
+	// loop iteration dispatches it instead of routing again.
+	let pendingDecision: Decision | null = null;
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		// Client disconnected before anything was dispatched: spend nothing.
 		if (signal.aborted) return;
 
 		let decision: Decision;
-		try {
-			const opts: { attempt: number; escalateFrom?: Tier } = { attempt };
-			if (escalateFrom !== undefined) opts.escalateFrom = escalateFrom;
-			decision = await router.route(req, opts);
-		} catch (err) {
-			await sink.error({ status: 500, code: "router_error", message: err instanceof Error ? err.message : String(err) });
-			return;
+		if (pendingDecision !== null) {
+			decision = pendingDecision;
+			pendingDecision = null;
+		} else {
+			try {
+				const opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] } = { attempt };
+				if (escalateFrom !== undefined) opts.escalateFrom = escalateFrom;
+				if (failedSlugs.length > 0) opts.excludeSlugs = failedSlugs;
+				decision = await router.route(req, opts);
+			} catch (err) {
+				await sink.error({ status: 500, code: "router_error", message: err instanceof Error ? err.message : String(err) });
+				return;
+			}
 		}
 
 		const body = req.renderUpstreamBody({
@@ -157,23 +180,44 @@ export async function runTurn(
 				await sink.error(uerr.toWireError());
 				return "done";
 			}
-			if (uerr.retryable && !sameTierRetryUsed) {
-				// A 429 says nothing about the model's competence — retry the same
-				// tier once before concluding anything.
-				sameTierRetryUsed = true;
-				await writeEntry({ wasted: true, escalationSignal: null, error: `${uerr.kind}: ${uerr.message}` });
-				return "retry";
-			}
-			const topTier = TIER_ORDER[TIER_ORDER.length - 1];
-			if (uerr.retryable && attempt + 1 < maxAttempts && decision.tier !== topTier) {
-				escalations++;
-				escalateFrom = decision.tier;
-				await writeEntry({
-					wasted: true,
-					escalationSignal: "upstream_error",
-					error: `${uerr.kind}: ${uerr.message}`,
-				});
-				return "retry";
+			if (uerr.retryable && attempt + 1 < maxAttempts) {
+				failedSlugs.push(decision.slug);
+				if (sameTierFailovers < MAX_SAME_TIER_FAILOVERS) {
+					// Before jumping a tier, try a DIFFERENT model in the same
+					// tier: a 404/429/5xx indicts the slug, not the tier.
+					let failover: Decision | null = null;
+					try {
+						failover = await router.route(req, { attempt: attempt + 1, excludeSlugs: failedSlugs });
+					} catch {
+						// A routing failure here must not kill the turn; tier
+						// escalation below may still find a model.
+						failover = null;
+					}
+					if (failover !== null && failover.tier === decision.tier && !failedSlugs.includes(failover.slug)) {
+						sameTierFailovers++;
+						failover.reasons = [
+							...failover.reasons,
+							`failover: ${decision.slug} returned ${uerr.kind}; retrying ${failover.slug} in ${failover.tier}`,
+						];
+						pendingDecision = failover;
+						await writeEntry({ wasted: true, escalationSignal: null, error: `${uerr.kind}: ${uerr.message}` });
+						return "retry";
+					}
+					// No different candidate at this tier — the router widened on
+					// its own or only the failed slug qualifies. Fall through to
+					// tier escalation.
+				}
+				const topTier = TIER_ORDER[TIER_ORDER.length - 1];
+				if (decision.tier !== topTier) {
+					escalations++;
+					escalateFrom = decision.tier;
+					await writeEntry({
+						wasted: true,
+						escalationSignal: "upstream_error",
+						error: `${uerr.kind}: ${uerr.message}`,
+					});
+					return "retry";
+				}
 			}
 			// Non-retryable, or out of runway: fail the turn openly.
 			await writeEntry({ wasted: false, escalationSignal: null, error: `${uerr.kind}: ${uerr.message}` });

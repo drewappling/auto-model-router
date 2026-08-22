@@ -23,7 +23,7 @@ import type {
 	WireError,
 } from "../src/wire/types.ts";
 
-// ---------- fakes ----------
+// ---------- fakes (mirrors turn.test.ts; the router also records excludeSlugs) ----------
 
 function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
@@ -194,12 +194,18 @@ function mkUpstream(plans: FakePlan[]): { upstream: UpstreamClient; calls: Dispa
 	return { upstream, calls };
 }
 
-function mkRouter(decisions: Decision[]): { router: Router; calls: { attempt: number; escalateFrom?: Tier }[] } {
-	const calls: { attempt: number; escalateFrom?: Tier }[] = [];
+type RouteCall = { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] };
+
+function mkRouter(decisions: Decision[]): { router: Router; calls: RouteCall[] } {
+	const calls: RouteCall[] = [];
 	let i = 0;
 	const router: Router = {
 		route: (_req, opts) => {
-			calls.push(opts.escalateFrom !== undefined ? { attempt: opts.attempt, escalateFrom: opts.escalateFrom } : { attempt: opts.attempt });
+			const call: RouteCall = { attempt: opts.attempt };
+			if (opts.escalateFrom !== undefined) call.escalateFrom = opts.escalateFrom;
+			// Copy: runTurn passes its live failedSlugs array, which keeps growing.
+			if (opts.excludeSlugs !== undefined) call.excludeSlugs = [...opts.excludeSlugs];
+			calls.push(call);
 			const d = decisions[Math.min(i, decisions.length - 1)];
 			i++;
 			if (!d) return Promise.reject(new Error("no decision queued"));
@@ -291,136 +297,109 @@ function textOut(chunks: UpstreamChunk[]): string {
 		.join("");
 }
 
+function okChunks(slug: string): UpstreamChunk[] {
+	return [startChunk(slug), textChunk("done"), finishChunk("stop"), usageChunk({ promptTokens: 100, completionTokens: 5 }, 0.001)];
+}
+
 // ---------- tests ----------
 
-describe("runTurn", () => {
-	test("a clean cheap-tier generation writes exactly one ledger entry, wasted: false", async () => {
-		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" })]);
-		const { upstream } = mkUpstream([
-			{
-				kind: "chunks",
-				chunks: [
-					startChunk("cheap/model"),
-					textChunk("hi"),
-					finishChunk("stop"),
-					usageChunk({ promptTokens: 120, cachedTokens: 100, completionTokens: 4 }, 0.0004),
-				],
-			},
+describe("same-tier failover", () => {
+	test("a retryable 404 on model A dispatches a DIFFERENT model B at the same tier", async () => {
+		const { router, calls } = mkRouter([mkDecision("moderate", "a/model"), mkDecision("moderate", "b/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("model_unavailable", 404, "no endpoints found", true) },
+			{ kind: "chunks", chunks: okChunks("b/model") },
 		]);
-		const { ledger, entries } = mkLedger();
-		const { store, map } = mkConversations();
-		const { sink, chunks, errors, finishes } = mkSink();
-
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
-
-		expect(errors).toHaveLength(0);
-		expect(finishes).toHaveLength(1);
-		expect(entries).toHaveLength(1);
-		const entry = entries[0]!;
-		expect(entry.wasted).toBe(false);
-		expect(entry.escalationSignal).toBeNull();
-		expect(entry.attempt).toBe(0);
-		expect(entry.slug).toBe("cheap/model");
-		expect(entry.servedSlug).toBe("cheap/model");
-		expect(entry.reportedUsd).toBe(0.0004);
-		expect(entry.usage.promptTokens).toBe(120);
-		expect(entry.finishReason).toBe("stop");
-		expect(entry.error).toBeNull();
-		expect(chunks).toHaveLength(4);
-		expect(finishes[0]!.escalated).toBe(false);
-		expect(finishes[0]!.attempts).toBe(1);
-
-		const state = map.get("conv-test")!;
-		expect(state.turn).toBe(1);
-		expect(state.currentSlug).toBe("cheap/model");
-		expect(state.currentTier).toBe("trivial");
-		expect(state.lastPromptTokens).toBe(120);
-		expect(state.spentUsd).toBeCloseTo(0.0004);
-		// cachedTokens > 0 is direct evidence of an upstream cache.
-		expect(state.cacheWarmSlug).toBe("cheap/model");
-		expect(state.cacheWarmAtMs).toBeGreaterThan(0);
-	});
-
-	test("an escalated turn writes two entries; the client sees only the second generation", async () => {
-		const { router, calls } = mkRouter([
-			mkDecision("trivial", "cheap/model", { escalateTo: "simple" }),
-			mkDecision("simple", "better/model", { escalateTo: "moderate" }),
-		]);
-		const { upstream } = mkUpstream([
-			{
-				kind: "chunks",
-				chunks: [startChunk("cheap/model"), textChunk("I'm sorry, but I can't help with that request."), finishChunk("stop")],
-			},
-			{
-				kind: "chunks",
-				chunks: [startChunk("better/model"), textChunk("Here is the answer."), finishChunk("stop"), usageChunk({ promptTokens: 130, completionTokens: 6 }, 0.0009)],
-			},
-		]);
-		const { ledger, entries } = mkLedger();
-		const { store } = mkConversations();
-		const { sink, chunks, errors, finishes } = mkSink();
-
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
-
-		expect(errors).toHaveLength(0);
-		expect(entries).toHaveLength(2);
-		expect(entries[0]!.wasted).toBe(true);
-		expect(entries[0]!.escalationSignal).toBe("refusal");
-		expect(entries[0]!.slug).toBe("cheap/model");
-		expect(entries[0]!.attempt).toBe(0);
-		expect(entries[1]!.wasted).toBe(false);
-		expect(entries[1]!.attempt).toBe(1);
-		expect(entries[1]!.slug).toBe("better/model");
-
-		// The escalated attempt re-routed one tier up.
-		expect(calls).toHaveLength(2);
-		expect(calls[0]).toEqual({ attempt: 0 });
-		expect(calls[1]).toEqual({ attempt: 1, escalateFrom: "trivial" });
-
-		// The held refusal text never reached the client.
-		expect(textOut(chunks)).toBe("Here is the answer.");
-		expect(finishes).toHaveLength(1);
-		expect(finishes[0]!.escalated).toBe(true);
-		expect(finishes[0]!.attempts).toBe(2);
-		expect(finishes[0]!.servedSlug).toBe("better/model");
-	});
-
-	test("a committed stream is never retried, even when later chunks fail", async () => {
-		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { maxTokens: 1 })]);
-		const { upstream, calls } = mkUpstream([
-			{
-				kind: "die",
-				chunks: [startChunk("cheap/model"), textChunk("lots of text here, plenty to commit on")],
-				error: new UpstreamError("rate_limit", 429, "slow down", true),
-			},
-		]);
-		const { ledger, entries } = mkLedger();
-		const { store } = mkConversations();
-		const { sink, chunks, errors, finishes } = mkSink();
-
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
-
-		// Bytes reached the client, so the 429 mid-stream is surfaced, not retried.
-		expect(calls).toHaveLength(1);
-		expect(entries).toHaveLength(1);
-		expect(entries[0]!.wasted).toBe(false);
-		expect(entries[0]!.error).toContain("rate_limit");
-		expect(textOut(chunks)).toBe("lots of text here, plenty to commit on");
-		expect(errors).toHaveLength(1);
-		expect(errors[0]!.code).toBe("rate_limit");
-		expect(finishes).toHaveLength(0);
-	});
-
-	test("a non-retryable upstream error before commit reaches sink.error", async () => {
-		const { router, calls } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" })]);
-		const { upstream } = mkUpstream([{ kind: "fail", error: new UpstreamError("auth", 401, "invalid key", false) }]);
 		const { ledger, entries } = mkLedger();
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
 		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
 
-		expect(calls).toHaveLength(1); // no retry, no escalation on auth
+		expect(errors).toHaveLength(0);
+		expect(finishes).toHaveLength(1);
+
+		// The retry re-routed with the failed slug excluded and dispatched B at
+		// the SAME tier — not A again, not a higher tier.
+		expect(calls).toHaveLength(2);
+		expect(calls[0]).toEqual({ attempt: 0 });
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+
+		expect(entries).toHaveLength(2);
+		expect(entries[0]!.slug).toBe("a/model");
+		expect(entries[0]!.wasted).toBe(true);
+		expect(entries[0]!.escalationSignal).toBeNull(); // failover, not escalation
+		expect(entries[0]!.error).toContain("model_unavailable");
+		expect(entries[1]!.slug).toBe("b/model");
+		expect(entries[1]!.tier).toBe("moderate");
+		expect(entries[1]!.wasted).toBe(false);
+
+		// The failover is visible on the surviving decision's reasons.
+		expect(entries[1]!.reasons).toContain("failover: a/model returned model_unavailable; retrying b/model in moderate");
+
+		expect(finishes[0]!.servedSlug).toBe("b/model");
+		expect(finishes[0]!.tier).toBe("moderate");
+		expect(finishes[0]!.escalated).toBe(false);
+		expect(finishes[0]!.attempts).toBe(2);
+	});
+
+	test("a tier with no other eligible model falls back to tier escalation", async () => {
+		// The router widens to "simple" when "trivial" excludes a/model: the
+		// failover probe's decision is discarded and the normal escalation path
+		// (escalateFrom + upstream_error signal) runs instead.
+		const { router, calls } = mkRouter([
+			mkDecision("trivial", "a/model"),
+			mkDecision("simple", "b/model"),
+			mkDecision("simple", "b/model"),
+		]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("model_unavailable", 404, "no endpoints found", true) },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(finishes).toHaveLength(1);
+
+		expect(calls).toHaveLength(3);
+		expect(calls[0]).toEqual({ attempt: 0 });
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] }); // failover probe, rejected (wrong tier)
+		expect(calls[2]).toEqual({ attempt: 1, escalateFrom: "trivial", excludeSlugs: ["a/model"] }); // real escalation
+
+		// a/model is never re-dispatched; the turn escalated to simple.
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+
+		expect(entries).toHaveLength(2);
+		expect(entries[0]!.wasted).toBe(true);
+		expect(entries[0]!.escalationSignal).toBe("upstream_error");
+		expect(entries[1]!.slug).toBe("b/model");
+		expect(entries[1]!.tier).toBe("simple");
+		expect(entries[1]!.wasted).toBe(false);
+		expect(entries[1]!.reasons.some((r) => r.startsWith("failover:"))).toBe(false);
+
+		expect(finishes[0]!.escalated).toBe(true);
+		expect(finishes[0]!.servedSlug).toBe("b/model");
+	});
+
+	test("a non-retryable error fails fast with no failover and no re-route", async () => {
+		const { router, calls } = mkRouter([mkDecision("trivial", "a/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("auth", 401, "invalid key", false) },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toEqual({ attempt: 0 }); // never re-routed, never given excludeSlugs
+		expect(dispatches).toHaveLength(1);
 		expect(finishes).toHaveLength(0);
 		expect(errors).toHaveLength(1);
 		expect(errors[0]).toEqual({ status: 401, code: "auth", message: "invalid key" });
@@ -429,39 +408,87 @@ describe("runTurn", () => {
 		expect(entries[0]!.error).toContain("auth");
 	});
 
-	test("a 429 before commit fails over to a different model in the same tier", async () => {
+	test("same-tier failover is bounded; the next retryable failure escalates", async () => {
 		const { router, calls } = mkRouter([
-			mkDecision("trivial", "cheap/model", { escalateTo: "simple" }),
-			mkDecision("trivial", "spare/model", { escalateTo: "simple" }),
+			mkDecision("trivial", "a/model"),
+			mkDecision("trivial", "b/model"),
+			mkDecision("trivial", "c/model"),
+			mkDecision("simple", "d/model"),
 		]);
-		const { upstream } = mkUpstream([
+		const { upstream, calls: dispatches } = mkUpstream([
 			{ kind: "fail", error: new UpstreamError("rate_limit", 429, "slow down", true) },
-			{ kind: "chunks", chunks: [startChunk("spare/model"), textChunk("done"), finishChunk("stop"), usageChunk({}, 0.001)] },
+			{ kind: "fail", error: new UpstreamError("rate_limit", 429, "slow down", true) },
+			{ kind: "fail", error: new UpstreamError("rate_limit", 429, "slow down", true) },
+			{ kind: "chunks", chunks: okChunks("d/model") },
 		]);
 		const { ledger, entries } = mkLedger();
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(
+			mkReq(),
+			sink,
+			{ config: mkConfig({ maxAttempts: 5 }), router, upstream, ledger, conversations: store, catalog },
+			new AbortController().signal,
+		);
 
 		expect(errors).toHaveLength(0);
 		expect(finishes).toHaveLength(1);
+
+		// Two same-tier failovers (A→B, B→C), then the bound bites and the
+		// third failure escalates to simple instead of spinning further.
+		expect(calls).toHaveLength(4);
+		expect(calls[0]).toEqual({ attempt: 0 });
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(calls[2]).toEqual({ attempt: 2, excludeSlugs: ["a/model", "b/model"] });
+		expect(calls[3]).toEqual({ attempt: 3, escalateFrom: "trivial", excludeSlugs: ["a/model", "b/model", "c/model"] });
+
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model", "c/model", "d/model"]);
+
+		expect(entries).toHaveLength(4);
+		expect(entries[0]!.escalationSignal).toBeNull();
+		expect(entries[1]!.escalationSignal).toBeNull();
+		expect(entries[1]!.reasons).toContain("failover: a/model returned rate_limit; retrying b/model in trivial");
+		expect(entries[2]!.escalationSignal).toBe("upstream_error"); // bound hit: escalate
+		expect(entries[2]!.reasons).toContain("failover: b/model returned rate_limit; retrying c/model in trivial");
+		expect(entries[3]!.slug).toBe("d/model");
+		expect(entries[3]!.tier).toBe("simple");
+		expect(entries[3]!.wasted).toBe(false);
+
+		expect(finishes[0]!.escalated).toBe(true);
+		expect(finishes[0]!.attempts).toBe(4);
+		expect(finishes[0]!.servedSlug).toBe("d/model");
+	});
+
+	test("a mid-stream retryable error before commit fails over the same way", async () => {
+		const { router, calls } = mkRouter([mkDecision("simple", "a/model"), mkDecision("simple", "b/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{
+				kind: "die",
+				chunks: [startChunk("a/model")],
+				error: new UpstreamError("upstream_error", 500, "provider crashed", true),
+			},
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, chunks, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+
 		expect(entries).toHaveLength(2);
 		expect(entries[0]!.wasted).toBe(true);
-		expect(entries[0]!.error).toContain("rate_limit");
-		expect(entries[0]!.escalationSignal).toBeNull(); // same-tier failover, not an escalation
-		expect(entries[0]!.slug).toBe("cheap/model");
-		expect(entries[1]!.wasted).toBe(false);
-		expect(entries[1]!.slug).toBe("spare/model");
-		expect(entries[1]!.tier).toBe("trivial");
+		expect(entries[0]!.escalationSignal).toBeNull();
+		expect(entries[0]!.error).toContain("upstream_error");
 
-		// The failover re-routes at attempt 1 without escalateFrom; the accepted
-		// decision is dispatched by attempt 1 without routing again.
-		expect(calls).toHaveLength(2);
-		expect(calls[0]).toEqual({ attempt: 0 });
-		expect(calls[1]).toEqual({ attempt: 1 });
-		expect(finishes[0]!.escalated).toBe(false);
-		expect(finishes[0]!.attempts).toBe(2);
-		expect(finishes[0]!.servedSlug).toBe("spare/model");
+		// Nothing from the failed generation reached the client.
+		expect(textOut(chunks)).toBe("done");
+		expect(finishes).toHaveLength(1);
+		expect(finishes[0]!.servedSlug).toBe("b/model");
 	});
 });
