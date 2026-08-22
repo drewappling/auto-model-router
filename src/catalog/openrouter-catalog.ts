@@ -289,6 +289,20 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		try {
 			const payload: unknown = JSON.parse(row.payload);
 			if (!Array.isArray(payload)) return null;
+			// A key-scoped payload written before benchmarks were joined on has no
+			// scores at all, which silently empties every tier above `trivial`.
+			// Treat that as a stale cache and force a network refresh rather than
+			// booting into the broken state for a whole refresh interval.
+			if (row.key_scoped === 1 && payload.length > 0) {
+				const anyScored = payload.some((record) => {
+					const rec = asRecord(record);
+					return rec !== null && rec.benchmarks !== undefined && rec.benchmarks !== null;
+				});
+				if (!anyScored) {
+					log.warn("cached key-scoped catalog carries no benchmarks; refetching to restore tier floors");
+					return null;
+				}
+			}
 			// Provenance is persisted, not inferred from the current key: a payload
 			// written by a keyless run or the public fallback must not be advertised
 			// as key-scoped.

@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 3;
+const USER_VERSION = 4;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -94,6 +94,30 @@ const MIGRATE_V3 = `
 ALTER TABLE ledger ADD COLUMN harness_id TEXT NOT NULL DEFAULT '';
 `;
 
+// v4: ledger gains error_kind, so per-model trust can count only failures the
+// MODEL is responsible for. Before this, any non-null `error` counted against a
+// model's reliability — including client aborts, account-level auth/policy
+// refusals, and guardrail `model_unavailable`, none of which say anything about
+// the model's quality. Those spurious demotions shrink the candidate pool and
+// push traffic onto a handful of survivors.
+//
+// Existing rows are backfilled from the stored `error` text, which turn.ts
+// writes as `"<kind>: <message>"` (the abort path writes the bare message
+// "request aborted"). Anything unrecognised stays NULL and is treated as
+// model-attributable, preserving the old, stricter behaviour for rows we
+// cannot classify.
+const MIGRATE_V4 = `
+ALTER TABLE ledger ADD COLUMN error_kind TEXT;
+
+UPDATE ledger SET error_kind = CASE
+  WHEN error IS NULL THEN NULL
+  WHEN error = 'request aborted' THEN 'aborted'
+  WHEN instr(error, ': ') > 0 THEN substr(error, 1, instr(error, ': ') - 1)
+  ELSE NULL
+END
+WHERE error IS NOT NULL;
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -109,6 +133,7 @@ export function openDb(path: string): Database {
 		if (!cacheCols.some((c) => c.name === "key_scoped")) db.exec(MIGRATE_V2);
 		const ledgerCols = db.query("PRAGMA table_info(ledger)").all() as { name: string }[];
 		if (!ledgerCols.some((c) => c.name === "harness_id")) db.exec(MIGRATE_V3);
+		if (!ledgerCols.some((c) => c.name === "error_kind")) db.exec(MIGRATE_V4);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

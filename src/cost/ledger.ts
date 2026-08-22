@@ -65,12 +65,46 @@ interface CalibrationRow {
 	samples: number;
 }
 
+/**
+ * Error kinds that say nothing about a MODEL's reliability, and so must not
+ * count against its trust:
+ *  - `aborted`: the client hung up (user pressed escape mid-turn).
+ *  - `auth`: credential, credit, or account-policy refusal (age confirmation,
+ *    prompt-injection blocking) — identical for every model on the key.
+ *  - `model_unavailable`: the guardrail or data policy excludes the endpoint;
+ *    an availability fact, not a quality one, and failover already handles it.
+ *
+ * Everything else (upstream_error, timeout, network, rate_limit, …) stays
+ * attributable. A NULL `error_kind` on a row that HAS an error is an
+ * unclassifiable legacy row and stays attributable, preserving the old,
+ * stricter behaviour rather than silently forgiving it.
+ */
+const UNATTRIBUTABLE_KINDS = "('aborted', 'auth', 'model_unavailable')";
+
+const ATTRIBUTABLE_ERROR = `error IS NOT NULL AND (error_kind IS NULL OR error_kind NOT IN ${UNATTRIBUTABLE_KINDS})`;
+
 const TRUST_SELECT = `COUNT(*) AS attempts,
 		COALESCE(SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END), 0) AS escalations,
-		COALESCE(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), 0) AS errors,
-		COALESCE(SUM(CASE WHEN escalation_signal IS NOT NULL OR error IS NOT NULL THEN 1 ELSE 0 END), 0) AS failures,
+		COALESCE(SUM(CASE WHEN ${ATTRIBUTABLE_ERROR} THEN 1 ELSE 0 END), 0) AS errors,
+		COALESCE(SUM(CASE WHEN escalation_signal IS NOT NULL OR (${ATTRIBUTABLE_ERROR}) THEN 1 ELSE 0 END), 0) AS failures,
 		AVG(CASE WHEN reported_usd IS NOT NULL AND reported_usd > 0
 			THEN ABS(reported_usd - predicted_usd) / reported_usd END) AS mean_cost_error`;
+
+/**
+ * Recovers the `UpstreamErrorKind` from the text turn.ts stored.
+ *
+ * Errors are written as `"<kind>: <message>"`, except the abort path which
+ * writes the bare message. Returning null for anything unrecognised keeps that
+ * row model-attributable — the stricter reading — rather than quietly
+ * forgiving a failure we cannot classify.
+ */
+function errorKindOf(error: string | null): string | null {
+	if (error === null) return null;
+	if (error === "request aborted") return "aborted";
+	const sep = error.indexOf(": ");
+	if (sep <= 0) return null;
+	return error.slice(0, sep);
+}
 
 function toTrust(slug: string, row: TrustRow): ModelTrust {
 	// Laplace smoothing: an untried model scores a neutral 1/2, and a failure
@@ -119,8 +153,9 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		`INSERT INTO ledger (
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
-			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
+			error_kind
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -197,6 +232,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.wasted ? 1 : 0,
 				entry.upstreamGenerationId,
 				entry.error,
+				errorKindOf(entry.error),
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only
