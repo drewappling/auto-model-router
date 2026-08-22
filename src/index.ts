@@ -12,7 +12,6 @@ import { parseArgv } from "./cli/args.ts";
 import { configCommand } from "./cli/config-cmd.ts";
 import { explainCommand } from "./cli/explain.ts";
 import { modelsCommand } from "./cli/models.ts";
-import { serveCommand } from "./cli/serve.ts";
 import { statsCommand } from "./cli/stats.ts";
 
 const USAGE = `omp-router - local cost/complexity-aware model router for omp, backed by OpenRouter
@@ -20,7 +19,6 @@ const USAGE = `omp-router - local cost/complexity-aware model router for omp, ba
 Usage: omp-router <command> [options]
 
 Commands:
-  serve      Run the routing server (OpenAI-compatible endpoint)
   stats      Show routed spend, per-model share, and escalation rates
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
@@ -33,7 +31,6 @@ Global options:
   --version         Show version
 
 Command options:
-  serve    --port <n>  --host <addr>  --log <level>
   stats    --days <n>  --json
   models   --tier <trivial|simple|moderate|hard>  --limit <n>  --json
   explain  --file <request.json>  --json          (reads stdin when --file is absent)
@@ -67,10 +64,6 @@ async function main(): Promise<number> {
 	}
 
 	switch (args.command) {
-		case "serve":
-			// Resolves once listening; the server itself keeps the loop alive.
-			await serveCommand(args);
-			return 0;
 		case "stats":
 			await statsCommand(args);
 			return 0;

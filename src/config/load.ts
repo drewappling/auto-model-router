@@ -49,7 +49,7 @@ function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
  *   <- `opts.overrides`
  *
  * A missing OpenRouter API key is NOT an error here: catalog refresh and
- * `omp-router config` work keyless; `serve` warns at startup and completions
+ * config work keyless; an embedded router warns at startup and completions
  * fail at dispatch time.
  */
 export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterConfig> }): RouterConfig {

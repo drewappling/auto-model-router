@@ -8,7 +8,6 @@
     "omp-router": "./src/index.ts"
   },
   "scripts": {
-    "serve": "bun run src/index.ts serve",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run tools/smoke.ts"

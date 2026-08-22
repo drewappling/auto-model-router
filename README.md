@@ -9,6 +9,10 @@ tool-loop churn to genuine reasoning work.
 All LLM inference is offloaded to OpenRouter. Nothing runs on-device except
 routing arithmetic.
 
+omp-router runs **embedded inside the omp process** (as an omp extension) — no
+separate server, no orphaned process. It binds a free OS-assigned port and
+lives and dies with the omp session.
+
 ## Why this exists when OpenRouter already ships routers
 
 OpenRouter has `openrouter/auto` (market-spend classifier) and
@@ -31,7 +35,7 @@ This router exists for the things a prompt classifier structurally cannot do:
 
 ```mermaid
 graph LR
-  omp[omp] -->|OpenAI chat completions| wire[wire/openai]
+  omp[omp process] -->|OpenAI chat completions| wire[wire/openai]
   wire -->|NormRequest| router[router]
   catalog[catalog<br/>OpenRouter /models] --> router
   cost[cost<br/>forecast + ledger] --> router
@@ -42,22 +46,24 @@ graph LR
   guard -->|usage + reported cost| cost
 ```
 
-The core never parses a wire format. A front end produces a `NormRequest` and
-consumes `UpstreamChunk`s, so a `pi-native` front end (omp's lossless canonical
-transport, `POST /v1/pi/stream`) can be added later without touching routing.
+The router runs in-process inside omp via the `router-embed` extension. The
+core never parses a wire format. A front end produces a `NormRequest` and
+consumes `UpstreamChunk`s, so a `pi-native` front end can be added later
+without touching routing.
 
 ### Module map
 
 | Path | Responsibility |
 | --- | --- |
-| `src/catalog/` | Fetch and normalize `GET /api/v1/models`: pricing (including `pricing.overrides` long-context tiers), capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. |
+| `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. |
 | `src/cost/` | Cost forecasting per candidate; reconciliation against OpenRouter's authoritative `usage.cost`; the spend ledger; per-model trust; rolling blended rate. |
 | `src/tokens/` | Token estimation with no tokenizer dependency, self-calibrating from observed `prompt_tokens` per tokenizer family. |
-| `src/wire/` | Protocol boundary. `wire/openai/` implements chat completions in and SSE out, with verbatim passthrough of fields the core does not model. |
+| `src/wire/` | Protocol boundary. `wire/openai/` implements chat completions in and SSE out. |
 | `src/router/` | Feature extraction, complexity classification, candidate filtering and scoring, hysteresis, cache-breakpoint placement, budget guard, probe planning. |
 | `src/upstream/` | OpenRouter transport: streaming dispatch, `session_id` stickiness, error classification, fallback arrays. |
-| `src/server/` | `Bun.serve` HTTP surface. |
-| `src/cli/` | `serve`, `stats`, `models`, `explain`, `config`. |
+| `src/config/` | Configuration loading, schema validation, and the built-in defaults. |
+| `src/cli/` | `stats`, `models`, `explain`, `config` commands. |
+| `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts`. |
 
 ### Two cost numbers, never conflated
 
@@ -67,54 +73,26 @@ transport, `POST /v1/pi/stream`) can be added later without touching routing.
 - **Reported** — `usage.cost` from OpenRouter, authoritative after the fact.
   Drives the ledger, `stats`, and prediction-error calibration.
 
-## Setup
+## Requirements
 
-```bash
-bun install
-```
+- **omp** (the Oh My Pi harness) — the router runs as an omp extension.
+- **Bun** `>= 1.2.0` — omp itself is a Bun process; the router code runs inside
+  it. No separate Bun install is needed for the embedded path.
 
-There are two ways to run the router. The primary one runs it **in-process
-inside omp** — no separate service, no orphaned process, no "is the server
-running?"; it lives and dies with the omp session. The standalone `serve` still
-exists for sharing one instance across several harnesses or machines.
+## Installation
 
-### Run it embedded in omp (primary)
-
-Add the embed extension to omp's `extensions:` list, plus the toast extension
-if you want chosen-model toasts:
+There is nothing to install system-wide. Add the extension paths to omp's
+`~/.omp/agent/config.yml`:
 
 ```yaml
 # ~/.omp/agent/config.yml
 extensions:
   - /path/to/omp-router/omp-extension/router-embed.ts
-  - /path/to/omp-router/omp-extension/router-toast.ts
-  - /path/to/omp-router/omp-extension/router-configure.ts
+  - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
+  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router configure command
 ```
 
-At session start the embed extension:
-
-- starts the router **inside the omp process**, binding a **free OS-assigned
-  port** (`Bun.serve({ port: 0 })`) so several omp sessions can run at once
-  without ever colliding on a fixed port;
-- writes the actual bound port to `$OMP_ROUTER_HOME/embed.port` so the toast
-  extension can find it;
-- registers an `omp-router` provider with omp (the `auto`, `auto-cheap`,
-  `auto-max` models) pointing at `http://127.0.0.1:$PORT/v1`, where `$PORT`
-  is the port it actually bound.
-
-Set `OMP_ROUTER_PORT` to pin a specific port instead of a random one (rarely
-needed). The router lives and dies with the session — no orphan process, no
-"is the router running?" The `X-Omp-Harness` header (from `server.harnessId`)
-scopes budgets, toasts, and optional trust per harness.
-
-### Run it as a separate service
-
-```bash
-bun run serve   # binds 127.0.0.1:8788 by default
-```
-
-Do not run `bun run serve` and the embed extension in the same process
-namespace on the same port — that is a bind conflict.
+Then restart the omp session (extensions load at session start).
 
 ### The OpenRouter key
 
@@ -132,39 +110,65 @@ refreshing is omp's job and a stale bearer just burns a turn on a 401. Under
 `OMP_AUTH_BROKER_URL` the local store is not consulted at all, since a broker
 replaces it.
 
-The standalone `serve` prints the key provenance at startup and `GET /health`
-reports `apiKeySource` (`config` | `env` | `omp-auth-store` | `none`) — never
-the key itself.
+The embedded router reports the key source via its in-process `GET /health`
+(`config` | `env` | `omp-auth-store` | `none`) — never the key itself.
 
-## Toast notifications for the chosen model
+---
 
-omp-router is headless and cannot draw into omp's TUI, so chosen-model toasts
-come from a small omp extension that polls the router's decision ledger:
+## How it runs
 
-```ts
-// omp-extension/router-toast.ts  (shipped in this repo)
-```
+At session start, `router-embed.ts`:
 
-It raises a TUI toast (`ctx.ui.notify`) like
-`meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
-Install it by adding the file's absolute path to omp's `extensions:` list
-(alongside the embed extension above):
+1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
+   sessions never collide on a fixed port;
+2. writes the actual bound port to `$OMP_ROUTER_HOME/embed.port`;
+3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
+   virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
 
-## Configure the router from inside omp
+The router lives and dies with the omp session — no orphan process, no "is the
+server running?" stopping the omp process frees the port automatically.
 
-`/router configure` edits the router's settings through omp's native UI
-dialogs instead of a text wizard. It walks the same sections and fields as
-`omp-router config` (reusing `WIZARD_SECTIONS` and `PROFILE_FIELDS`) and
-persists through the same validated, backed-up merge
-(`writeRouterConfig`), so edits are schema-checked before they land.
+### Multiple omp sessions, one machine
+
+Each omp process gets its own ephemeral port, so they never conflict. The
+`X-Omp-Harness` header (from `server.harnessId`) scopes budgets, toasts, and
+optional trust per harness.
+
+---
+
+## Selecting the provider / model
+
+The router registers three virtual models under the `omp-router` provider:
+
+| Profile | Min tier | Max tier | Use |
+| --- | --- | --- | --- |
+| `auto` | trivial | hard | Default — routes by complexity across the whole range. |
+| `auto-cheap` | trivial | simple | Cost-first — caps at the `simple` tier. |
+| `auto-max` | moderate | hard | Quality-first — never below `moderate`. |
+
+Select one in omp via `/model` and pick `omp-router/auto` (or one of the
+others). Or set it as the default for a role in `~/.omp/agent/config.yml`:
 
 ```yaml
-# ~/.omp/agent/config.yml
-extensions:
-  - /path/to/omp-router/omp-extension/router-configure.ts
+modelRoles:
+  default: omp-router/auto
 ```
 
-Then restart the omp session and run:
+The router decides the concrete OpenRouter model **per turn**; omp only sees the
+virtual profile it picked. Every routed response carries
+`x-omp-router-model`, `x-omp-router-tier`, `x-omp-router-cost-usd`, and
+`x-omp-router-attempts`.
+
+---
+
+## Configuring the router
+
+There are two ways to edit the router's own config (`$OMP_ROUTER_HOME/config.yml`,
+default `~/.omp-router/config.yml`):
+
+### Via `/router configure` (in-omp, native UI)
+
+Install the `router-configure` extension, restart omp, then run:
 
 ```
 /router configure
@@ -172,16 +176,91 @@ Then restart the omp session and run:
 
 It shows a section picker (Server, OpenRouter, Tiers, Tasks, Filters,
 Classifier, Escalation, Hysteresis, Cache, Budget, Ledger, Logging, Profiles).
-Each section prompts its fields through `ctx.ui` select/input dialogs — an
-empty input keeps the current value, `-` clears an optional field — and
-`Save and exit` writes the merged config (backing up the previous file first).
-Because the router runs embedded in the omp process, restart the omp session
-after saving to pick up the new settings.
+Each field prompts through omp's native UI dialogs — empty input keeps the
+current value, `-` clears an optional field. `Save and exit` writes the merged
+config (schema-checked and backed up first). Restart the omp session after
+saving.
+
+### Via `omp-router config` (text wizard / CLI)
+
+```bash
+omp-router config
+```
+
+Same fields, prompted on the terminal. Also:
+
+- `omp-router config --print` — prints the `models.yml` provider block.
+- `omp-router config --write` — merges that block into omp's `models.yml`.
+
+Both write paths validate the merged file against the schema before touching
+disk and back up the previous file to a timestamped `.bak`.
+
+### Configuration file location
+
+- Router config: `$OMP_ROUTER_HOME/config.yml` (default `~/.omp-router/config.yml`).
+- Ledger DB: `$OMP_ROUTER_HOME/router.db` (SQLite, WAL).
+
+### Environment variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | OpenRouter key (overrides the auth store). | — |
+| `OMP_ROUTER_HOME` | Config + database directory. | `~/.omp-router` |
+| `OMP_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
+| `OMP_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
+| `OMP_ROUTER_DB` | Override the ledger path. | `$OMP_ROUTER_HOME/router.db` |
+| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads `embed.port` first). | — |
+| `OMP_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
+| `OMP_HARNESS_ID` | Per-harness toast scoping. | — |
+
+---
+
+## Default configuration
+
+The built-in defaults (everything below can be overridden in `config.yml`):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `server.host` / `server.port` | `127.0.0.1` / `0` | Bind host; `0` = free OS-assigned port. |
+| `server.apiKey` / `server.harnessId` | unset | Client bearer; harness id for per-harness budgets/toasts. |
+| `openrouter.baseUrl` | `https://openrouter.ai/api/v1` | Upstream. |
+| `openrouter.timeoutMs` | `600000` | Request timeout. |
+| `openrouter.catalogTtlMs` | `21600000` (6 h) | Catalog cache TTL. |
+| `openrouter.catalogRefreshMs` | `300000` (5 min) | Background catalog refetch. |
+| `adaptiveTierFloors` | `true` | Derive tier floors from available models. |
+| `tiers.trivial/simple/moderate/hard.minQuality` | `0/40/60/72` | Quality floors (coding axis). |
+| `tiers.trivial/simple/moderate.maxInputPerMtok` | `0.3/1.5/4.0` | Price ceilings; `hard` has none. |
+| `tiers.*.qualityExponent` | `0/0/1/3` | Price-quality tradeoff per tier. |
+| `tasks.*` | coding/vision/doc/data/chat axes | Task → axis + capability. |
+| `filters.includeFree` | `false` | Free models are rate-limited hard; excluded. |
+| `filters.requireToolSupport` | `true` | Only tool-capable models. |
+| `filters.minTrust` / `minTrustSamples` | `0.7` / `12` | Trust bar; demote flaky models. |
+| `filters.trustScopedByHarness` | `false` | Shared trust across harnesses. |
+| `classifier.ambiguityThreshold` | `0.6` | When to use the adjudicator model. |
+| `escalation.enabled` | `true` | Mid-stream escalation guard. |
+| `escalation.maxAttempts` | `3` | Original try + two retries. |
+| `escalation.triggers` | 5 signals | Malformed args, refusal, empty, repeat, missing tool. |
+| `hysteresis.holdTurns` | `2` | Hold a model this many turns after choosing it. |
+| `hysteresis.switchMargin` | `1.3` | Switching must beat the warm-cache discount. |
+| `cache.injectBreakpoints` / `maxBreakpoints` | `true` / `4` | Prompt-cache breakpoint placement. |
+| `budget.perTurnUsd` / `perConversationUsd` / `perDayUsd` | unset | No caps by default. |
+| `budget.onExceeded` | `downgrade` | Downgrade rather than fail at a ceiling. |
+| `profiles` | `auto`, `auto-cheap`, `auto-max` | The three virtual profiles above. |
+| `ledger.blendWindowDays` / `blendMinSamples` | `7` / `25` | Measured cost blend. |
+| `ledger.fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend for omp's display. |
+| `logLevel` | `info` | |
+
+The full set of configurable fields (the ones `/router configure` walks) is the
+same set `omp config` walks — Server, OpenRouter, Tiers, Tasks, Filters,
+Classifier, Escalation, Hysteresis, Cache, Budgets, Ledger, Logging, plus the
+Profiles list.
+
+---
 
 ## Multiple coding harnesses, one router
 
-A single router instance can serve several omp sessions (or other OpenAI-
-compatible harnesses) without them stepping on each other:
+A single embedded router can serve several omp sessions without them stepping
+on each other:
 
 - **Per-conversation routing** (hysteresis, cache warmth, escalation, spend) is
   keyed by conversation, so different sessions isolate naturally.
@@ -191,87 +270,43 @@ compatible harnesses) without them stepping on each other:
 - **Per-harness toasts** — set `OMP_HARNESS_ID` to the same value so the
   extension only toasts that harness's model choices.
 
-Configure a harness by setting `server.harnessId` and re-running
-`omp-router config --write` (it emits the header); set the same id in that
+Configure a harness by setting `server.harnessId`; set the same id in that
 harness's `OMP_HARNESS_ID` env var.
 
 **Model trust is shared by default** (`filters.trustScopedByHarness: false`):
 every harness's attempts count toward each model's reliability score, so the
 demotion guard converges on more samples and stays effective even with a small
 guardrail-narrowed catalog. Enable `trustScopedByHarness: true` to read each
-harness's reliability from only its own ledger rows — recommended only when
-harnesses route over meaningfully different model sets and each has enough
-traffic to learn its own reliability.
+harness's reliability from only its own ledger rows.
 
+---
 
-## Configuring the router
+## Toast notifications for the chosen model
 
-`omp-router config` opens an interactive wizard over the router's own config
-(`$OMP_ROUTER_HOME/config.yml`, default `~/.omp-router/config.yml`). It covers
-every section — server, openrouter, tiers, tasks, filters, classifier,
-escalation, hysteresis, cache, budget, ledger, logging — plus the `profiles`
-list (add, edit, delete the virtual models omp sees).
+omp-router is headless and cannot draw into omp's TUI, so chosen-model toasts
+come from a small omp extension that polls the router's in-process ledger:
 
-```
-omp-router config
-
-   1) Server            7) Escalation
-   2) OpenRouter        8) Hysteresis
-   3) Tiers             9) Cache
-   4) Tasks            10) Budget
-   5) Filters          11) Ledger
-   6) Classifier       12) Logging
-
-   p) Profiles
-   a) walk every section
-   s) save and exit
-   q) quit without saving
+```ts
+// omp-extension/router-toast.ts  (shipped in this repo)
 ```
 
-At a field prompt the current value is shown in brackets:
+It raises a TUI toast (`ctx.ui.notify`) like
+`meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
+Install it by adding the file's absolute path to omp's `extensions:` list.
 
-- **Enter** keeps it (nothing is written)
-- **`-`** clears an optional field, so the built-in default applies again
-- anything else is validated against the field's type and range, and re-prompts
-  on bad input
+Because the embedded router binds a random port, the toast resolves the router
+base URL on every poll in this order: the embedded router's port file
+(`$OMP_ROUTER_HOME/embed.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
+then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
+port file each tick means the toast always polls the port the router actually
+bound, even though it changes every session.
 
-Only the fields you actually change are written, as a minimal deep-merge
-partial, so hand-edited values and comments elsewhere in the section survive.
-The **merged** file is validated against the config schema before anything is
-written, and the previous file is copied to a timestamped `.bak` first. A clear
-deletes the key outright rather than writing `null`, and prunes the section if
-it ends up empty.
+The toast logic is a pure, unit-tested module
+(`omp-extension/toast-logic.ts`, covered by `test/toast-logic.test.ts`): it
+toasts only decisions newer than the last seen one, skips `wasted` escalation
+attempts, and prefers the actual serving slug over the requested one.
 
-`--config <path>` targets a different config file; the wizard is scriptable
-because it reads plain lines from stdin.
-
-Register it with omp (`omp-router config --print` prints this block; `--write`
-merges it into `~/.omp/agent/models.yml` between guard comments, after a backup):
-
-```yaml
-providers:
-  omp-router:
-    baseUrl: http://127.0.0.1:8788/v1
-    api: openai-completions
-    auth: none
-    models:
-      - id: auto
-        name: Auto (omp-router)
-        # ...contextWindow, maxTokens, and a blended `cost` derived from your ledger
-```
-
-## HTTP surface
-
-| Route | Purpose |
-| --- | --- |
-| `POST /v1/chat/completions` | Routed completion, streaming or buffered. |
-| `GET /v1/models` | Virtual profiles (`auto`, `auto-cheap`, `auto-max`). |
-| `GET /v1/router/stats` | Spend, per-model breakdown, escalation and trust rates. |
-| `GET /v1/router/decisions` | Recent decisions with full reasoning. |
-| `GET /health` | Liveness plus catalog freshness. |
-
-Every routed response carries `x-omp-router-model`, `x-omp-router-tier`,
-`x-omp-router-cost-usd`, and `x-omp-router-attempts`.
+---
 
 ## Verifying
 
@@ -281,18 +316,19 @@ bun test            # unit suite
 bun run smoke       # end-to-end against a scriptable mock OpenRouter
 ```
 
-`bun run smoke` starts the real server against `tools/mock-openrouter.ts`, which
-serves the genuine 147-model catalog fixture and synthesizes OpenRouter-shaped
-SSE. It asserts the properties that matter: no `openrouter/*`, `~alias`,
-`:batch`, or `stealth/*` slug is ever selected; a mechanical tool-result
-continuation routes to a cheaper tier than an architecture question in the same
-conversation; a malformed tool call is escalated to a stronger model without the
-client ever seeing the failure; and the abandoned attempt is booked as wasted
-spend.
+`bun smoke` starts the embedded router against `tools/mock-openrouter.ts`, which
+serves a genuine catalog fixture and synthesizes OpenRouter-shaped SSE. It
+asserts the properties that matter: no `openrouter/*`, `~alias`, `:batch`, or
+`stealth/*` slug is ever selected; a mechanical tool-result continuation routes
+to a cheaper tier than an architecture question in the same conversation; a
+malformed tool call is escalated to a stronger model without the client ever
+seeing the failure; and the abandoned attempt is booked as wasted spend.
 
 `omp-router explain --file request.json` routes a saved request and prints the
 feature vector, classification reasoning, ranked candidates with forecasts, and
 every rejection with its cause — without dispatching a completion.
+
+---
 
 ## Where quality scores come from
 
@@ -302,19 +338,19 @@ intelligence). Two things about that data drive the router's behaviour:
 
 **`/models/user` omits it entirely.** The key-scoped endpoint is authoritative
 for *availability* under your guardrails, but its records carry no `benchmarks`
-block at all. Read on its own it makes every model **unscored**, and an unscored
-model satisfies no floor above zero — so `simple`, `moderate` and `hard` all go
+block. Read on its own it makes every model **unscored**, and an unscored model
+satisfies no floor above zero — so `simple`, `moderate` and `hard` all go
 permanently empty, selection widens down, and every turn is served by the
 cheapest `trivial` model no matter how hard the work is. The router therefore
-fetches the public `/models` purely to join the scores back on by id (falling
-back to `canonical_slug`, and stripping a leading `~` for alias entries).
-Availability still comes solely from the key-scoped list — public models never
-leak into a key-scoped snapshot. The join is best-effort: if the public fetch
-fails, the catalog stays unscored and degraded rather than the refresh failing.
+fetches the public `/models` purely to join the scores back on by id.
+Availability still comes solely from the key-scoped list. The join is
+best-effort: if the public fetch fails, the catalog stays unscored and degraded
+rather than the refresh failing.
 
-**Roughly 60% of the catalog is unscored anyway.** Scores are never imputed from
-price (a cheap model is not a bad one), so unscored models are only ever
-eligible where the floor is zero.
+**Roughly 60% of the catalog is unscored anyway.** Scores are never imputed
+from price, so unscored models are only ever eligible where the floor is zero.
+
+---
 
 ## Adaptive tier floors
 
@@ -333,23 +369,22 @@ enforced is `min(configured, adaptive)`:
   best quartile of what is available instead of nothing.
 
 Relaxation is one-directional by design: an adaptive floor may only **lower** a
-tier floor, never raise one, so a rich catalog can never price you out of a tier
-you configured. Two things are deliberately exempt:
+tier floor, never raise one. Two things are deliberately exempt:
 
 - **Task floors are never relaxed.** `tasks.*.minQuality` is a capability
   requirement (vision needs a model that can actually see), not an economic
   envelope, so the effective floor is `max(taskFloor, adaptiveTierFloor)`.
 - **Unscored catalogs relax to zero.** With no measured spread to rank on, all
   four floors compute to 0 and the price ceiling plus `qualityExponent` do the
-  differentiating. That is the honest degradation.
+  differentiating.
 
-The plan is memoized per snapshot object, so it recomputes exactly when a
-refresh installs a new catalog — on the `catalogRefreshMs` interval, with no
-timer of its own. `omp-router models` shows any relaxation explicitly:
+`omp-router models` shows any relaxation explicitly:
 
 ```
 [hard]  quality floor 95 → 76.1 (adaptive) on the coding axis  -  3 eligible, 16 excluded
 ```
+
+---
 
 ## Raising quality for coding work
 
@@ -366,19 +401,15 @@ tasks:
 ```
 
 `omp-router models` names whichever mechanism moved a floor, so a surprising
-eligible set is always explainable:
-
-```
-[trivial]  quality floor 0 → 68.0 (task floor) …  2 eligible
-[hard]     quality floor 95 → 76.1 (adaptive)  …  3 eligible
-```
+eligible set is always explainable.
 
 This is usually the right dial for an agentic coding harness. Most turns after
 the first are tool-result continuations, which the complexity heuristic scores
 as mechanical — correct for a single file read, but it means a long, genuinely
 hard session keeps classifying `trivial`. A task floor lifts the quality of
-whatever tier is chosen without forcing every turn into an expensive tier,
-which is what raising the tier floors would do.
+whatever tier is chosen without forcing every turn into an expensive tier.
+
+---
 
 ## Tier rescue
 
