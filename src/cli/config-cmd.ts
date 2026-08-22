@@ -1,10 +1,18 @@
 /**
- * `omp-router config` - emit (and optionally splice in) the `models.yml`
- * provider block that registers this router with omp.
+ * `omp-router config`.
+ *
+ * Bare invocation opens the interactive wizard over the router's own
+ * config.yml (see `config-wizard.ts`). `--print` emits the `models.yml`
+ * provider block that registers this router with omp, and `--write` splices
+ * that block into omp's models.yml.
  *
  * The splice operates on TEXT, never a YAML round-trip. A user's models.yml is
  * hand-maintained and full of comments explaining non-obvious context-window
  * choices; reserializing it would silently delete all of that.
+ *
+ * The router's own config.yml is ours, so the wizard DOES reserialize it —
+ * but only after merging the user's edits over the existing file, so unedited
+ * keys survive.
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,12 +20,19 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify } from "yaml";
 
-import { loadConfig } from "../config/load.ts";
+import { loadConfig, resolveTilde } from "../config/load.ts";
+import { configInputSchema } from "../config/schema.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLedger } from "../cost/ledger.ts";
 import type { BlendedRate } from "../cost/types.ts";
 import { openDb } from "../util/sqlite.ts";
 import { configOpts, flagString, type CliArgs } from "./args.ts";
+import {
+	mergeConfigPartial,
+	runWizard,
+	StreamLineSource,
+	type WizardIo,
+} from "./config-wizard.ts";
 
 export const BEGIN_GUARD = "# BEGIN omp-router";
 export const END_GUARD = "# END omp-router";
@@ -214,6 +229,73 @@ export function assertUsableModelsYaml(text: string): void {
 	}
 }
 
+/** The router's own config file path (the one `loadConfig` reads). */
+export function routerConfigPath(): string {
+	const home = resolveTilde(process.env.OMP_ROUTER_HOME ?? "~/.omp-router");
+	return join(home, "config.yml");
+}
+
+/**
+ * Merges a wizard partial into the config file at `target`, validating the
+ * result before anything is written and backing up the previous file.
+ *
+ * Returns the backup path, or null when there was no prior file.
+ */
+export function writeRouterConfig(target: string, partial: Record<string, unknown>): string | null {
+	const existing = existsSync(target) ? readFileSync(target, "utf8") : "";
+	const parsed = existing.trim() === "" ? {} : parseYaml(existing);
+	const base: Record<string, unknown> =
+		typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: {};
+
+	const merged = mergeConfigPartial(base, partial);
+
+	// Validate the MERGED file, not just the partial: a legal edit can still
+	// combine with existing keys into something the loader would reject.
+	const validated = configInputSchema.safeParse(merged);
+	if (!validated.success) {
+		const lines = validated.error.issues.map(
+			(issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`,
+		);
+		throw new Error(`refusing to write invalid config:\n${lines.join("\n")}`);
+	}
+
+	let backup: string | null = null;
+	if (existing !== "") {
+		backup = `${target}.${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
+		copyFileSync(target, backup);
+	}
+
+	mkdirSync(dirname(target), { recursive: true });
+	writeFileSync(target, stringify(merged, { indent: 2 }), "utf8");
+	return backup;
+}
+
+/**
+ * Runs the interactive wizard and persists the result to the router's own
+ * config.yml.
+ */
+async function runWizardCommand(args: CliArgs): Promise<void> {
+	const cfg = loadConfig(configOpts(args));
+	const io: WizardIo = {
+		read: new StreamLineSource(process.stdin),
+		write: (text) => process.stdout.write(text),
+	};
+
+	const { partial, changed } = await runWizard(cfg, io);
+	if (partial === null) {
+		console.log("\nno changes written");
+		return;
+	}
+
+	const target = flagString(args, "config") ?? routerConfigPath();
+	const backup = writeRouterConfig(target, partial);
+	if (backup !== null) console.log(`\nbackup: ${backup}`);
+	console.log(`wrote ${target} (${changed} field${changed === 1 ? "" : "s"} changed)`);
+	console.log("restart the router to pick up the change");
+}
+
 /** omp's models.yml location: `$PI_CODING_AGENT_DIR` relocates the whole agent dir. */
 export function ompModelsPath(): string {
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
@@ -237,7 +319,14 @@ export async function configCommand(args: CliArgs): Promise<void> {
 
 	const block = renderProviderBlock(cfg, blend);
 
-	if (!args.flags.has("write")) {
+	// Bare `config` runs the interactive wizard over the router's own
+	// config.yml. `--print` keeps the old block output; `--write` splices it.
+	if (!args.flags.has("write") && !args.flags.has("print")) {
+		await runWizardCommand(args);
+		return;
+	}
+
+	if (args.flags.has("print") && !args.flags.has("write")) {
 		console.log(block);
 		console.log("");
 		console.log(

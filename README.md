@@ -146,8 +146,49 @@ harnesses route over meaningfully different model sets and each has enough
 traffic to learn its own reliability.
 
 
-Register it with omp (`omp-router config` prints this block; `--write` merges it
-into `~/.omp/agent/models.yml` between guard comments, after a backup):
+## Configuring the router
+
+`omp-router config` opens an interactive wizard over the router's own config
+(`$OMP_ROUTER_HOME/config.yml`, default `~/.omp-router/config.yml`). It covers
+every section — server, openrouter, tiers, tasks, filters, classifier,
+escalation, hysteresis, cache, budget, ledger, logging — plus the `profiles`
+list (add, edit, delete the virtual models omp sees).
+
+```
+omp-router config
+
+   1) Server            7) Escalation
+   2) OpenRouter        8) Hysteresis
+   3) Tiers             9) Cache
+   4) Tasks            10) Budget
+   5) Filters          11) Ledger
+   6) Classifier       12) Logging
+
+   p) Profiles
+   a) walk every section
+   s) save and exit
+   q) quit without saving
+```
+
+At a field prompt the current value is shown in brackets:
+
+- **Enter** keeps it (nothing is written)
+- **`-`** clears an optional field, so the built-in default applies again
+- anything else is validated against the field's type and range, and re-prompts
+  on bad input
+
+Only the fields you actually change are written, as a minimal deep-merge
+partial, so hand-edited values and comments elsewhere in the section survive.
+The **merged** file is validated against the config schema before anything is
+written, and the previous file is copied to a timestamped `.bak` first. A clear
+deletes the key outright rather than writing `null`, and prunes the section if
+it ends up empty.
+
+`--config <path>` targets a different config file; the wizard is scriptable
+because it reads plain lines from stdin.
+
+Register it with omp (`omp-router config --print` prints this block; `--write`
+merges it into `~/.omp/agent/models.yml` between guard comments, after a backup):
 
 ```yaml
 providers:

@@ -24,7 +24,8 @@ Commands:
   stats      Show routed spend, per-model share, and escalation rates
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
-  config     Print (or --write) the models.yml provider block for omp
+  config     Interactive wizard over the router's own config.yml
+             (--print shows the models.yml block; --write splices it into omp)
 
 Global options:
   --config <path>   Use a specific router config file
@@ -36,7 +37,7 @@ Command options:
   stats    --days <n>  --json
   models   --tier <trivial|simple|moderate|hard>  --limit <n>  --json
   explain  --file <request.json>  --json          (reads stdin when --file is absent)
-  config   --write  --path <models.yml>
+  config   --print  --write  --path <models.yml>  --config <router-config.yml>
 
 Environment:
   OPENROUTER_API_KEY   Required for completions; the catalog is readable without it.

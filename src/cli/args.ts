@@ -21,6 +21,7 @@ export interface CliArgs {
 const BOOLEAN_FLAGS: Record<string, true> = {
 	json: true,
 	write: true,
+	print: true,
 	help: true,
 	version: true,
 };
