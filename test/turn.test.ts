@@ -35,7 +35,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			moderate: { minQuality: 60, maxInputPerMtok: 4, qualityExponent: 1, pin: [] },
 			hard: { minQuality: 72, qualityExponent: 3, pin: [] },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, contextHeadroom: 1.2 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",

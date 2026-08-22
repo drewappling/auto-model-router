@@ -74,6 +74,14 @@ export interface FilterConfig {
 	/** Attempts required before `minTrust` is enforced against a model. */
 	minTrustSamples: number;
 	/**
+	 * Scope model trust to the requesting harness instead of the whole ledger.
+	 * Off by default: shared trust converges on more samples and keeps the
+	 * demotion guard effective with a small catalog. Enable only when harnesses
+	 * route over meaningfully different model sets and each has enough traffic
+	 * to learn its own reliability.
+	 */
+	trustScopedByHarness: boolean;
+	/**
 	 * Headroom multiplier applied to estimated prompt tokens when checking a
 	 * model's context window, absorbing token-estimate error and the response.
 	 */

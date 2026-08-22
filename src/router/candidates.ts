@@ -155,7 +155,8 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
-		const trust = ledger?.trust(slug) ?? null;
+		const trust =
+			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null;
 		if (!relaxTrust && trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
 			rejected.push({
 				slug,

@@ -139,7 +139,8 @@ export interface Ledger {
 	 */
 	spendSince(sinceMs: number, harnessId?: string): number;
 	blendedRate(windowDays: number): BlendedRate | null;
-	trust(slug: string): ModelTrust | null;
+	/** Per-model reliability over the ledger, optionally scoped to a harness. */
+	trust(slug: string, harnessId?: string): ModelTrust | null;
 	allTrust(): ModelTrust[];
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;

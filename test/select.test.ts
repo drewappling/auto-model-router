@@ -274,6 +274,68 @@ describe("budget guard", () => {
 	});
 });
 
+describe("per-harness trust scoping", () => {
+	// When filters.trustScopedByHarness is on, trust is read from the requesting
+	// harness's own ledger rows, so one harness's flaky-model demotion does not
+	// leak into another's routing. Off (default), trust is shared.
+	const untrustedLedger = (): Ledger => ({
+		record: () => {},
+		conversationSpend: () => 0,
+		spendSince: () => 0,
+		blendedRate: () => null,
+		trust: (_slug, harnessId) => {
+			// Harness A has burned the model; harness B has never tried it.
+			if (harnessId === "harness-a") {
+				return { slug: "x", attempts: 40, escalations: 30, errors: 30, successRate: 0.1, meanCostError: 0.2 };
+			}
+			return null; // harness B / shared → unmeasured
+		},
+		allTrust: () => [],
+		tokenRatio: () => null,
+		recentEntries: () => [],
+	});
+
+	test("scoped trust passes the harness id into the ledger trust query", () => {
+		// The feature's contract is that the router's trust lookup is scoped to
+		// the requesting harness when enabled. Assert the wiring directly rather
+		// than via a post-rescue `rejected` reason, which tier-rescue relaxes.
+		let queriedWith: string | undefined;
+		const ledger: Ledger = {
+			...untrustedLedger(),
+			trust: (_slug, harnessId) => {
+				queriedWith = harnessId;
+				return null;
+			},
+		};
+		const cfg: RouterConfig = {
+			...BASE,
+			filters: { ...BASE.filters, trustScopedByHarness: true },
+		};
+		run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
+		expect(queriedWith).toBe("harness-a");
+	});
+
+	test("shared trust (default) reads the whole ledger, not per-harness", () => {
+		// With scoping off, the trust lookup must NOT carry the harness id, so
+		// harness A's flaky history is visible globally (shared reliability).
+		let queriedWith: string | undefined;
+		const ledger: Ledger = {
+			...untrustedLedger(),
+			trust: (_slug, harnessId) => {
+				queriedWith = harnessId;
+				return null;
+			},
+		};
+		const cfg: RouterConfig = {
+			...BASE,
+			filters: { ...BASE.filters, trustScopedByHarness: false },
+		};
+		run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
+		// The trust lookup must NOT carry the harness id when scoping is off.
+		expect(queriedWith).toBeUndefined();
+	});
+});
+
 describe("decision shape", () => {
 	test("clamps max tokens to the chosen model's published ceiling", () => {
 		const d = run({ tier: "moderate" });

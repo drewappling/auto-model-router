@@ -139,6 +139,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND harness_id = ?",
 	);
 	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ?`);
+	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
 	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger GROUP BY slug`);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
@@ -226,8 +227,11 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			return computeBlendedRate(db, cfg, windowDays);
 		},
 
-		trust(slug: string): ModelTrust | null {
-			const row = trustStmt.get(slug) as TrustRow | null;
+		trust(slug: string, harnessId?: string): ModelTrust | null {
+			const row =
+				harnessId !== undefined && harnessId !== ""
+					? (trustHarnessStmt.get(slug, harnessId) as TrustRow | null)
+					: (trustStmt.get(slug) as TrustRow | null);
 			if (row === null || row.attempts === 0) return null;
 			return toTrust(slug, row);
 		},

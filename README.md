@@ -120,6 +120,31 @@ The toast logic is a pure, unit-tested module
 toasts only entries newer than the last seen one, skips `wasted` escalation
 attempts, and prefers the actual serving slug over the requested one.
 
+## Multiple coding harnesses, one router
+
+A single router instance can serve several omp sessions (or other OpenAI-
+compatible harnesses) without them stepping on each other:
+
+- **Per-conversation routing** (hysteresis, cache warmth, escalation, spend) is
+  keyed by conversation, so different sessions isolate naturally.
+- **Per-harness daily budget** — each harness sends an `X-Omp-Harness` header
+  (from the provider block's `headers:`), and the router scopes the rolling
+  24h `perDayUsd` ceiling to it. One harness can't exhaust the day for another.
+- **Per-harness toasts** — set `OMP_HARNESS_ID` to the same value so the
+  extension only toasts that harness's model choices.
+
+Configure a harness by setting `server.harnessId` and re-running
+`omp-router config --write` (it emits the header); set the same id in that
+harness's `OMP_HARNESS_ID` env var.
+
+**Model trust is shared by default** (`filters.trustScopedByHarness: false`):
+every harness's attempts count toward each model's reliability score, so the
+demotion guard converges on more samples and stays effective even with a small
+guardrail-narrowed catalog. Enable `trustScopedByHarness: true` to read each
+harness's reliability from only its own ledger rows — recommended only when
+harnesses route over meaningfully different model sets and each has enough
+traffic to learn its own reliability.
+
 
 Register it with omp (`omp-router config` prints this block; `--write` merges it
 into `~/.omp/agent/models.yml` between guard comments, after a backup):

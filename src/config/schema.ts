@@ -47,6 +47,7 @@ const filters = z.strictObject({
 	requireToolSupport: z.boolean().optional(),
 	minTrust: z.number().min(0).max(1).optional(),
 	minTrustSamples: z.number().int().nonnegative().optional(),
+	trustScopedByHarness: z.boolean().optional(),
 	contextHeadroom: z.number().positive().optional(),
 });
 

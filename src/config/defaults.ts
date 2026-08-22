@@ -41,6 +41,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		requireToolSupport: true,
 		minTrust: 0.7,
 		minTrustSamples: 12,
+		// Shared trust by default: more samples, demotion guard stays effective
+		// even with a tiny guardrail-narrowed catalog.
+		trustScopedByHarness: false,
 		contextHeadroom: 1.25,
 	},
 	classifier: {
