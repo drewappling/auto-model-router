@@ -77,6 +77,10 @@ export function createProbe(
 	// (latency), never money — the ledger uses reported usage.
 	let approxTextTokens = 0;
 	let finishReason: FinishReason | null = null;
+	// Reasoning deltas prove the model is working even before any content
+	// arrives. Used only by the hold-time ceiling, never by the end verdict:
+	// a stream that ENDS having emitted only reasoning really is hollow.
+	let sawReasoning = false;
 	let decided: ProbeVerdict | null = null;
 
 	const commit = (reason: string): ProbeVerdict => (decided = { action: "commit", reason });
@@ -166,6 +170,9 @@ export function createProbe(
 						text += ev.delta;
 						approxTextTokens += Math.ceil(ev.delta.length / 4);
 						break;
+					case "reasoning":
+						sawReasoning = true;
+						break;
 					case "tool_call": {
 						let acc = toolCalls.get(ev.index);
 						if (!acc) {
@@ -208,16 +215,25 @@ export function createProbe(
 				return commit(`tool call "${acc.name ?? "?"}" arguments are complete valid JSON`);
 			}
 			if (plan.maxHoldMs > 0 && now() - startedAt >= plan.maxHoldMs) {
-				// The ceiling bounds latency; it must not bless silence. Committing
-				// unconditionally here (the old behaviour) let a stalled or empty
-				// stream pass as "served". Deciding from the held buffer instead —
-				// exactly as if the stream had ended — means only genuinely healthy
-				// output (real text, complete tool-call JSON) commits, while an
-				// empty buffer or unparseable partial args escalate. Tradeoff: a
-				// merely slow-but-fine generation that has produced nothing yet pays
-				// for a second attempt at a higher tier; that is cheaper than
-				// streaming a hollow turn the agent then acts on.
-				return endVerdict();
+				// The ceiling bounds how long we withhold output; the stream is
+				// still OPEN here, so "nothing useful yet" means slow, not broken.
+				//
+				// Committing unconditionally (the original behaviour) blessed a
+				// genuinely stalled stream as served. Running the full end-of-stream
+				// verdict instead over-corrects the other way: a reasoning model
+				// that has emitted only reasoning tokens after 8s is working
+				// normally, and escalating throws away a paid, healthy generation
+				// to re-run it dearer.
+				//
+				// So the ceiling escalates only on the absence of ANY sign of life.
+				// Real end-of-stream hollowness is still caught by `verdictOnEnd`,
+				// where an ended stream that produced only reasoning IS hollow.
+				const aliveButSlow = text !== "" || sawReasoning || toolCalls.size > 0;
+				if (aliveButSlow) return commit("hold ceiling reached while still generating");
+				if (triggers.has("empty_completion")) {
+					return escalate("empty_completion", "hold ceiling reached with no output at all");
+				}
+				return commit("hold ceiling reached; empty-completion signal disabled");
 			}
 			return null;
 		},

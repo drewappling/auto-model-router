@@ -48,7 +48,9 @@ const StatsSchema = z
 	})
 	.loose();
 const DecisionsSchema = z.object({
-	entries: z.array(z.object({ wasted: z.boolean(), slug: z.string(), tier: z.string() }).loose()),
+	entries: z.array(
+		z.object({ wasted: z.boolean(), slug: z.string(), tier: z.string(), attempt: z.number() }).loose(),
+	),
 });
 const BufferedSchema = z
 	.object({
@@ -170,6 +172,20 @@ const post = (path: string, payload: unknown) =>
 		body: JSON.stringify(payload),
 	});
 
+
+const TIER_RANK = ["trivial", "simple", "moderate", "hard"];
+const tierRank = (tier: string): number => TIER_RANK.indexOf(tier);
+
+/**
+ * Tier the most recent turn's FIRST attempt used. `/decisions` is newest-first,
+ * so the first `attempt === 0` row belongs to the turn that just finished.
+ */
+async function firstAttemptTier(): Promise<string> {
+	const res = await fetch(`${base}/v1/router/decisions?limit=50`);
+	const entries = DecisionsSchema.parse(await res.json()).entries;
+	return entries.find((e) => e.attempt === 0)?.tier ?? "";
+}
+
 try {
 	console.log("[1] discovery surface");
 	// The server warms the catalog without blocking listen, so poll rather than race it.
@@ -211,6 +227,7 @@ try {
 		),
 	);
 	const hardSlug = mock.requests[0]?.model ?? "";
+	const hardFirstTier = await firstAttemptTier();
 
 	mock.requests.length = 0;
 	const mechRes = await drain(
@@ -228,17 +245,23 @@ try {
 		),
 	);
 	const mechSlug = mock.requests[0]?.model ?? "";
+	const mechFirstTier = await firstAttemptTier();
 
 	check("hard reasoning and mechanical tool-result turns route differently", hardSlug !== mechSlug, {
 		hard: hardSlug,
 		mechanical: mechSlug,
 	});
-	check("hard turn reached a higher tier", hardRes.meta?.tier !== mechRes.meta?.tier, {
-		hard: hardRes.meta?.tier,
-		mechanical: mechRes.meta?.tier,
+	// Compare what CLASSIFICATION chose, i.e. each turn's first attempt. The
+	// final tier is a poor probe here: the mock replays the same tool call the
+	// request already contains, so the mechanical turn legitimately trips
+	// `repeat_tool_call` and escalates, which would mask the classifier's
+	// separation with an escalation artifact.
+	check("the hard turn classified into a higher tier than the mechanical one", tierRank(hardFirstTier) > tierRank(mechFirstTier), {
+		hard: hardFirstTier,
+		mechanical: mechFirstTier,
 	});
-	console.log(`        hard       -> ${hardSlug} (tier ${hardRes.meta?.tier})`);
-	console.log(`        mechanical -> ${mechSlug} (tier ${mechRes.meta?.tier})`);
+	console.log(`        hard       -> ${hardSlug} (classified ${hardFirstTier}, served ${hardRes.meta?.tier})`);
+	console.log(`        mechanical -> ${mechSlug} (classified ${mechFirstTier}, served ${mechRes.meta?.tier})`);
 
 	console.log("\n[4] guarded probe escalates on a malformed tool call");
 	mock.requests.length = 0;
