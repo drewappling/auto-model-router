@@ -11,7 +11,7 @@ import { estimateTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { sha256Hex } from "../util/hash.ts";
 import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
-import type { Classification, Features, Tier } from "./types.ts";
+import type { Classification, Features, TaskType, Tier } from "./types.ts";
 
 /**
  * Heuristic scorer: a weighted linear sum over Features, clamped to 0-1 and
@@ -115,7 +115,7 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 	for (const b of BOUNDARIES) dist = Math.min(dist, Math.abs(score - b));
 	const confidence = Math.min(1, dist / 0.125);
 
-	return { tier, confidence, source: "heuristic", reasons, score };
+	return { tier, task: classifyTask(f), confidence, source: "heuristic", reasons, score };
 }
 
 /** Quality axis rule: deep loops → agentic; tools offered → toolAxis; chat → chatAxis. */
@@ -123,6 +123,25 @@ export function pickQualityAxis(f: Features, cfg: RouterConfig): QualityAxis {
 	if (f.toolLoopDepth >= cfg.classifier.agenticLoopDepth) return "agentic";
 	if (f.toolCount > 0) return cfg.classifier.toolAxis;
 	return cfg.classifier.chatAxis;
+}
+
+/**
+ * Task-type classification: the KIND of work, orthogonal to complexity tier.
+ * Cheap and deterministic — no tokenizer, no model call. Vision is the only
+ * hard signal (image input); the rest are keyword/structural heuristics over
+ * the newest user content. The task selects the quality axis and capability
+ * filters; the tier still bounds cost.
+ */
+export function classifyTask(f: Features): TaskType {
+	if (f.hasImages) return "vision";
+	// Coding: code blocks, diffs, a tool loop, or tools offered — agent tool use
+	// is coding work. Bare chat (no tools, no code) falls through.
+	if (f.codeBlocks > 0 || f.looksLikeDiff || f.toolLoopDepth > 0 || f.toolCount > 0) return "coding";
+	// Data: tabular/structured analysis language.
+	if (f.complexityKeywords.some((k) => k === "optimize" || k === "migrate")) return "data";
+	// Documentation: prose-heavy, explanatory language, no code.
+	if (f.complexityKeywords.some((k) => k === "design" || k === "architecture")) return "documentation";
+	return "chat";
 }
 
 export interface ClassifyDeps {
@@ -224,6 +243,7 @@ export async function classify(
 	if (cached !== undefined) {
 		return {
 			tier: cached,
+			task: heuristic.task,
 			confidence: 0.9,
 			source: "llm",
 			score: heuristic.score,
@@ -286,6 +306,7 @@ export async function classify(
 			lruSet(cache, fingerprint, word, cc.cacheSize);
 			return {
 				tier: word,
+				task: heuristic.task,
 				confidence: 0.9,
 				source: "llm",
 				score: heuristic.score,

@@ -33,6 +33,18 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// No price ceiling on `hard`: quality is the point of the top tier.
 		hard: { minQuality: 72, qualityExponent: 3, pin: [] },
 	},
+	tasks: {
+		// Task selects the axis + capability; the tier's quality floor, price
+		// ceiling, and budget guard still govern cost. A task minQuality only
+		// RAISES the tier floor for special cases (e.g. vision needs quality);
+		// it must not force cheap tiers to be expensive, or escalation has no
+		// room to move.
+		coding: { axis: "coding" },
+		vision: { axis: "intelligence", requireImage: true },
+		documentation: { axis: "intelligence" },
+		data: { axis: "intelligence" },
+		chat: { axis: "intelligence" },
+	},
 	filters: {
 		allow: [],
 		deny: [],

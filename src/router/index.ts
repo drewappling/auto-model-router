@@ -16,7 +16,7 @@ import type { Ledger } from "../cost/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import type { NormRequest } from "../wire/types.ts";
-import { classify } from "./classify.ts";
+import { classify, classifyTask } from "./classify.ts";
 import { extractFeatures } from "./features.ts";
 import { select } from "./select.ts";
 import { TIER_ORDER, type Classification, type ConversationStore, type Decision, type Router, type Tier } from "./types.ts";
@@ -69,6 +69,7 @@ export function createRouter(deps: RouterDeps): Router {
 				if (forced === undefined) throw new Error(`unresolvable escalation tier from ${opts.escalateFrom}`);
 				classification = {
 					tier: forced,
+					task: classifyTask(features),
 					confidence: 1,
 					source: "escalation",
 					score: 1,

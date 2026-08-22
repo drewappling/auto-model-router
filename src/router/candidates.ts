@@ -9,13 +9,14 @@ import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
-import type { Candidate, Features, Rejection, Tier } from "./types.ts";
+import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
 
 export interface BuildCandidatesArgs {
 	req: NormRequest;
 	features: Features;
 	tier: Tier;
-	axis: QualityAxis;
+	/** Task type; its config selects the axis, quality floor, and image filter. */
+	task: TaskType;
 	snapshot: CatalogSnapshot;
 	ledger: Ledger | null;
 	cfg: RouterConfig;
@@ -61,8 +62,9 @@ function resolveQuality(model: CatalogModel, axis: QualityAxis): { score: number
 const UNMEASURED_TRUST = 0.9;
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
-	const { req, features, tier, axis, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
+	const { req, features, tier, task, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
 	const tierCfg = cfg.tiers[tier];
+	const taskCfg = cfg.tasks[task];
 	const filters = cfg.filters;
 	const relaxPrice = relaxLevel >= 1;
 	const relaxQuality = relaxLevel >= 2;
@@ -71,6 +73,11 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	const denyRes = filters.deny.map(globToRe);
 	const needTools = req.tools.length > 0 && filters.requireToolSupport;
 	const minContext = Math.ceil(features.promptTokens * filters.contextHeadroom) + expectedCompletionTokens;
+	// Task selects the quality axis and capability filters; the tier still
+	// bounds cost. The task's quality floor overrides the tier's when higher.
+	const effectiveAxis = taskCfg.axis;
+	const qualityFloor = Math.max(tierCfg.minQuality, taskCfg.minQuality ?? 0);
+	const taskPins = taskCfg.prefer ?? [];
 	let images = 0;
 	if (req.hasImages) for (const m of req.messages) images += m.images;
 
@@ -112,7 +119,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			rejected.push({ slug, reason: "no_tool_support" });
 			continue;
 		}
-		if (req.hasImages && !model.inputModalities.includes("image")) {
+		if ((req.hasImages || taskCfg.requireImage === true) && !model.inputModalities.includes("image")) {
 			rejected.push({ slug, reason: "no_image_support" });
 			continue;
 		}
@@ -121,15 +128,15 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
-		const pinned = tierCfg.pin.includes(slug);
-		const quality = resolveQuality(model, axis);
-		if (!pinned && !relaxQuality && tierCfg.minQuality > 0) {
+		const pinned = tierCfg.pin.includes(slug) || taskPins.includes(slug);
+		const quality = resolveQuality(model, effectiveAxis);
+		if (!pinned && !relaxQuality && qualityFloor > 0) {
 			if (quality === null) {
 				rejected.push({ slug, reason: "below_quality_floor", detail: "no published quality score" });
 				continue;
 			}
-			if (quality.score < tierCfg.minQuality) {
-				rejected.push({ slug, reason: "below_quality_floor", detail: `${quality.score} < floor ${tierCfg.minQuality}` });
+			if (quality.score < qualityFloor) {
+				rejected.push({ slug, reason: "below_quality_floor", detail: `${quality.score} < floor ${qualityFloor}` });
 				continue;
 			}
 		}
@@ -183,7 +190,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		const reasons: string[] = [
 			quality === null
 				? "unscored on every quality axis"
-				: `quality ${quality.score} on ${quality.axis}${quality.axis === axis ? "" : ` (fallback from ${axis})`}`,
+				: `quality ${quality.score} on ${quality.axis}${quality.axis === effectiveAxis ? "" : ` (fallback from ${effectiveAxis})`}`,
 			trust === null || trust.attempts === 0
 				? `trust unmeasured: neutral prior ${UNMEASURED_TRUST}`
 				: `trust ${trustScore.toFixed(2)} over ${trust.attempts} attempts`,

@@ -6,9 +6,25 @@
  * resolved shape the rest of the code consumes.
  */
 
-import type { Tier } from "../router/types.ts";
+import type { TaskType, Tier } from "../router/types.ts";
 
 export type QualityAxis = "coding" | "agentic" | "intelligence";
+
+/**
+ * Per-task routing envelope. Task type selects the quality axis, capability
+ * filters, and quality floor; the complexity tier's price ceiling and the
+ * budget guard still cap cost (task selects, tier budgets).
+ */
+export interface TaskConfig {
+	/** Quality axis to score candidates against for this task. */
+	axis: QualityAxis;
+	/** Minimum quality on that axis, 0-100. Overrides the tier floor when higher. */
+	minQuality?: number;
+	/** Require image input support. Hard filter for vision tasks. */
+	requireImage?: boolean;
+	/** Slugs always eligible for this task regardless of quality floor. */
+	prefer?: string[];
+}
 
 export interface ServerConfig {
 	host: string;
@@ -204,6 +220,7 @@ export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
 	tiers: Record<Tier, TierConfig>;
+	tasks: Record<TaskType, TaskConfig>;
 	filters: FilterConfig;
 	classifier: ClassifierConfig;
 	escalation: EscalationConfig;

@@ -482,3 +482,57 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 		).toThrow(/catalog exhausted/);
 	});
 });
+
+describe("task-type routing", () => {
+	test("a vision task only considers image-capable models", () => {
+		// Force the vision task and a tier; every considered candidate must
+		// support image input.
+		const req = request("describe this image");
+		const features = extractFeatures(req, 4000);
+		const heuristic = scoreHeuristic(features, BASE);
+		const d = select({
+			req: { ...req, hasImages: true },
+			features: { ...features, hasImages: true },
+			classification: { ...heuristic, task: "vision" },
+			profile: PROFILE,
+			state: state(),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: BASE,
+			nowMs: Date.now(),
+		});
+		expect(d.considered.length).toBeGreaterThan(0);
+		for (const c of d.considered) expect(c.model.inputModalities.includes("image")).toBe(true);
+	});
+
+	test("the task config's quality floor overrides the tier floor when higher", () => {
+		// A coding task with a high minQuality must not admit models below it,
+		// even in a tier whose own floor is lower.
+		const cfg: RouterConfig = {
+			...BASE,
+			tasks: { ...BASE.tasks, coding: { axis: "coding", minQuality: 60 } },
+		};
+		const req = request("refactor the service layer");
+		const features = extractFeatures(req, 4000);
+		const heuristic = scoreHeuristic(features, cfg);
+		const d = select({
+			req,
+			features,
+			classification: { ...heuristic, task: "coding" },
+			profile: PROFILE,
+			state: state(),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg,
+			nowMs: Date.now(),
+		});
+		// The task floor (60) is higher than the trivial tier floor (0); every
+		// considered candidate must clear it. (A floor so high nothing qualifies
+		// would trip tier rescue, so 60 is the meaningful override test.)
+		expect(d.considered.length).toBeGreaterThan(0);
+		for (const c of d.considered) {
+			const q = c.model.quality.coding ?? c.model.quality.intelligence ?? 0;
+			expect(q).toBeGreaterThanOrEqual(60);
+		}
+	});
+});

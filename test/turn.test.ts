@@ -35,6 +35,13 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			moderate: { minQuality: 60, maxInputPerMtok: 4, qualityExponent: 1, pin: [] },
 			hard: { minQuality: 72, qualityExponent: 3, pin: [] },
 		},
+		tasks: {
+			coding: { axis: "coding", minQuality: 40 },
+			vision: { axis: "intelligence", requireImage: true },
+			documentation: { axis: "intelligence", minQuality: 0 },
+			data: { axis: "intelligence", minQuality: 0 },
+			chat: { axis: "intelligence", minQuality: 0 },
+		},
 		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2 },
 		classifier: {
 			ambiguityThreshold: 0,
@@ -112,7 +119,7 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		fallbacks: [],
 		tier,
 		features: FEATURES,
-		classification: { tier, confidence: 0.9, source: "heuristic", reasons: ["test"], score: 0.5 },
+		classification: { tier, task: "chat", confidence: 0.9, source: "heuristic", reasons: ["test"], score: 0.5 },
 		forecast: {
 			slug,
 			expectedUsd: 0.001,

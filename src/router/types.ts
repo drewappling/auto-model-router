@@ -14,6 +14,16 @@ export type Tier = "trivial" | "simple" | "moderate" | "hard";
 export const TIER_ORDER: readonly Tier[] = ["trivial", "simple", "moderate", "hard"] as const;
 
 /**
+ * Task type: the KIND of work, orthogonal to complexity tier. A vision task
+ * routes to the best vision-capable model even if the tier would otherwise
+ * pick a cheaper one; a documentation task stays cheap. Classified from
+ * Features with no tokenizer or model call.
+ */
+export type TaskType = "coding" | "vision" | "documentation" | "data" | "chat";
+
+export const TASK_ORDER: readonly TaskType[] = ["coding", "vision", "documentation", "data", "chat"] as const;
+
+/**
  * Signals extracted from a request. Deliberately cheap: no tokenizer, no
  * network, no model call. Field names are stable because they are logged
  * verbatim into the ledger for later calibration.
@@ -66,6 +76,8 @@ export type ClassificationSource = "heuristic" | "llm" | "sticky" | "forced" | "
 
 export interface Classification {
 	tier: Tier;
+	/** Task type: the kind of work, orthogonal to complexity. */
+	task: TaskType;
 	/** 0-1. Below the config's ambiguity band, the LLM adjudicator is consulted. */
 	confidence: number;
 	source: ClassificationSource;

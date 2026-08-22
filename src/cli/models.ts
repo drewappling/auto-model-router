@@ -16,6 +16,7 @@ import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { createLedger } from "../cost/ledger.ts";
 import type { Ledger } from "../cost/types.ts";
 import { buildCandidates } from "../router/candidates.ts";
+import { classifyTask } from "../router/classify.ts";
 import { extractFeatures } from "../router/features.ts";
 import { TIER_ORDER, type Candidate, type Rejection, type Tier } from "../router/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
@@ -151,12 +152,13 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 
 		const reports: TierReport[] = tiers.map((tier) => {
 			const tierCfg = cfg.tiers[tier];
-			const axis = cfg.classifier.toolAxis;
+			const task = classifyTask(features);
+			const axis = cfg.tasks[task].axis;
 			const { candidates, rejected } = buildCandidates({
 				req,
 				features,
 				tier,
-				axis,
+				task,
 				snapshot,
 				ledger,
 				cfg,

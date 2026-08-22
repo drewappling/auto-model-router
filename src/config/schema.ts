@@ -40,6 +40,13 @@ const tierConfig = z.strictObject({
 	pin: z.array(z.string()).optional(),
 });
 
+const taskConfig = z.strictObject({
+	axis: qualityAxis.optional(),
+	minQuality: z.number().min(0).max(100).optional(),
+	requireImage: z.boolean().optional(),
+	prefer: z.array(z.string()).optional(),
+});
+
 const filters = z.strictObject({
 	allow: z.array(z.string()).optional(),
 	deny: z.array(z.string()).optional(),
@@ -128,6 +135,15 @@ export const configInputSchema = z.strictObject({
 			simple: tierConfig.optional(),
 			moderate: tierConfig.optional(),
 			hard: tierConfig.optional(),
+		})
+		.optional(),
+	tasks: z
+		.strictObject({
+			coding: taskConfig.optional(),
+			vision: taskConfig.optional(),
+			documentation: taskConfig.optional(),
+			data: taskConfig.optional(),
+			chat: taskConfig.optional(),
 		})
 		.optional(),
 	filters: filters.optional(),

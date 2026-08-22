@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
-import { classify, pickQualityAxis, scoreHeuristic } from "../src/router/classify.ts";
+import { classify, classifyTask, pickQualityAxis, scoreHeuristic } from "../src/router/classify.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { TIER_ORDER, type Features, type Tier } from "../src/router/types.ts";
 import type { Dispatch, DispatchOptions, UpstreamClient } from "../src/upstream/types.ts";
@@ -241,5 +241,29 @@ describe("classify", () => {
 		});
 		expect(result.tier).toBe("hard");
 		expect(result.source).toBe("llm");
+	});
+});
+
+describe("classifyTask", () => {
+	test("image input is a vision task", () => {
+		const f = featuresFor([SYSTEM, { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,xxx" } }] }], []);
+		expect(classifyTask(f)).toBe("vision");
+	});
+
+	test("code blocks and diffs are coding tasks", () => {
+		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "```ts\nconst x = 1;\n```" }], []))).toBe("coding");
+		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new" }], []))).toBe("coding");
+	});
+
+	test("tools offered is a coding task", () => {
+		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "read the file" }], TOOLS))).toBe("coding");
+	});
+
+	test("bare chat with no tools or code is a chat task", () => {
+		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "hello, how are you?" }], []))).toBe("chat");
+	});
+
+	test("design/architecture prose is a documentation task", () => {
+		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "explain the architecture of the system" }], []))).toBe("documentation");
 	});
 });

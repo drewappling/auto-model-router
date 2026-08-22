@@ -13,7 +13,6 @@ import type { Ledger } from "../cost/types.ts";
 import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
 import { planCacheBreakpoints } from "./cache-control.ts";
 import { buildCandidates } from "./candidates.ts";
-import { pickQualityAxis } from "./classify.ts";
 import {
 	TIER_ORDER,
 	type Candidate,
@@ -139,7 +138,8 @@ export function select(args: SelectArgs): Decision {
 
 	// 3. Candidates for the effective tier; widen one tier upward, then
 	//    downward, and only fail when the whole profile envelope is exhausted.
-	const axis = pickQualityAxis(features, cfg);
+	// The task type selects the quality axis and capability filters; the tier
+	// still bounds cost (task selects, tier budgets).
 	const warmSlug =
 		state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs
 			? state.cacheWarmSlug
@@ -149,7 +149,7 @@ export function select(args: SelectArgs): Decision {
 			req,
 			features,
 			tier: t,
-			axis,
+			task: classification.task,
 			snapshot,
 			ledger,
 			cfg,
