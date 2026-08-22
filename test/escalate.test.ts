@@ -176,4 +176,48 @@ describe("createProbe", () => {
 		const verdict = p.observe(text(" more"));
 		expect(verdict?.action).toBe("commit");
 	});
+
+	test("a length finish on prose commits: that is the caller's max_tokens", () => {
+		// Escalating cannot fix it — the retry runs under the same cap and
+		// truncates in the same place, so it would just bill twice.
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		expect(p.observe(text("a long answer that ran out of room"))).toBeNull();
+		const verdict = p.observe(chunk([{ type: "finish", reason: "length" }]));
+		expect(verdict?.action).toBe("commit");
+	});
+
+	test("a length finish that truncated tool-call arguments still escalates", () => {
+		// Structurally unusable output: another model may emit a complete call.
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		expect(p.observe(toolDelta(0, { id: "c1", name: "read", argsDelta: '{"path":"a' }))).toBeNull();
+		const verdict = p.observe(chunk([{ type: "finish", reason: "length" }]));
+		expect(verdict?.action).toBe("escalate");
+	});
+
+	test("a length finish having produced nothing escalates as an empty completion", () => {
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		const verdict = p.observe(chunk([{ type: "finish", reason: "length" }]));
+		expect(verdict?.action).toBe("escalate");
+		if (verdict?.action === "escalate") expect(verdict.signal).toBe("empty_completion");
+	});
+
+	test("reasoning-only output counts as alive at the hold ceiling", () => {
+		// A reasoning model that has emitted only reasoning tokens after the
+		// ceiling is working normally; escalating would discard a healthy paid
+		// generation.
+		let t = 0;
+		const p = createProbe(plan({ maxTokens: 1_000, maxHoldMs: 1_000 }), req(), ALL_TRIGGERS, () => t);
+		expect(p.observe(chunk([{ type: "reasoning", delta: "weighing options" }]))).toBeNull();
+		t = 1_001;
+		const verdict = p.observe(chunk([{ type: "reasoning", delta: " further" }]));
+		expect(verdict?.action).toBe("commit");
+	});
+
+	test("a stream that ENDS with only reasoning is still hollow", () => {
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		expect(p.observe(chunk([{ type: "reasoning", delta: "thinking" }]))).toBeNull();
+		const verdict = p.verdictOnEnd();
+		expect(verdict.action).toBe("escalate");
+		if (verdict.action === "escalate") expect(verdict.signal).toBe("empty_completion");
+	});
 });

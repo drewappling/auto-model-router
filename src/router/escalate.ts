@@ -138,9 +138,22 @@ export function createProbe(
 
 		const hasText = text.trim() !== "";
 		if (finishReason === "length") {
-			// Truncated with no usable tool call: the agent would act on half an answer.
-			if (triggers.has("length_stop")) return escalate("length_stop", "hit the length cap with no tool call");
-			return commit("length finish tolerated");
+			// A length finish on PROSE is the client's own `max_tokens` doing its
+			// job, not a model failure — and escalating cannot fix it, because the
+			// retry runs under the same cap and truncates in the same place. All it
+			// buys is paying twice, at a dearer tier, for the same truncation. The
+			// caller's remedy is a larger cap or a continuation, not a better model.
+			//
+			// A length finish that truncated TOOL-CALL ARGUMENTS is different and
+			// still escalates (above): that output is structurally unusable, and a
+			// different model may emit a well-formed call before the cap.
+			if (!hasText) {
+				if (triggers.has("empty_completion")) {
+					return escalate("empty_completion", "hit the length cap having produced nothing");
+				}
+				return commit("length finish with no content tolerated; signal disabled");
+			}
+			return commit("length finish on prose: the client's max_tokens, not a model failure");
 		}
 		if (req.forcedToolChoice && req.tools.length > 0 && triggers.has("missing_expected_tool_call")) {
 			return escalate("missing_expected_tool_call", "tool choice was forced but the model produced prose");

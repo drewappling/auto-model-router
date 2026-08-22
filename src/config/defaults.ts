@@ -88,10 +88,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 			"repeat_tool_call",
 			"missing_expected_tool_call",
 		],
-		// A `length` finish means the answer was silently truncated and the agent
-		// would act on half of it — a genuine quality failure, so escalate by
-		// default. Cost: a turn that legitimately hit a generous cap pays for one
-		// abandoned generation before the retry.
+		// Scoped to the case it can actually fix: a `length` finish that truncated
+		// tool-call arguments leaves unusable output, and another model may emit a
+		// well-formed call before the cap. A length finish on prose does NOT
+		// escalate — that is the caller's own max_tokens, and the retry truncates
+		// in the same place, so escalating just bills twice for one truncation.
 		escalateOnLengthStop: true,
 	},
 	hysteresis: {

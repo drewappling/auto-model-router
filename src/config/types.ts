@@ -139,7 +139,11 @@ export interface EscalationConfig {
 	probeTiers: Tier[];
 	/** Signals that trigger escalation. Narrowing this makes the guard more permissive. */
 	triggers: string[];
-	/** Treat a `length` finish on an empty tool call as a failure. */
+	/**
+	 * Escalate when a `length` finish truncated TOOL-CALL ARGUMENTS, leaving
+	 * structurally unusable output. A length finish on prose never escalates:
+	 * that is the caller's own `max_tokens`, and a retry truncates identically.
+	 */
 	escalateOnLengthStop: boolean;
 }
 
