@@ -88,6 +88,7 @@ if you want chosen-model toasts:
 extensions:
   - /path/to/omp-router/omp-extension/router-embed.ts
   - /path/to/omp-router/omp-extension/router-toast.ts
+  - /path/to/omp-router/omp-extension/router-configure.ts
 ```
 
 At session start the embed extension:
@@ -149,25 +150,33 @@ It raises a TUI toast (`ctx.ui.notify`) like
 Install it by adding the file's absolute path to omp's `extensions:` list
 (alongside the embed extension above):
 
+## Configure the router from inside omp
+
+`/router configure` edits the router's settings through omp's native UI
+dialogs instead of a text wizard. It walks the same sections and fields as
+`omp-router config` (reusing `WIZARD_SECTIONS` and `PROFILE_FIELDS`) and
+persists through the same validated, backed-up merge
+(`writeRouterConfig`), so edits are schema-checked before they land.
+
 ```yaml
 # ~/.omp/agent/config.yml
 extensions:
-  - /path/to/omp-router/omp-extension/router-embed.ts
-  - /path/to/omp-router/omp-extension/router-toast.ts
+  - /path/to/omp-router/omp-extension/router-configure.ts
 ```
 
-Then restart the omp session (extensions load at session start). Because the
-embedded router binds a random OS-assigned port, the toast resolves the router
-base URL on every poll in this order: the embedded router's port file
-(`$OMP_ROUTER_HOME/embed.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
-then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
-port file each tick means the toast always polls the port the router actually
-bound, even though it changes every session.
+Then restart the omp session and run:
 
-The toast logic is a pure, unit-tested module
-(`omp-extension/toast-logic.ts`, covered by `test/toast-logic.test.ts`): it
-toasts only decisions newer than the last seen one, skips `wasted` escalation
-attempts, and prefers the actual serving slug over the requested one.
+```
+/router configure
+```
+
+It shows a section picker (Server, OpenRouter, Tiers, Tasks, Filters,
+Classifier, Escalation, Hysteresis, Cache, Budget, Ledger, Logging, Profiles).
+Each section prompts its fields through `ctx.ui` select/input dialogs — an
+empty input keeps the current value, `-` clears an optional field — and
+`Save and exit` writes the merged config (backing up the previous file first).
+Because the router runs embedded in the omp process, restart the omp session
+after saving to pick up the new settings.
 
 ## Multiple coding harnesses, one router
 
