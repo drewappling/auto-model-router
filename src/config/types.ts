@@ -229,5 +229,12 @@ export interface RouterConfig {
 	budget: BudgetConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
+	/**
+	 * Derive each tier's quality floor from the models actually available at
+	 * every catalog refresh, relaxing (never tightening) the configured floors.
+	 * Without this, a narrow OpenRouter guardrail leaves every tier above
+	 * `trivial` permanently empty and the router is stuck on the cheapest model.
+	 */
+	adaptiveTierFloors: boolean;
 	logLevel: "silent" | "error" | "warn" | "info" | "debug";
 }

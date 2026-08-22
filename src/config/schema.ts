@@ -154,6 +154,7 @@ export const configInputSchema = z.strictObject({
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	ledger: ledger.optional(),
+	adaptiveTierFloors: z.boolean().optional(),
 	logLevel: logLevel.optional(),
 });
 

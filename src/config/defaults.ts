@@ -74,7 +74,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		enabled: true,
 		probeTokens: 48,
 		maxHoldMs: 8_000,
-		maxAttempts: 2,
+		// 3 attempts = the original try plus two retries: enough runway for a
+		// probe-driven escalation AND a same-tier failover on an upstream error.
+		// Each attempt beyond the first can abandon already-generated tokens, so
+		// this is the direct dial between turn reliability and wasted spend.
+		maxAttempts: 3,
 		// Never probe `hard`: the top tier has nowhere to escalate to.
 		probeTiers: ["trivial", "simple", "moderate"],
 		triggers: [
@@ -84,7 +88,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 			"repeat_tool_call",
 			"missing_expected_tool_call",
 		],
-		escalateOnLengthStop: false,
+		// A `length` finish means the answer was silently truncated and the agent
+		// would act on half of it — a genuine quality failure, so escalate by
+		// default. Cost: a turn that legitimately hit a generous cap pays for one
+		// abandoned generation before the retry.
+		escalateOnLengthStop: true,
 	},
 	hysteresis: {
 		holdTurns: 2,
@@ -120,5 +128,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		fallbackBlend: { inputPerMtok: 1.5, outputPerMtok: 7.5 },
 		conversationTtlMs: 7 * 24 * 60 * 60 * 1000,
 	},
+	// On by default: an absolute floor that no available model meets is how the
+	// router ends up serving every turn from the cheapest tier.
+	adaptiveTierFloors: true,
 	logLevel: "info",
 };

@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 
 import { createCatalog } from "../catalog/openrouter-catalog.ts";
+import { effectiveQualityFloor, tierPlanFor } from "../router/tier-plan.ts";
 import { loadConfig } from "../config/load.ts";
 import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { createLedger } from "../cost/ledger.ts";
@@ -84,6 +85,8 @@ function qualityCell(c: Candidate): string {
 interface TierReport {
 	tier: Tier;
 	minQuality: number;
+	/** Floor actually enforced; differs from `minQuality` under adaptive floors. */
+	effectiveQuality: number;
 	axis: QualityAxis;
 	candidates: Candidate[];
 	rejected: Rejection[];
@@ -91,8 +94,14 @@ interface TierReport {
 
 function renderTier(report: TierReport, limit: number): void {
 	const { tier, candidates, rejected } = report;
+	// Make an adaptive relaxation visible: "floor 95 → 76.1 (adaptive)" explains
+	// why models below the configured floor are eligible.
+	const floor =
+		report.effectiveQuality === report.minQuality
+			? String(report.minQuality)
+			: `${report.minQuality} → ${report.effectiveQuality.toFixed(1)} (adaptive)`;
 	console.log(
-		`\n[${tier}]  quality floor ${report.minQuality} on the ${report.axis} axis  -  ${candidates.length} eligible, ${rejected.length} excluded`,
+		`\n[${tier}]  quality floor ${floor} on the ${report.axis} axis  -  ${candidates.length} eligible, ${rejected.length} excluded`,
 	);
 	if (candidates.length === 0) {
 		console.log("  (nothing eligible: loosen the tier's floor or price ceiling)");
@@ -165,7 +174,13 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 				expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 				warmSlug: null,
 			});
-			return { tier, minQuality: tierCfg.minQuality, axis, candidates, rejected };
+			// Report the floor actually enforced, not the configured constant: with
+			// adaptive floors on they differ, and printing the configured value
+			// makes an eligible tier look impossible.
+			const effective = cfg.adaptiveTierFloors
+				? effectiveQualityFloor(tierCfg.minQuality, tier, axis, tierPlanFor(snapshot, cfg))
+				: tierCfg.minQuality;
+			return { tier, minQuality: tierCfg.minQuality, effectiveQuality: effective, axis, candidates, rejected };
 		});
 
 		if (args.flags.has("json")) {

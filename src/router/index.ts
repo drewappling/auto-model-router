@@ -50,7 +50,10 @@ export function createRouter(deps: RouterDeps): Router {
 	const { config, catalog, ledger, conversations, upstream } = deps;
 
 	return {
-		async route(req: NormRequest, opts: { attempt: number; escalateFrom?: Tier }): Promise<Decision> {
+		async route(
+			req: NormRequest,
+			opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] },
+		): Promise<Decision> {
 			const state = conversations.get(req.conversationKey) ?? conversations.load(req.conversationKey);
 			const snapshot = await catalog.get();
 
@@ -89,6 +92,7 @@ export function createRouter(deps: RouterDeps): Router {
 				ledger,
 				cfg: config,
 				nowMs: Date.now(),
+				...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
 			});
 		},
 	};

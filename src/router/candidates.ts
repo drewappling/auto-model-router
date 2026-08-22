@@ -9,6 +9,7 @@ import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
+import { effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
 import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
 
 export interface BuildCandidatesArgs {
@@ -31,6 +32,12 @@ export interface BuildCandidatesArgs {
 	 * hard capability filters (tools/images/context) or the key-scoped allowlist.
 	 */
 	relaxLevel?: number;
+	/**
+	 * Slugs this turn must not select — the models that already failed on it.
+	 * Failover re-selects with the failed slug excluded so a retry lands on a
+	 * DIFFERENT model instead of re-issuing the one that just errored.
+	 */
+	excludeSlugs?: readonly string[];
 }
 
 /** Tiny glob: `*` matches any run of characters; everything else is literal. */
@@ -63,6 +70,8 @@ const UNMEASURED_TRUST = 0.9;
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
 	const { req, features, tier, task, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
+	// A Set only when non-empty: the common path allocates nothing.
+	const excluded = args.excludeSlugs === undefined || args.excludeSlugs.length === 0 ? null : new Set(args.excludeSlugs);
 	const tierCfg = cfg.tiers[tier];
 	const taskCfg = cfg.tasks[task];
 	const filters = cfg.filters;
@@ -74,9 +83,19 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	const needTools = req.tools.length > 0 && filters.requireToolSupport;
 	const minContext = Math.ceil(features.promptTokens * filters.contextHeadroom) + expectedCompletionTokens;
 	// Task selects the quality axis and capability filters; the tier still
-	// bounds cost. The task's quality floor overrides the tier's when higher.
+	// bounds cost.
 	const effectiveAxis = taskCfg.axis;
-	const qualityFloor = Math.max(tierCfg.minQuality, taskCfg.minQuality ?? 0);
+	// Two floors with different meanings, and only one of them may be relaxed:
+	//  - the TIER floor is an economic envelope tuned against the full catalog,
+	//    so when a guardrail narrows availability below it, relaxing to the
+	//    best available band is right (otherwise the tier is empty forever).
+	//  - the TASK floor is a capability requirement (vision needs a model that
+	//    can actually see), so adaptive relaxation must never lower it.
+	const taskFloor = taskCfg.minQuality ?? 0;
+	const adaptiveTierFloor = cfg.adaptiveTierFloors
+		? effectiveQualityFloor(tierCfg.minQuality, tier, effectiveAxis, tierPlanFor(snapshot, cfg))
+		: tierCfg.minQuality;
+	const qualityFloor = Math.max(taskFloor, adaptiveTierFloor);
 	const taskPins = taskCfg.prefer ?? [];
 	let images = 0;
 	if (req.hasImages) for (const m of req.messages) images += m.images;
@@ -86,6 +105,13 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 
 	for (const model of snapshot.models) {
 		const slug = model.slug;
+
+		// Failover exclusion comes first: a model that already failed this turn
+		// is not a candidate no matter how well it scores.
+		if (excluded !== null && excluded.has(slug)) {
+			rejected.push({ slug, reason: "failed_this_turn" });
+			continue;
+		}
 
 		// Hard-coded denials, before any user configuration. These slugs can
 		// never serve an interactive turn:

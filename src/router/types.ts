@@ -112,7 +112,9 @@ export type RejectionReason =
 	| "not_allowlisted"
 	| "free_tier_excluded"
 	| "reasoning_mandatory"
-	| "untrusted";
+	| "untrusted"
+	/** Already failed on this turn; excluded so failover picks a different model. */
+	| "failed_this_turn";
 
 export interface Rejection {
 	slug: string;
@@ -208,6 +210,13 @@ export type ProbeVerdict =
 	| { action: "escalate"; signal: EscalationSignal; reason: string };
 
 export interface Router {
-	/** Chooses a model for a request. Pure w.r.t. everything except the stores it reads. */
-	route(req: NormRequest, opts: { attempt: number; escalateFrom?: Tier }): Promise<Decision>;
+	/**
+	 * Chooses a model for a request. Pure w.r.t. everything except the stores it
+	 * reads. `excludeSlugs` removes models that already failed on this turn, so
+	 * a failover retry cannot re-pick the slug that just errored.
+	 */
+	route(
+		req: NormRequest,
+		opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] },
+	): Promise<Decision>;
 }

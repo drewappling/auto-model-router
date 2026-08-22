@@ -157,4 +157,23 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("escalate");
 		expect(verdict).toMatchObject({ signal: "empty_completion" });
 	});
+
+	test("a stalled stream escalates at the hold ceiling instead of committing silence", () => {
+		let t = 0;
+		const p = createProbe(plan({ maxHoldMs: 1_000 }), req(), ALL_TRIGGERS, () => t);
+		expect(p.observe(chunk([]))).toBeNull();
+		t = 1_001;
+		const verdict = p.observe(chunk([]));
+		expect(verdict?.action).toBe("escalate");
+		expect(verdict).toMatchObject({ signal: "empty_completion" });
+	});
+
+	test("the hold ceiling still commits when content has arrived", () => {
+		let t = 0;
+		const p = createProbe(plan({ maxTokens: 1_000, maxHoldMs: 1_000 }), req(), ALL_TRIGGERS, () => t);
+		expect(p.observe(text("partial answer"))).toBeNull();
+		t = 1_001;
+		const verdict = p.observe(text(" more"));
+		expect(verdict?.action).toBe("commit");
+	});
 });

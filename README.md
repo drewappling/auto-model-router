@@ -236,6 +236,63 @@ spend.
 feature vector, classification reasoning, ranked candidates with forecasts, and
 every rejection with its cause — without dispatching a completion.
 
+## Where quality scores come from
+
+Tier floors are points on the Artificial Analysis index, which OpenRouter
+publishes per model under `benchmarks.artificial_analysis` (coding, agentic and
+intelligence). Two things about that data drive the router's behaviour:
+
+**`/models/user` omits it entirely.** The key-scoped endpoint is authoritative
+for *availability* under your guardrails, but its records carry no `benchmarks`
+block at all. Read on its own it makes every model **unscored**, and an unscored
+model satisfies no floor above zero — so `simple`, `moderate` and `hard` all go
+permanently empty, selection widens down, and every turn is served by the
+cheapest `trivial` model no matter how hard the work is. The router therefore
+fetches the public `/models` purely to join the scores back on by id (falling
+back to `canonical_slug`, and stripping a leading `~` for alias entries).
+Availability still comes solely from the key-scoped list — public models never
+leak into a key-scoped snapshot. The join is best-effort: if the public fetch
+fails, the catalog stays unscored and degraded rather than the refresh failing.
+
+**Roughly 60% of the catalog is unscored anyway.** Scores are never imputed from
+price (a cheap model is not a bad one), so unscored models are only ever
+eligible where the floor is zero.
+
+## Adaptive tier floors
+
+The configured floors (`trivial` 0, `simple` 40, `moderate` 60, `hard` 72) are
+absolute points tuned against the full ~420-model catalog. A guardrail can
+narrow your available set to models that all sit below them, at which point an
+absolute floor admits nothing and the router is trapped in the lowest tier.
+
+With `adaptiveTierFloors: true` (the default), every catalog refresh ranks the
+**available** scored models and splits them into four quantile bands, taking
+each band's lower bound as that tier's adaptive floor. The floor actually
+enforced is `min(configured, adaptive)`:
+
+- a healthy catalog keeps the configured floors verbatim — no behaviour change;
+- a narrowed catalog falls back to the adaptive floor, so `hard` still gets the
+  best quartile of what is available instead of nothing.
+
+Relaxation is one-directional by design: an adaptive floor may only **lower** a
+tier floor, never raise one, so a rich catalog can never price you out of a tier
+you configured. Two things are deliberately exempt:
+
+- **Task floors are never relaxed.** `tasks.*.minQuality` is a capability
+  requirement (vision needs a model that can actually see), not an economic
+  envelope, so the effective floor is `max(taskFloor, adaptiveTierFloor)`.
+- **Unscored catalogs relax to zero.** With no measured spread to rank on, all
+  four floors compute to 0 and the price ceiling plus `qualityExponent` do the
+  differentiating. That is the honest degradation.
+
+The plan is memoized per snapshot object, so it recomputes exactly when a
+refresh installs a new catalog — on the `catalogRefreshMs` interval, with no
+timer of its own. `omp-router models` shows any relaxation explicitly:
+
+```
+[hard]  quality floor 95 → 76.1 (adaptive) on the coding axis  -  3 eligible, 16 excluded
+```
+
 ## Tier rescue
 
 The tier envelopes (price ceilings, quality floors, trust bar) are tuned against

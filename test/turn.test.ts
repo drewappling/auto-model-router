@@ -69,6 +69,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
+		adaptiveTierFloors: true,
 		logLevel: "silent",
 	};
 }

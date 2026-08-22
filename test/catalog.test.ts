@@ -157,8 +157,13 @@ describe("createCatalog key-scoped availability", () => {
 
 		const snapshot = await catalog.get();
 		expect(userCalls).toBe(1);
-		expect(publicCalls).toBe(0);
+		// The public catalog is now also fetched, but ONLY to join AA benchmark
+		// scores on: `/models/user` omits them, and an unscored catalog leaves
+		// every tier above `trivial` permanently empty.
+		expect(publicCalls).toBe(1);
 		expect(snapshot.keyScoped).toBe(true);
+		// Availability still comes solely from the key-scoped list: none of the
+		// public models may leak into a key-scoped snapshot.
 		expect(snapshot.models.length).toBe(1);
 		expect(snapshot.models[0]?.slug).toBe("anthropic/claude-sonnet-4.5");
 		db.close();

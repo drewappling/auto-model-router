@@ -203,6 +203,55 @@ function normalizeAll(raw: unknown[]): CatalogModel[] {
 	return models;
 }
 
+/**
+ * Joins the AA `benchmarks` block from the public catalog onto key-scoped
+ * records.
+ *
+ * `GET /models/user` is authoritative for AVAILABILITY under the key's
+ * guardrails, but its payload omits `benchmarks` entirely — every record comes
+ * back unscored. An unscored model satisfies no quality floor above zero, so
+ * with only the key-scoped payload every tier except `trivial` (floor 0) is
+ * permanently empty and all traffic collapses onto the cheapest models. Join
+ * the public scores back on by `id`, falling back to `canonical_slug` so alias
+ * entries (`~vendor/model-latest`) inherit their target's scores.
+ *
+ * Returns the number of records that gained scores.
+ */
+export function joinBenchmarks(keyScoped: unknown[], publicRaw: unknown[]): number {
+	const byId = new Map<string, unknown>();
+	for (const record of publicRaw) {
+		const rec = asRecord(record);
+		if (rec === null) continue;
+		const benchmarks = rec.benchmarks;
+		if (benchmarks === undefined || benchmarks === null) continue;
+		if (typeof rec.id === "string") byId.set(rec.id, benchmarks);
+		// Only fill a canonical_slug key when nothing claimed it, so a real id
+		// always beats an alias target.
+		if (typeof rec.canonical_slug === "string" && !byId.has(rec.canonical_slug)) {
+			byId.set(rec.canonical_slug, benchmarks);
+		}
+	}
+
+	let joined = 0;
+	for (const record of keyScoped) {
+		const rec = asRecord(record);
+		if (rec === null) continue;
+		if (rec.benchmarks !== undefined && rec.benchmarks !== null) continue;
+		const id = typeof rec.id === "string" ? rec.id : null;
+		const canonical = typeof rec.canonical_slug === "string" ? rec.canonical_slug : null;
+		// An alias id keeps a leading `~`; strip it before the canonical lookup.
+		const stripped = id !== null && id.startsWith("~") ? id.slice(1) : null;
+		const benchmarks =
+			(id !== null ? byId.get(id) : undefined) ??
+			(canonical !== null ? byId.get(canonical) : undefined) ??
+			(stripped !== null ? byId.get(stripped) : undefined);
+		if (benchmarks === undefined) continue;
+		rec.benchmarks = benchmarks;
+		joined += 1;
+	}
+	return joined;
+}
+
 export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: Database): CatalogSource {
 	const log = createLogger(cfg.logLevel);
 	let snapshot: CatalogSnapshot | null = null;
@@ -276,6 +325,31 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 			}
 		} else {
 			raw = await upstream.fetchModels();
+		}
+
+		// The key-scoped payload carries no `benchmarks`, which would leave every
+		// model unscored and every tier above `trivial` empty. Fetch the public
+		// catalog purely for scores and join them on. Best-effort: if the public
+		// fetch fails we route over an unscored catalog (degraded but working)
+		// rather than failing a refresh that already has the availability list.
+		if (keyScoped) {
+			try {
+				const publicRaw = await upstream.fetchModels();
+				const joined = joinBenchmarks(raw, publicRaw);
+				log.debug("joined public benchmarks onto key-scoped catalog", {
+					models: raw.length,
+					scored: joined,
+				});
+				if (joined === 0) {
+					log.warn("no key-scoped model matched a public benchmark record; tiers above trivial will be empty", {
+						models: raw.length,
+					});
+				}
+			} catch (err) {
+				log.warn("public benchmark fetch failed; catalog stays unscored", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 		}
 
 		const models = normalizeAll(raw);

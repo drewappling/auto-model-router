@@ -35,6 +35,11 @@ export interface SelectArgs {
 	ledger: Ledger | null;
 	cfg: RouterConfig;
 	nowMs: number;
+	/**
+	 * Slugs that already failed on this turn. Passed straight to
+	 * `buildCandidates` so a failover retry lands on a different model.
+	 */
+	excludeSlugs?: readonly string[];
 }
 
 /**
@@ -156,6 +161,7 @@ export function select(args: SelectArgs): Decision {
 			expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 			warmSlug,
 			relaxLevel,
+			...(args.excludeSlugs === undefined ? {} : { excludeSlugs: args.excludeSlugs }),
 		});
 	let chosenTier = effective;
 	let built: { candidates: Candidate[]; rejected: Rejection[] } | null = null;

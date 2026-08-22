@@ -80,6 +80,12 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 	{
 		title: "Tiers",
 		fields: [
+			{
+				path: "adaptiveTierFloors",
+				label: "Adaptive floors from available models",
+				kind: "boolean",
+				hint: "keeps every tier populated",
+			},
 			{ path: "tiers.trivial.minQuality", label: "trivial: min quality", kind: "number", min: 0, max: 100 },
 			{ path: "tiers.trivial.maxInputPerMtok", label: "trivial: max input $/Mtok", kind: "number", min: 0, optional: true },
 			{ path: "tiers.simple.minQuality", label: "simple: min quality", kind: "number", min: 0, max: 100 },

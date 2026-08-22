@@ -208,7 +208,16 @@ export function createProbe(
 				return commit(`tool call "${acc.name ?? "?"}" arguments are complete valid JSON`);
 			}
 			if (plan.maxHoldMs > 0 && now() - startedAt >= plan.maxHoldMs) {
-				return commit("hold-time ceiling elapsed");
+				// The ceiling bounds latency; it must not bless silence. Committing
+				// unconditionally here (the old behaviour) let a stalled or empty
+				// stream pass as "served". Deciding from the held buffer instead —
+				// exactly as if the stream had ended — means only genuinely healthy
+				// output (real text, complete tool-call JSON) commits, while an
+				// empty buffer or unparseable partial args escalate. Tradeoff: a
+				// merely slow-but-fine generation that has produced nothing yet pays
+				// for a second attempt at a higher tier; that is cheaper than
+				// streaming a hollow turn the agent then acts on.
+				return endVerdict();
 			}
 			return null;
 		},
