@@ -159,6 +159,10 @@ export function select(args: SelectArgs): Decision {
 		});
 	let chosenTier = effective;
 	let built: { candidates: Candidate[]; rejected: Rejection[] } | null = null;
+	// Relax level the tier rescue used (0 = no rescue). The budget downgrade
+	// search must rebuild at the same level, or it re-applies the strict config
+	// that excluded every model and throws instead of downgrading.
+	let rescuedRelax = 0;
 	for (const t of wideningOrder(effective, profile.minTier, profile.maxTier)) {
 		const b = build(t);
 		if (b.candidates.length > 0) {
@@ -178,7 +182,6 @@ export function select(args: SelectArgs): Decision {
 	if (built === null || built.candidates.length === 0) {
 		const envelope = wideningOrder(effective, profile.minTier, profile.maxTier);
 		let rescued = false;
-		let rescuedRelax = 0;
 		for (let relax = 1; relax <= 3 && !rescued; relax++) {
 			for (const t of envelope) {
 				const b = build(t, relax);
@@ -271,7 +274,7 @@ export function select(args: SelectArgs): Decision {
 		// Downgrade: the cheapest candidate in the cheapest tier that fits.
 		let rescue: { tier: Tier; candidate: Candidate; candidates: Candidate[] } | null = null;
 		for (const t of wideningOrder(profile.minTier, profile.minTier, profile.maxTier)) {
-			const b = build(t);
+			const b = build(t, rescuedRelax);
 			let cheapest: Candidate | null = null;
 			for (const c of b.candidates) {
 				if (cheapest === null || c.forecast.coldUsd < cheapest.forecast.coldUsd) cheapest = c;

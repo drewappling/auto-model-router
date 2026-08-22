@@ -215,7 +215,7 @@ describe("createCatalog key-scoped availability", () => {
 		const db = openDb(":memory:");
 		const catalog = createCatalog(cfg, upstream, db);
 
-		expect(catalog.get()).rejects.toThrow("Unauthorized");
+		await expect(catalog.get()).rejects.toThrow("Unauthorized");
 		db.close();
 	});
 
@@ -241,6 +241,74 @@ describe("createCatalog key-scoped availability", () => {
 		const snapshot = await catalog.get();
 		expect(snapshot.models.length).toBe(1);
 		expect(snapshot.keyScoped).toBe(false);
+		db.close();
+	});
+
+	test("keeps the previous snapshot when a key-scoped refresh yields no usable models", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+
+		// First fetch returns a real model; the second returns an empty list.
+		let calls = 0;
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => [rawFor("anthropic/claude-sonnet-4.5")],
+			fetchModelsForUser: async () => {
+				calls++;
+				return calls === 1 ? [rawFor("anthropic/claude-sonnet-4.5")] : [];
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-test" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		const first = await catalog.get();
+		expect(first.models.length).toBe(1);
+
+		// Force a refresh that returns empty; the stale snapshot must survive.
+		const second = await catalog.refresh();
+		expect(second.models.length).toBe(1);
+		expect(second.models[0]?.slug).toBe("anthropic/claude-sonnet-4.5");
+		db.close();
+	});
+
+	test("does not persist the public fallback over a key-scoped snapshot", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+		const { UpstreamError } = await import("../src/upstream/types.ts");
+
+		// Key-scoped succeeds once, then fails transiently; public returns a
+		// DIFFERENT model. The public payload must not overwrite the key-scoped
+		// cache on disk.
+		let userCalls = 0;
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => [rawFor("openai/gpt-oss-20b")],
+			fetchModelsForUser: async () => {
+				userCalls++;
+				if (userCalls === 1) return [rawFor("anthropic/claude-sonnet-4.5")];
+				throw new UpstreamError("upstream_error", 500, "Internal Server Error", true);
+			},
+		};
+
+		const cfg = { ...DEFAULT_CONFIG, openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-test" } };
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		await catalog.get(); // key-scoped, persisted
+		await catalog.refresh(); // falls back to public in-memory, must NOT persist
+
+		// A fresh catalog over the same DB hydrates from disk: it must still be
+		// the key-scoped model, not the public fallback.
+		const catalog2 = createCatalog(cfg, upstream, db);
+		const hydrated = catalog2.peek();
+		expect(hydrated?.models[0]?.slug).toBe("anthropic/claude-sonnet-4.5");
+		expect(hydrated?.keyScoped).toBe(true);
 		db.close();
 	});
 });

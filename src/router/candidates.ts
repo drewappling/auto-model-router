@@ -195,6 +195,13 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	candidates.sort((a, b) => {
 		const d = b.score - a.score;
 		if (d !== 0) return d;
+		// When the quality floor is relaxed, unscored models all score 0 and the
+		// lexical tie-break would pick alphabetically. Prefer the cheaper model
+		// first, then the warm slug, then lexical for determinism.
+		if (relaxQuality) {
+			const cd = a.forecast.expectedUsd - b.forecast.expectedUsd;
+			if (cd !== 0) return cd;
+		}
 		// Ties break toward the model already warm in this conversation, then
 		// lexically for determinism.
 		if (a.model.slug === warmSlug) return -1;

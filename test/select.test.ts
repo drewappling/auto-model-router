@@ -285,7 +285,7 @@ describe("decision shape", () => {
 			cfg: BASE,
 			nowMs: Date.now(),
 		});
-	expect(["trivial", "simple"]).toContain(d.tier);
+		expect(["trivial", "simple"]).toContain(d.tier);
 	});
 });
 

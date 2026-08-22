@@ -18,14 +18,15 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 1;
+const USER_VERSION = 2;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   payload TEXT NOT NULL,
   fetched_at_ms INTEGER NOT NULL,
-  etag TEXT
+  etag TEXT,
+  key_scoped INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -78,6 +79,14 @@ CREATE TABLE IF NOT EXISTS conversations (
   cache_warm_at_ms INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL DEFAULT 0
 );
+
+-- v2: catalog_cache gains key_scoped provenance. ALTER TABLE ADD COLUMN is
+-- idempotent only via a guard; SQLite has no IF NOT EXISTS for columns, so
+-- probe pragma_table_info and add when absent.
+`;
+
+const MIGRATE_V2 = `
+ALTER TABLE catalog_cache ADD COLUMN key_scoped INTEGER NOT NULL DEFAULT 0;
 `;
 
 export function openDb(path: string): Database {
@@ -90,6 +99,10 @@ export function openDb(path: string): Database {
 	db.exec(MIGRATIONS);
 	// PRAGMA user_version always returns exactly one row with one integer column.
 	const versionRow = db.query("PRAGMA user_version").get() as { user_version: number };
-	if (versionRow.user_version < USER_VERSION) db.exec(`PRAGMA user_version = ${USER_VERSION}`);
+	if (versionRow.user_version < USER_VERSION) {
+		const cols = db.query("PRAGMA table_info(catalog_cache)").all() as { name: string }[];
+		if (!cols.some((c) => c.name === "key_scoped")) db.exec(MIGRATE_V2);
+		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
+	}
 	return db;
 }

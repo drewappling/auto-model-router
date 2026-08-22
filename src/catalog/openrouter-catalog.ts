@@ -191,6 +191,7 @@ interface CacheRow {
 	payload: string;
 	fetched_at_ms: number;
 	etag: string | null;
+	key_scoped: number;
 }
 
 function normalizeAll(raw: unknown[]): CatalogModel[] {
@@ -208,11 +209,10 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 	let bySlug = new Map<string, CatalogModel>();
 	let hydrated = false;
 	let inflight: Promise<CatalogSnapshot> | null = null;
-
-	const readCache = db.query("SELECT payload, fetched_at_ms, etag FROM catalog_cache WHERE id = 1");
+	const readCache = db.query("SELECT payload, fetched_at_ms, etag, key_scoped FROM catalog_cache WHERE id = 1");
 	const writeCache = db.query(
-		`INSERT INTO catalog_cache (id, payload, fetched_at_ms, etag) VALUES (1, ?, ?, NULL)
-		 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, fetched_at_ms = excluded.fetched_at_ms, etag = NULL`,
+		`INSERT INTO catalog_cache (id, payload, fetched_at_ms, etag, key_scoped) VALUES (1, ?, ?, NULL, ?)
+		 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, fetched_at_ms = excluded.fetched_at_ms, etag = NULL, key_scoped = excluded.key_scoped`,
 	);
 
 	function install(
@@ -240,7 +240,10 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		try {
 			const payload: unknown = JSON.parse(row.payload);
 			if (!Array.isArray(payload)) return null;
-			return install(normalizeAll(payload), row.fetched_at_ms, row.etag, cfg.openrouter.apiKey !== "");
+			// Provenance is persisted, not inferred from the current key: a payload
+			// written by a keyless run or the public fallback must not be advertised
+			// as key-scoped.
+			return install(normalizeAll(payload), row.fetched_at_ms, row.etag, row.key_scoped === 1);
 		} catch (err) {
 			log.warn("catalog cache unreadable; treating as empty", { error: String(err) });
 			return null;
@@ -276,10 +279,24 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		}
 
 		const models = normalizeAll(raw);
+		// A guardrail can narrow the key-scoped list to zero usable models (or a
+		// transient upstream blip can return an empty payload). Treat that as a
+		// failed refresh: keep the previous snapshot rather than replacing a good
+		// one with an empty set that 500s every turn. `refresh()` has no stale
+		// fallback of its own, so return the snapshot directly here.
+		if (models.length === 0 && snapshot !== null) {
+			log.warn("catalog refresh returned no usable models; keeping the previous snapshot");
+			return snapshot;
+		}
 		const fetchedAtMs = Date.now();
 		// Persist the RAW payload: normalization improvements apply on the next
 		// boot without a network fetch. The client returns no headers, so no etag.
-		writeCache.run(JSON.stringify(raw), fetchedAtMs);
+		// Only persist the public fallback when keyless: a key-scoped run that fell
+		// back to public must not overwrite the key-scoped snapshot on disk, or a
+		// restart would route over the un-scoped catalog for up to catalogTtlMs.
+		if (cfg.openrouter.apiKey === "" || keyScoped) {
+			writeCache.run(JSON.stringify(raw), fetchedAtMs, keyScoped ? 1 : 0);
+		}
 		return install(models, fetchedAtMs, null, keyScoped);
 	}
 
