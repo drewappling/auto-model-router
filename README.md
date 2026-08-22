@@ -81,6 +81,41 @@ without touching routing.
 
 ## Installation
 
+There is nothing to install system-wide. Run the cross-platform installer
+(Windows, macOS, Linux) from the repo:
+
+```bash
+bun tools/install.ts
+```
+
+It wires the omp-router extensions into omp's `~/.omp/agent/config.yml`
+(`$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent dir),
+backing up the previous file first. It is idempotent — re-running is a no-op.
+
+Options:
+
+```bash
+bun tools/install.ts --no-toast --no-configure   # only the required embed extension
+```
+
+The installer adds:
+
+- `router-embed.ts` — **required**; runs the router in-process.
+- `router-toast.ts` — optional; chosen-model toasts.
+- `router-configure.ts` — optional; the `/router configure` command.
+
+Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
+
+```yaml
+# ~/.omp/agent/config.yml
+extensions:
+  - /path/to/omp-router/omp-extension/router-embed.ts
+  - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
+  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router configure command
+```
+
+Then restart the omp session (extensions load at session start).
+
 There is nothing to install system-wide. Add the extension paths to omp's
 `~/.omp/agent/config.yml`:
 
