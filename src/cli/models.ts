@@ -84,9 +84,12 @@ function qualityCell(c: Candidate): string {
 
 interface TierReport {
 	tier: Tier;
+	/** The tier's configured `minQuality`. */
 	minQuality: number;
-	/** Floor actually enforced; differs from `minQuality` under adaptive floors. */
+	/** Floor actually enforced; differs under adaptive floors or a task floor. */
 	effectiveQuality: number;
+	/** `tasks.*.minQuality`, 0 when unset. Never relaxed by adaptive floors. */
+	taskFloor: number;
 	axis: QualityAxis;
 	candidates: Candidate[];
 	rejected: Rejection[];
@@ -94,12 +97,14 @@ interface TierReport {
 
 function renderTier(report: TierReport, limit: number): void {
 	const { tier, candidates, rejected } = report;
-	// Make an adaptive relaxation visible: "floor 95 → 76.1 (adaptive)" explains
-	// why models below the configured floor are eligible.
-	const floor =
-		report.effectiveQuality === report.minQuality
-			? String(report.minQuality)
-			: `${report.minQuality} → ${report.effectiveQuality.toFixed(1)} (adaptive)`;
+	// Name the mechanism that moved the floor, so a surprising eligible set is
+	// explainable: a task floor RAISES it, an adaptive band LOWERS it.
+	const { minQuality, effectiveQuality, taskFloor } = report;
+	let floor = String(minQuality);
+	if (effectiveQuality !== minQuality) {
+		const why = taskFloor > 0 && effectiveQuality === taskFloor ? "task floor" : "adaptive";
+		floor = `${minQuality} → ${effectiveQuality.toFixed(1)} (${why})`;
+	}
 	console.log(
 		`\n[${tier}]  quality floor ${floor} on the ${report.axis} axis  -  ${candidates.length} eligible, ${rejected.length} excluded`,
 	);
@@ -174,13 +179,23 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 				expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 				warmSlug: null,
 			});
-			// Report the floor actually enforced, not the configured constant: with
-			// adaptive floors on they differ, and printing the configured value
-			// makes an eligible tier look impossible.
-			const effective = cfg.adaptiveTierFloors
+			// Report the floor actually enforced, which is what `buildCandidates`
+			// computes: the adaptive tier floor raised by any task floor. Printing
+			// the bare tier constant made an eligible tier look impossible under
+			// adaptive floors, and hid a `tasks.*.minQuality` entirely.
+			const adaptive = cfg.adaptiveTierFloors
 				? effectiveQualityFloor(tierCfg.minQuality, tier, axis, tierPlanFor(snapshot, cfg))
 				: tierCfg.minQuality;
-			return { tier, minQuality: tierCfg.minQuality, effectiveQuality: effective, axis, candidates, rejected };
+			const taskFloor = cfg.tasks[task].minQuality ?? 0;
+			return {
+				tier,
+				minQuality: tierCfg.minQuality,
+				effectiveQuality: Math.max(adaptive, taskFloor),
+				taskFloor,
+				axis,
+				candidates,
+				rejected,
+			};
 		});
 
 		if (args.flags.has("json")) {

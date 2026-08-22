@@ -293,6 +293,35 @@ timer of its own. `omp-router models` shows any relaxation explicitly:
 [hard]  quality floor 95 → 76.1 (adaptive) on the coding axis  -  3 eligible, 16 excluded
 ```
 
+## Raising quality for coding work
+
+Tier floors are economic envelopes; `tasks.*.minQuality` is the knob for "I
+want coding turns to use competent models regardless of tier". It RAISES the
+floor at every tier and is never relaxed by adaptive floors, while the tier
+price ceilings still cap what each tier may spend:
+
+```yaml
+tasks:
+  coding:
+    axis: coding
+    minQuality: 68
+```
+
+`omp-router models` names whichever mechanism moved a floor, so a surprising
+eligible set is always explainable:
+
+```
+[trivial]  quality floor 0 → 68.0 (task floor) …  2 eligible
+[hard]     quality floor 95 → 76.1 (adaptive)  …  3 eligible
+```
+
+This is usually the right dial for an agentic coding harness. Most turns after
+the first are tool-result continuations, which the complexity heuristic scores
+as mechanical (`-0.28` against a `0.30` base) — correct for a single file read,
+but it means a long, genuinely hard session keeps classifying `trivial`. A task
+floor lifts the *quality* of whatever tier is chosen without forcing every turn
+into an expensive tier, which is what raising the tier floors would do.
+
 ## Tier rescue
 
 The tier envelopes (price ceilings, quality floors, trust bar) are tuned against
