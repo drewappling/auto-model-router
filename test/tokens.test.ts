@@ -17,6 +17,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		sessionId: "omp-k",
 		turn: 1,
 		requestedModel: "auto",
+		harnessId: "",
 		slug: "openai/gpt-5-mini",
 		servedSlug: "openai/gpt-5-mini",
 		tier: "simple",

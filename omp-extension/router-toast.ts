@@ -24,6 +24,9 @@ import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
 
 const ROUTER_URL = process.env.OMP_ROUTER_URL ?? "http://127.0.0.1:8787";
 const ROUTER_API_KEY = process.env.OMP_ROUTER_API_KEY;
+// This harness's id, matching the X-Omp-Harness header the router records.
+// Empty ⇒ toast every harness (single-harness default).
+const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
 const POLL_MS = 2_000;
 
 export default function (pi: ExtensionAPI): void {
@@ -67,7 +70,7 @@ export default function (pi: ExtensionAPI): void {
 				const entries = body.entries;
 				if (!Array.isArray(entries) || entries.length === 0) return;
 
-				for (const t of selectToasts(entries, lastSeenId)) {
+				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID)) {
 					ctx.ui.notify(t.text, "info");
 				}
 				lastSeenId = newestId(entries) ?? lastSeenId;

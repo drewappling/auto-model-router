@@ -15,6 +15,13 @@ export interface ServerConfig {
 	port: number;
 	/** Optional bearer required from clients. Unset ⇒ loopback-only, no auth. */
 	apiKey?: string;
+	/**
+	 * Harness identity emitted as the `X-Omp-Harness` header in the generated
+	 * `models.yml` provider block. Lets multiple coding harnesses share one
+	 * router while keeping per-harness daily budgets and toast scoping. Empty
+	 * ⇒ no header (single-harness default).
+	 */
+	harnessId?: string;
 }
 
 export interface OpenRouterConfig {

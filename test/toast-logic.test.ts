@@ -15,6 +15,7 @@ function dec(partial: Partial<ToastDecision>): ToastDecision {
 		tier: "trivial",
 		reportedUsd: 0.0000123,
 		wasted: false,
+		harnessId: "",
 		...partial,
 	};
 }
@@ -48,6 +49,26 @@ describe("selectToasts", () => {
 	test("empty input yields no toasts and null newest id", () => {
 		expect(selectToasts([], "x")).toEqual([]);
 		expect(newestId([])).toBeNull();
+	});
+
+	test("filters to the requesting harness when one is set", () => {
+		const entries = [
+			dec({ id: "d3", slug: "mine", harnessId: "harness-a" }),
+			dec({ id: "d2", slug: "other", harnessId: "harness-b" }),
+			dec({ id: "d1", slug: "prior", harnessId: "harness-a" }),
+		];
+		// Only harness-a entries newer than d1 toast; harness-b is excluded.
+		const toasts = selectToasts(entries, "d1", "harness-a");
+		expect(toasts).toHaveLength(1);
+		expect(toasts[0]?.model).toBe("mine");
+	});
+
+	test("empty harness id toasts every harness", () => {
+		const entries = [
+			dec({ id: "d2", slug: "a", harnessId: "harness-a" }),
+			dec({ id: "d1", slug: "b", harnessId: "harness-b" }),
+		];
+		expect(selectToasts(entries, "", "")).toHaveLength(2);
 	});
 });
 

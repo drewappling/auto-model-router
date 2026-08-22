@@ -19,6 +19,7 @@ const server = z.strictObject({
 	host: z.string().min(1).optional(),
 	port: z.number().int().min(0).max(65_535).optional(),
 	apiKey: z.string().optional(),
+	harnessId: z.string().optional(),
 });
 
 const openrouter = z.strictObject({

@@ -72,6 +72,8 @@ export interface LedgerEntry {
 	turn: number;
 	/** Virtual model omp asked for, e.g. `auto`. */
 	requestedModel: string;
+	/** Harness id from the request header; empty for the default harness. */
+	harnessId: string;
 	/** Concrete slug we dispatched to. */
 	slug: string;
 	/** Slug that actually served it, per the response `model` field. */
@@ -131,8 +133,11 @@ export interface Ledger {
 	record(entry: LedgerEntry): void;
 	/** Total reported (or predicted, when reported is null) spend for a conversation. */
 	conversationSpend(conversationKey: string): number;
-	/** Total spend since a wall-clock instant. */
-	spendSince(sinceMs: number): number;
+	/**
+	 * Total spend since a wall-clock instant. When `harnessId` is non-empty,
+	 * scoped to that harness only; empty ⇒ all harnesses (global).
+	 */
+	spendSince(sinceMs: number, harnessId?: string): number;
 	blendedRate(windowDays: number): BlendedRate | null;
 	trust(slug: string): ModelTrust | null;
 	allTrust(): ModelTrust[];

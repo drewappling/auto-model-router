@@ -260,7 +260,10 @@ export function select(args: SelectArgs): Decision {
 			return `conversation spend $${state.spentUsd.toFixed(4)} + cold forecast > per-conversation budget $${budget.perConversationUsd}`;
 		}
 		if (budget.perDayUsd !== undefined) {
-			const daySpend = ledger?.spendSince(nowMs - DAY_MS) ?? 0;
+			// Scope the rolling 24h ceiling to the requesting harness when it
+			// identifies itself, so multiple harnesses sharing one router each get
+			// their own daily budget instead of one exhausting it for the others.
+			const daySpend = ledger?.spendSince(nowMs - DAY_MS, req.harnessId) ?? 0;
 			if (daySpend + c.forecast.coldUsd > budget.perDayUsd) {
 				return `24h spend $${daySpend.toFixed(4)} + cold forecast > per-day budget $${budget.perDayUsd}`;
 			}

@@ -70,6 +70,7 @@ function mkReq(): NormRequest {
 	return {
 		protocol: "openai-chat",
 		conversationKey: "conv-test",
+		harnessId: "",
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],
 		tools: [],

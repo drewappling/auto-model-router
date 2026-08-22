@@ -75,6 +75,8 @@ function run(opts: {
 	cfg?: RouterConfig;
 	st?: ConversationState;
 	tier?: Tier;
+	ledger?: Ledger | null;
+	harnessId?: string;
 }) {
 	const cfg = opts.cfg ?? BASE;
 	const req = request(opts.userText ?? "tidy the retry helper");
@@ -82,13 +84,13 @@ function run(opts: {
 	const heuristic = scoreHeuristic(features, cfg);
 	const classification = opts.tier === undefined ? heuristic : { ...heuristic, tier: opts.tier };
 	return select({
-		req,
+		req: opts.harnessId === undefined ? req : { ...req, harnessId: opts.harnessId },
 		features,
 		classification,
 		profile: PROFILE,
 		state: opts.st ?? state(),
 		snapshot: SNAPSHOT,
-		ledger: null,
+		ledger: opts.ledger === undefined ? null : opts.ledger,
 		cfg,
 		nowMs: Date.now(),
 	});
@@ -243,6 +245,31 @@ describe("budget guard", () => {
 	test("a satisfiable budget does not downgrade", () => {
 		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perTurnUsd: 100, onExceeded: "reject" } };
 		const d = run({ tier: "moderate", promptTokens: 5000, cfg });
+		expect(d.budgetDowngraded).toBe(false);
+	});
+
+	test("scopes the daily budget to the requesting harness", () => {
+		// Harness A has already spent the whole daily cap; harness B has spent
+		// nothing. A request from B must NOT be budget-blocked by A's spend.
+		const spendByHarness: Record<string, number> = { "harness-a": 1.0 };
+		const ledger: Ledger = {
+			record: () => {},
+			conversationSpend: () => 0,
+			spendSince: (_sinceMs, harnessId) => (harnessId === undefined ? 1.0 : spendByHarness[harnessId] ?? 0),
+			blendedRate: () => null,
+			trust: () => null,
+			allTrust: () => [],
+			tokenRatio: () => null,
+			recentEntries: () => [],
+		};
+		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perDayUsd: 0.5, onExceeded: "reject" } };
+
+		// Harness A is over its daily cap → rejected.
+		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-a" })).toThrow(
+			BudgetExceededError,
+		);
+		// Harness B has spent nothing → not blocked by A's spend.
+		const d = run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-b" });
 		expect(d.budgetDowngraded).toBe(false);
 	});
 });

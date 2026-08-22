@@ -194,11 +194,15 @@ function renderUpstreamBody(
 	return body;
 }
 
-export function parseChatRequest(body: unknown, _headers: Headers): NormRequest {
+export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		throw invalidRequest("Request body must be a JSON object");
 	}
 	const b = body as Record<string, unknown>;
+
+	// Harness identity for per-harness budgets and toast scoping. omp sends
+	// this via the provider block's `headers:` override; absent ⇒ single harness.
+	const harnessId = (headers.get("x-omp-harness") ?? "").trim();
 
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
@@ -257,6 +261,7 @@ export function parseChatRequest(body: unknown, _headers: Headers): NormRequest 
 	return {
 		protocol: "openai-chat",
 		conversationKey,
+		harnessId,
 		requestedModel,
 		messages,
 		tools,

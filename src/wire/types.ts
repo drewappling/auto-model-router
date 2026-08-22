@@ -61,6 +61,13 @@ export interface NormRequest {
 	 * conversations, so our `session_id` and their implicit key agree.
 	 */
 	conversationKey: string;
+	/**
+	 * Harness/session identifier from the `X-Omp-Harness` request header, when
+	 * the client sends one. Lets multiple coding harnesses share one router
+	 * while keeping per-harness daily budgets and toast scoping. Empty when the
+	 * client sends no header (single-harness default).
+	 */
+	harnessId: string;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	messages: NormMessage[];

@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 2;
+const USER_VERSION = 3;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS ledger (
   session_id TEXT NOT NULL,
   turn INTEGER NOT NULL,
   requested_model TEXT NOT NULL,
+  harness_id TEXT NOT NULL DEFAULT '',
   slug TEXT NOT NULL,
   served_slug TEXT,
   tier TEXT NOT NULL,
@@ -89,6 +90,10 @@ const MIGRATE_V2 = `
 ALTER TABLE catalog_cache ADD COLUMN key_scoped INTEGER NOT NULL DEFAULT 0;
 `;
 
+const MIGRATE_V3 = `
+ALTER TABLE ledger ADD COLUMN harness_id TEXT NOT NULL DEFAULT '';
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -100,8 +105,10 @@ export function openDb(path: string): Database {
 	// PRAGMA user_version always returns exactly one row with one integer column.
 	const versionRow = db.query("PRAGMA user_version").get() as { user_version: number };
 	if (versionRow.user_version < USER_VERSION) {
-		const cols = db.query("PRAGMA table_info(catalog_cache)").all() as { name: string }[];
-		if (!cols.some((c) => c.name === "key_scoped")) db.exec(MIGRATE_V2);
+		const cacheCols = db.query("PRAGMA table_info(catalog_cache)").all() as { name: string }[];
+		if (!cacheCols.some((c) => c.name === "key_scoped")) db.exec(MIGRATE_V2);
+		const ledgerCols = db.query("PRAGMA table_info(ledger)").all() as { name: string }[];
+		if (!ledgerCols.some((c) => c.name === "harness_id")) db.exec(MIGRATE_V3);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

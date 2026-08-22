@@ -51,11 +51,16 @@ export function renderProviderBlock(cfg: RouterConfig, blend: BlendedRate | null
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
 	const host = cfg.server.host === "0.0.0.0" || cfg.server.host === "::" ? "127.0.0.1" : cfg.server.host;
 
-	const provider = {
+	const provider: Record<string, unknown> = {
 		"omp-router": {
 			baseUrl: `http://${host}:${cfg.server.port}/v1`,
 			api: "openai-completions",
 			auth: "none",
+			// When a harness id is configured, tag every request so the router can
+			// scope daily budgets and toasts per harness.
+			...(cfg.server.harnessId !== undefined && cfg.server.harnessId !== ""
+				? { headers: { "X-Omp-Harness": cfg.server.harnessId } }
+				: {}),
 			models: cfg.profiles.map((p) => ({
 				id: p.id,
 				name: p.name,

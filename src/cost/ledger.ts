@@ -31,6 +31,7 @@ interface LedgerRow {
 	session_id: string;
 	turn: number;
 	requested_model: string;
+	harness_id: string;
 	slug: string;
 	served_slug: string | null;
 	tier: string;
@@ -92,6 +93,7 @@ function toEntry(row: LedgerRow): LedgerEntry {
 		sessionId: row.session_id,
 		turn: row.turn,
 		requestedModel: row.requested_model,
+		harnessId: row.harness_id,
 		slug: row.slug,
 		servedSlug: row.served_slug,
 		tier: row.tier,
@@ -115,10 +117,10 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	// Prepared once: record() runs on every turn.
 	const insertStmt = db.query(
 		`INSERT INTO ledger (
-			id, created_at_ms, conversation_key, session_id, turn, requested_model, slug, served_slug,
+			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -132,6 +134,9 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	);
 	const spendSinceStmt = db.query(
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ?",
+	);
+	const spendSinceHarnessStmt = db.query(
+		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND harness_id = ?",
 	);
 	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ?`);
 	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger GROUP BY slug`);
@@ -173,6 +178,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.sessionId,
 				entry.turn,
 				entry.requestedModel,
+				entry.harnessId,
 				entry.slug,
 				entry.servedSlug,
 				entry.tier,
@@ -208,8 +214,11 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			return row?.total ?? 0;
 		},
 
-		spendSince(sinceMs: number): number {
-			const row = spendSinceStmt.get(sinceMs) as { total: number } | null;
+		spendSince(sinceMs: number, harnessId?: string): number {
+			const row =
+				harnessId !== undefined && harnessId !== ""
+					? (spendSinceHarnessStmt.get(sinceMs, harnessId) as { total: number } | null)
+					: (spendSinceStmt.get(sinceMs) as { total: number } | null);
 			return row?.total ?? 0;
 		},
 
