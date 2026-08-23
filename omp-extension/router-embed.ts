@@ -104,11 +104,16 @@ export default function (pi: ExtensionAPI): void {
 
 	// Register the provider AT FACTORY LOAD so subagents that build a fresh
 	// model registry and load this extension get the omp-router provider + key
-	// even before their session_start. Use this process's own port file (or the
-	// requested port) so each subagent points at the port of the process that
-	// is actually running it — never another process's.
+	// even before their session_start. BUT only when a port is actually known:
+	// `requestedPort` defaults to 0 (let the OS pick), and the PID port file is
+	// written by session_start — so on a fresh process neither exists yet, and
+	// registering with port 0 would point omp at http://127.0.0.1:0/v1, an
+	// invalid URL that fails every dispatch. Register at load only when the
+	// PID file already holds this process's bound port; otherwise session_start
+	// is the one that binds and registers, and nothing forwards an invalid port.
 	const loadCfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
-	registerRouterProvider(pi, readEmbedPort(portFile) ?? requestedPort, loadCfg);
+	const knownPort = readEmbedPort(portFile) ?? (requestedPort > 0 ? requestedPort : null);
+	if (knownPort !== null) registerRouterProvider(pi, knownPort, loadCfg);
 
 	let app: StartedServer | null = null;
 

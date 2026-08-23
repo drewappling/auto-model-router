@@ -156,7 +156,7 @@ At session start, `router-embed.ts`:
 
 1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
    sessions never collide on a fixed port;
-2. writes the actual bound port to a PID-scoped file `$OMP_ROUTER_HOME/embed.<pid>.port`;
+2. writes the actual bound port to a PID-scoped file `$OMP_ROUTER_HOME/embed.<pid>`;
 3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
    virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
 
@@ -331,7 +331,7 @@ Install it by adding the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file
-(`$OMP_ROUTER_HOME/embed.<pid>.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
+(`$OMP_ROUTER_HOME/embed.<pid>`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
 then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
 port file each tick means the toast always polls the port the router actually
 bound, even though it changes every session.

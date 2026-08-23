@@ -32,7 +32,7 @@ export const EMBED_DUMMY_API_KEY = "embedded";
 
 /**
  * Filename prefix (in `$OMP_ROUTER_HOME` / `~/.omp-router`) of the PID-scoped
- * embed port file. The full name is `embed.<pid>.port` (see embedPortPath).
+ * embed port file. The full name is `embed.<pid>` (see embedPortPath).
  */
 export const EMBED_PORT_FILE = "embed";
 
