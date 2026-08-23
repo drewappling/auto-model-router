@@ -31,12 +31,10 @@ export const EMBED_PROVIDER_ID = "omp-router";
 export const EMBED_DUMMY_API_KEY = "embedded";
 
 /**
- * Filename (in `$OMP_ROUTER_HOME` / `~/.omp-router`) that holds the embedded
- * router's actual bound port. Written by the embed extension after the server
- * starts; read by the toast extension each poll so it always polls the port
- * the router actually listens on.
+ * Filename prefix (in `$OMP_ROUTER_HOME` / `~/.omp-router`) of the PID-scoped
+ * embed port file. The full name is `embed.<pid>.port` (see embedPortPath).
  */
-export const EMBED_PORT_FILE = "embed.port";
+export const EMBED_PORT_FILE = "embed";
 
 export interface EmbedModelSpec {
 	id: string;
@@ -70,10 +68,15 @@ export function resolveEmbedPort(envPort: string | undefined): number {
 }
 
 /**
- * Absolute path of the embed port file under a router home directory.
+ * Absolute path of the PID-scoped embed port file under a router home
+ * directory. Each omp process — the main session and every subagent — embeds
+ * its OWN router on its OWN random port, so a single shared `embed.port` is a
+ * cross-process race: whichever process writes last wins, and every other
+ * process reads a port that is not its own. Scoping by PID means each process
+ * (and its toast) reads exactly the port its own router bound.
  */
-export function embedPortPath(homeDir: string): string {
-	return join(homeDir, EMBED_PORT_FILE);
+export function embedPortPath(homeDir: string, pid: number): string {
+	return join(homeDir, EMBED_PORT_FILE + "." + pid);
 }
 
 /**

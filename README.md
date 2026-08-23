@@ -156,7 +156,7 @@ At session start, `router-embed.ts`:
 
 1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
    sessions never collide on a fixed port;
-2. writes the actual bound port to `$OMP_ROUTER_HOME/embed.port`;
+2. writes the actual bound port to a PID-scoped file `$OMP_ROUTER_HOME/embed.<pid>.port`;
 3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
    virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
 
@@ -244,7 +244,7 @@ disk and back up the previous file to a timestamped `.bak`.
 | `OMP_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
 | `OMP_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
 | `OMP_ROUTER_DB` | Override the ledger path. | `$OMP_ROUTER_HOME/router.db` |
-| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads `embed.port` first). | — |
+| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads the PID-scoped port file first). | — |
 | `OMP_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
 | `OMP_HARNESS_ID` | Per-harness toast scoping. | — |
 
@@ -331,7 +331,7 @@ Install it by adding the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file
-(`$OMP_ROUTER_HOME/embed.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
+(`$OMP_ROUTER_HOME/embed.<pid>.port`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
 then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
 port file each tick means the toast always polls the port the router actually
 bound, even though it changes every session.

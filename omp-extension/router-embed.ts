@@ -8,18 +8,20 @@
  * `Bun.serve` in-process on a free OS-assigned port.
  *
  * Binding on a free port (via `port: 0`) is what lets several local omp
- * sessions run simultaneously without colliding: each gets its own ephemeral
- * port. The actual bound port is read back off the server, published to the
- * port file (`$OMP_ROUTER_HOME/embed.port`), and used to point omp's provider
- * at the right address.
+ * processes run simultaneously without colliding: each gets its own ephemeral
+ * port. The actual bound port is read back off the server, published to a
+ * PID-scoped port file (`$OMP_ROUTER_HOME/embed.<pid>.port`), and used to
+ * point omp's provider at the right address. Scoping by PID avoids a
+ * cross-process race: every omp process (main session or subagent) embeds its
+ * OWN router, so the port file is keyed to the process that bound it.
  *
- * The server lives and dies with the omp session, so there is never an orphan
+ * The server lives and dies with the omp process, so there is never an orphan
  * process and never an "is the router running?" failure mode.
  *
  * The provider is registered AT FACTORY LOAD so subagents and async tasks —
  * which build a fresh model registry and load this extension via
- * `preloadedExtensionPaths` but never fire `session_start` — still get the
- * omp-router provider and its dummy key. `session_start` re-registers with the
+ * `preloadedExtensionPaths` — still get the omp-router provider and its dummy
+ * key even before `session_start` fires. `session_start` re-registers with the
  * exact bound port.
  *
  * Install by adding this file's absolute path to omp's `extensions:` list:
@@ -28,9 +30,6 @@
  *   extensions:
  *     - /path/to/omp-router/omp-extension/router-embed.ts
  *     - /path/to/omp-router/omp-extension/router-toast.ts
- *
- * The toast extension reads the same port file so it polls the port this
- * session actually bound.
  */
 
 import { homedir } from "node:os";
@@ -52,6 +51,9 @@ import {
 	resolveEmbedPort,
 	writeEmbedPort,
 } from "./embed-logic.ts";
+
+/** The PID of the process running this extension (main session or subagent). */
+const MY_PID = process.pid;
 
 /**
  * Registers the omp-router provider (and its virtual models) into omp's model
@@ -91,22 +93,20 @@ export default function (pi: ExtensionAPI): void {
 	// A free ephemeral port unless the user pins one with OMP_ROUTER_PORT.
 	const requestedPort = resolveEmbedPort(process.env.OMP_ROUTER_PORT);
 
-	// Resolve the router home so the port file lands where the toast will look.
+	// Resolve the router home so the PID-scoped port file lands where the toast
+	// will look.
 	const homeRaw = process.env.OMP_ROUTER_HOME ?? join(homedir(), ".omp-router");
 	const home =
 		homeRaw === "~" || homeRaw.startsWith("~/") || homeRaw.startsWith("~\\")
 			? join(homedir(), homeRaw.slice(1))
 			: homeRaw;
-	const portFile = embedPortPath(home);
+	const portFile = embedPortPath(home, MY_PID);
 
-	// Register the provider AT FACTORY LOAD. Subagents (and async tasks) build
-	// a fresh model registry and load this extension via preloadedExtensionPaths;
-	// they never fire `session_start`, so a registration made only there never
-	// reaches them — the fresh registry would have no omp-router provider and no
-	// key. Registering here lands in pendingProviderRegistrations, which every
-	// fresh registry applies when it loads this extension. Use the last-known
-	// bound port from the shared file; session_start corrects it to the exact
-	// port once the server is actually bound.
+	// Register the provider AT FACTORY LOAD so subagents that build a fresh
+	// model registry and load this extension get the omp-router provider + key
+	// even before their session_start. Use this process's own port file (or the
+	// requested port) so each subagent points at the port of the process that
+	// is actually running it — never another process's.
 	const loadCfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
 	registerRouterProvider(pi, readEmbedPort(portFile) ?? requestedPort, loadCfg);
 
@@ -127,11 +127,11 @@ export default function (pi: ExtensionAPI): void {
 		if (actualPort === undefined) return;
 		app = started;
 
-		// Publish the real port so the toast extension can poll it.
+		// Publish this process's port so the toast polls the right one.
 		writeEmbedPort(portFile, actualPort);
 
 		// Re-register with the exact bound port, overwriting the load-time
-		// registration that used the (possibly stale) shared port.
+		// registration that used the (possibly stale) requested port.
 		registerRouterProvider(pi, actualPort, cfg);
 
 		pi.on("session_shutdown", () => {

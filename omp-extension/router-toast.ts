@@ -48,12 +48,12 @@ function readRouterConfig(): string | null {
 	}
 }
 
-/** Absolute path of the embed port file under the router home directory. */
+/** Absolute path of the PID-scoped embed port file for this process. */
 function embedPortFile(): string {
 	const raw = process.env.OMP_ROUTER_HOME ?? join(homedir(), ".omp-router");
 	const home =
 		raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
-	return embedPortPath(home);
+	return embedPortPath(home, process.pid);
 }
 
 const ROUTER_API_KEY = process.env.OMP_ROUTER_API_KEY;
