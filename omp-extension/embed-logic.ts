@@ -2,14 +2,14 @@
  * Pure embed configuration logic, extracted from the omp extension so it can
  * be unit-tested without omp's runtime or a live Bun.serve.
  *
- * The embedded router runs IN the omp process and binds a free OS-assigned
- * port (`port: 0`), so several omp sessions can run simultaneously without
- * ever colliding on a fixed port. The actual bound port is surfaced two ways:
- *   1. the embed extension reads it back off `Bun.serve` and points omp's
- *      provider at it, and
- *   2. it is written to a well-known file so the toast extension can discover
- *      it too — the toast cannot precompute a random port, so it reads the
- *      file on every poll.
+ * The embedded router runs IN the main omp process and binds a free
+ * OS-assigned port (`port: 0`). Subagents do NOT bind their own router — they
+ * route to the main session's router, whose bound port is published in a
+ * single shared file. This avoids the PID-reuse race: subagents are ephemeral
+ * worker processes whose PIDs get recycled, so keying a port file by PID means
+ * a subagent can read a stale file written by a dead worker that reused its
+ * PID. One shared file, written only by the main session, has exactly one
+ * authoritative writer.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -31,10 +31,12 @@ export const EMBED_PROVIDER_ID = "omp-router";
 export const EMBED_DUMMY_API_KEY = "embedded";
 
 /**
- * Filename prefix (in `$OMP_ROUTER_HOME` / `~/.omp-router`) of the PID-scoped
- * embed port file. The full name is `embed.<pid>` (see embedPortPath).
+ * Filename (in `$OMP_ROUTER_HOME` / `~/.omp-router`) of the shared embed port
+ * file. Written only by the main session's router; read by every subagent and
+ * the toast. A single writer and single file means there is never a stale
+ * per-PID file pointing at a recycled process's dead port.
  */
-export const EMBED_PORT_FILE = "embed";
+export const EMBED_PORT_FILE = "embed.port";
 
 export interface EmbedModelSpec {
 	id: string;
@@ -68,20 +70,15 @@ export function resolveEmbedPort(envPort: string | undefined): number {
 }
 
 /**
- * Absolute path of the PID-scoped embed port file under a router home
- * directory. Each omp process — the main session and every subagent — embeds
- * its OWN router on its OWN random port, so a single shared `embed.port` is a
- * cross-process race: whichever process writes last wins, and every other
- * process reads a port that is not its own. Scoping by PID means each process
- * (and its toast) reads exactly the port its own router bound.
+ * Absolute path of the shared embed port file under a router home directory.
  */
-export function embedPortPath(homeDir: string, pid: number): string {
-	return join(homeDir, EMBED_PORT_FILE + "." + pid);
+export function embedPortPath(homeDir: string): string {
+	return join(homeDir, EMBED_PORT_FILE);
 }
 
 /**
- * Persists the embedded router's actual bound port so the toast extension can
- * follow it. Creates the parent directory when absent.
+ * Persists the embedded router's actual bound port so subagents and the toast
+ * can follow it. Creates the parent directory when absent.
  */
 export function writeEmbedPort(path: string, port: number): void {
 	mkdirSync(dirname(path), { recursive: true });
@@ -90,8 +87,7 @@ export function writeEmbedPort(path: string, port: number): void {
 
 /**
  * Reads the embedded router's last-known port from the port file, or null when
- * the file is absent/unreadable/malformed. This is the value the toast must
- * poll, since a random port cannot be guessed.
+ * the file is absent/unreadable/malformed.
  */
 export function readEmbedPort(path: string): number | null {
 	try {
@@ -106,11 +102,10 @@ export function readEmbedPort(path: string): number | null {
 
 /**
  * Builds the provider config for `pi.registerProvider(EMBED_PROVIDER_ID, …)`
- * given the ACTUAL bound port (which may differ from the requested one when
- * the OS assigned an ephemeral port). `models` are the router's own `profiles`,
- * mapped into omp's provider-model shape (cost is USD per million tokens, same
- * unit `renderProviderBlock` uses for `config --write`). A wildcard listen
- * address maps to loopback, since a wildcard is not a connectable target.
+ * given the shared bound port. `models` are the router's own `profiles`, mapped
+ * into omp's provider-model shape (cost is USD per million tokens, same unit
+ * `renderProviderBlock` uses for `config --write`). A wildcard listen address
+ * maps to loopback, since a wildcard is not a connectable target.
  */
 export function buildProviderConfig(
 	port: number,

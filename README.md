@@ -150,7 +150,28 @@ The embedded router reports the key source via its in-process `GET /health`
 
 ---
 
-## How it runs
+At session start, the **main** omp session's `router-embed.ts`:
+
+1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
+   sessions never collide on a fixed port;
+2. writes the actual bound port to the shared `$OMP_ROUTER_HOME/embed.port`;
+3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
+   virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
+
+Subagents do **not** bind their own router. They are ephemeral worker processes
+whose PIDs get recycled, so a per-process port file is a race. Instead every
+subagent registers the same shared provider and routes to the main session's
+single router, whose port lives in the one shared `embed.port` file — one
+authoritative writer, no stale per-PID port.
+
+The router lives and dies with the main omp session — no orphan process, no "is
+the server running?" stopping the omp process frees the port automatically.
+
+### Multiple omp sessions, one machine
+
+Each top-level omp session binds its own router on its own ephemeral port, so
+they never conflict. The `X-Omp-Harness` header (from `server.harnessId`)
+scopes budgets, toasts, and optional trust per harness.
 
 At session start, `router-embed.ts`:
 

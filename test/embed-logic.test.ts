@@ -43,20 +43,20 @@ describe("embed port file", () => {
 	});
 
 	test("round-trips the bound port", () => {
-		const p = embedPortPath(dir, 12345);
-		expect(p).toBe(join(dir, `${EMBED_PORT_FILE}.12345`));
+		const p = embedPortPath(dir);
+		expect(p).toBe(join(dir, EMBED_PORT_FILE));
 		writeEmbedPort(p, 45678);
 		expect(readEmbedPort(p)).toBe(45678);
 	});
 
 	test("returns null for a missing or malformed file", () => {
-		expect(readEmbedPort(embedPortPath(dir, 99999))).toBeNull();
-		writeEmbedPort(embedPortPath(dir, 99999), -5);
-		expect(readEmbedPort(embedPortPath(dir, 99999))).toBeNull();
-		writeEmbedPort(embedPortPath(dir, 99999), 70000);
-		expect(readEmbedPort(embedPortPath(dir, 99999))).toBeNull();
-		writeEmbedPort(embedPortPath(dir, 99999), 0);
-		expect(readEmbedPort(embedPortPath(dir, 99999))).toBeNull();
+		expect(readEmbedPort(embedPortPath(join(dir, "absent")))).toBeNull();
+		writeEmbedPort(embedPortPath(dir), -5);
+		expect(readEmbedPort(embedPortPath(dir))).toBeNull();
+		writeEmbedPort(embedPortPath(dir), 70000);
+		expect(readEmbedPort(embedPortPath(dir))).toBeNull();
+		writeEmbedPort(embedPortPath(dir), 0);
+		expect(readEmbedPort(embedPortPath(dir))).toBeNull();
 	});
 });
 
@@ -102,6 +102,6 @@ describe("embed constants", () => {
 		expect(EMBED_PROVIDER_ID).toBe("omp-router");
 	});
 	test("port file name is stable", () => {
-		expect(EMBED_PORT_FILE).toBe("embed");
+		expect(EMBED_PORT_FILE).toBe("embed.port");
 	});
 });
