@@ -82,34 +82,25 @@ export default function (pi: ExtensionAPI): void {
 			? join(homedir(), homeRaw.slice(1))
 			: homeRaw;
 	const portFile = embedPortPath(home);
-
-	// Subagents route to the main's router: at factory load, register the
-	// provider against the shared port so a fresh subagent registry can reach
-	// it. If the shared file isn't ready yet, defer to session_start (the main
-	// will have written it by then). Never register an invalid port 0.
-	const loadCfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
-	const sharedPort = readEmbedPort(portFile);
-	if (sharedPort !== null) registerRouterProvider(pi, sharedPort, loadCfg);
+	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
 
 	let app: StartedServer | null = null;
 
 	pi.on("session_start", (_event, ctx) => {
-		// Subagents do not bind their own router; they route to the main's.
-		// Register the shared port (in case the factory-load read was stale or
-		// the file was not yet written) and return.
+		// Subagents and headless sessions do not bind their own router; they
+		// route to the main's router via the shared port file. The main writes
+		// the file before spawning subagents, so the port is available here.
 		if (!ctx.hasUI) {
 			const port = readEmbedPort(portFile);
-			if (port !== null) registerRouterProvider(pi, port, loadCfg);
+			if (port !== null) registerRouterProvider(pi, port, cfg);
 			return;
 		}
 
-		// Main interactive session: bind the router once.
+		// Main interactive session: bind the router once, then register the
+		// provider against the exact bound port. Registration happens only
+		// here — never at factory load, where a stale shared port would be
+		// captured into omp's model registry and defeat the correct bound URL.
 		if (app) return;
-		const cfg = loadConfig({
-			overrides: {
-				server: { host: "127.0.0.1", port: requestedPort },
-			},
-		});
 		const started = startServer(cfg);
 		const actualPort = started.server.port;
 		if (actualPort === undefined) return;
