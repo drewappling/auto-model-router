@@ -343,15 +343,23 @@ export async function runTurn(
 
 		state.turn = turnNumber;
 		state.currentSlug = servedSlug ?? decision.slug;
+		// Capture the previously-served tier BEFORE overwriting it, so the
+		// hysteresis re-arm below can tell whether this turn changed tier.
+		const prevTier = state.currentTier;
 		state.currentTier = decision.tier;
 		state.escalations += escalations;
-		// Hysteresis window. Written here, with every other conversation-state
-		// field, because only the committed outcome reveals whether this turn
-		// needed an escalation -- and a hard sub-task should keep the strong
-		// model for several turns rather than flapping back and cold-starting
-		// the prompt cache it just paid to warm.
-		state.stickyUntilTurn =
-			turnNumber + (escalations > 0 ? config.hysteresis.holdTurnsAfterEscalation : config.hysteresis.holdTurns);
+		// Hysteresis window. Only re-arm when the served tier actually changed
+		// (or this turn escalated). Re-arming on EVERY turn — even a trivial one
+		// served by a held hard model — extends the lock forever: the classifier
+		// keeps saying trivial, but the window keeps getting pushed out, so the
+		// router never downgrades. A stable tier needs no new hold; let the
+		// existing window expire so the router can move down when the work is
+		// actually easy.
+		const tierChanged = prevTier !== decision.tier;
+		if (tierChanged || escalations > 0) {
+			state.stickyUntilTurn =
+				turnNumber + (escalations > 0 ? config.hysteresis.holdTurnsAfterEscalation : config.hysteresis.holdTurns);
+		}
 		// Reported cost is authoritative; fall back to the forecast so the
 		// budget guard still works when the provider omits cost.
 		state.spentUsd += reportedUsd ?? decision.forecast.expectedUsd;

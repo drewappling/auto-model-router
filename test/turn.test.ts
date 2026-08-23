@@ -455,13 +455,44 @@ describe("runTurn", () => {
 		expect(entries[1]!.slug).toBe("spare/model");
 		expect(entries[1]!.tier).toBe("trivial");
 
-		// The failover re-routes at attempt 1 without escalateFrom; the accepted
-		// decision is dispatched by attempt 1 without routing again.
 		expect(calls).toHaveLength(2);
 		expect(calls[0]).toEqual({ attempt: 0 });
 		expect(calls[1]).toEqual({ attempt: 1 });
 		expect(finishes[0]!.escalated).toBe(false);
 		expect(finishes[0]!.attempts).toBe(2);
 		expect(finishes[0]!.servedSlug).toBe("spare/model");
+	});
+
+	test("a stable tier does not re-arm the hysteresis window (no permanent hard lock)", async () => {
+		// Regression: the sticky window was re-armed on EVERY committed turn, so
+		// once a conversation reached `hard` it stayed there forever — the
+		// classifier kept saying trivial but the window kept getting pushed out.
+		// A stable tier must NOT extend the window; only a tier change or an
+		// escalation re-arms it.
+		const { router } = mkRouter([
+			mkDecision("hard", "strong/model", { escalateTo: null }),
+			mkDecision("hard", "strong/model", { escalateTo: null }),
+		]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("strong/model"), textChunk("a"), finishChunk("stop"), usageChunk({}, 0.001)] },
+			{ kind: "chunks", chunks: [startChunk("strong/model"), textChunk("b"), finishChunk("stop"), usageChunk({}, 0.001)] },
+		]);
+		const { ledger } = mkLedger();
+		const { store, map } = mkConversations();
+		const { sink, errors } = mkSink();
+
+		// Turn 1: first turn, no prior tier → re-arms (tierChanged true).
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		const afterFirst = map.get("conv-test")!;
+		expect(afterFirst.currentTier).toBe("hard");
+		expect(afterFirst.stickyUntilTurn).toBe(1 + 2); // holdTurns=2
+
+		// Turn 2: same tier served again → must NOT re-arm. The window should
+		// stay at its previous expiry (turn 3), not extend to turn 4.
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		const afterSecond = map.get("conv-test")!;
+		expect(afterSecond.currentTier).toBe("hard");
+		expect(afterSecond.stickyUntilTurn).toBe(3); // unchanged, not 4
+		expect(errors).toHaveLength(0);
 	});
 });
