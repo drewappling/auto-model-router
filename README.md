@@ -202,19 +202,19 @@ virtual profile it picked. Every routed response carries
 
 ## Configuring the router
 
-There are two ways to edit the router's own config (`$OMP_ROUTER_HOME/config.yml`,
-default `~/.omp-router/config.yml`):
+The router's own config lives at `$OMP_ROUTER_HOME/config.yml` (default
+`~/.omp-router/config.yml`). Every key is optional — unset keys use the
+built-in defaults below. There are two ways to edit it:
 
 ### Via `/router` (in-omp, native UI)
 
-Install the `router-configure` extension, restart omp, then run `/router` in the session prompt.
-
-It shows a section picker (Server, OpenRouter, Tiers, Tasks, Filters,
-Classifier, Escalation, Hysteresis, Cache, Budget, Ledger, Logging, Profiles).
-Each field prompts through omp's native UI dialogs — empty input keeps the
-current value, `-` clears an optional field. `Save and exit` writes the merged
-config (schema-checked and backed up first). Restart the omp session after
-saving.
+Install the `router-configure` extension, restart omp, then run `/router` in
+the session prompt. It shows a section picker (Server, OpenRouter, Tiers,
+Tasks, Filters, Classifier, Escalation, Hysteresis, Cache, Budget, Ledger,
+Logging, Profiles). Each field prompts through omp's native UI dialogs —
+empty input keeps the current value, `-` clears an optional field. `Save and
+exit` writes the merged config (schema-checked and backed up first). Restart
+the omp session after saving.
 
 ### Via `omp-router config` (text wizard / CLI)
 
@@ -244,53 +244,157 @@ disk and back up the previous file to a timestamped `.bak`.
 | `OMP_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
 | `OMP_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
 | `OMP_ROUTER_DB` | Override the ledger path. | `$OMP_ROUTER_HOME/router.db` |
-| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads the PID-scoped port file first). | — |
+| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads the shared port file first). | — |
 | `OMP_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
 | `OMP_HARNESS_ID` | Per-harness toast scoping. | — |
 
 ---
 
-## Default configuration
+## Configuration reference
 
-The built-in defaults (everything below can be overridden in `config.yml`):
+This is the complete set of settings, grouped by section, with defaults and
+what each one does. All values are optional; omit a key to use its default.
+
+### `server`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `server.host` / `server.port` | `127.0.0.1` / `0` | Bind host; `0` = free OS-assigned port. |
-| `server.apiKey` / `server.harnessId` | unset | Client bearer; harness id for per-harness budgets/toasts. |
-| `openrouter.baseUrl` | `https://openrouter.ai/api/v1` | Upstream. |
-| `openrouter.timeoutMs` | `600000` | Request timeout. |
-| `openrouter.catalogTtlMs` | `21600000` (6 h) | Catalog cache TTL. |
-| `openrouter.catalogRefreshMs` | `300000` (5 min) | Background catalog refetch. |
-| `adaptiveTierFloors` | `true` | Derive tier floors from available models. |
-| `tiers.trivial/simple/moderate/hard.minQuality` | `0/40/60/72` | Quality floors (coding axis). |
-| `tiers.trivial/simple/moderate.maxInputPerMtok` | `0.3/1.5/4.0` | Price ceilings; `hard` has none. |
-| `tiers.*.qualityExponent` | `0/0/1/3` | Price-quality tradeoff per tier. |
-| `tasks.*` | coding/vision/doc/data/chat axes | Task → axis + capability. |
-| `filters.includeFree` | `false` | Free models are rate-limited hard; excluded. |
-| `filters.requireToolSupport` | `true` | Only tool-capable models. |
-| `filters.minTrust` / `minTrustSamples` | `0.7` / `12` | Trust bar; demote flaky models. |
-| `filters.trustScopedByHarness` | `false` | Shared trust across harnesses. |
-| `classifier.ambiguityThreshold` | `0.6` | When to use the adjudicator model. |
-| `escalation.enabled` | `true` | Mid-stream escalation guard. |
-| `escalation.maxAttempts` | `3` | Original try + two retries. |
-| `escalation.triggers` | 5 signals | Malformed args, refusal, empty, repeat, missing tool. |
-| `hysteresis.holdTurns` | `2` | Hold a model this many turns after choosing it. |
-| `hysteresis.switchMargin` | `1.3` | Switching must beat the warm-cache discount. |
-| `cache.injectBreakpoints` / `maxBreakpoints` | `true` / `4` | Prompt-cache breakpoint placement. |
-| `budget.perTurnUsd` / `perConversationUsd` / `perDayUsd` | unset | No caps by default. |
-| `budget.onExceeded` | `downgrade` | Downgrade rather than fail at a ceiling. |
-| `profiles` | `auto`, `auto-cheap`, `auto-max` | The three virtual profiles above. |
-| `ledger.blendWindowDays` / `blendMinSamples` | `7` / `25` | Measured cost blend. |
-| `ledger.fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend for omp's display. |
-| `logLevel` | `info` | |
+| `host` | `127.0.0.1` | Bind address. `0.0.0.0`/`::` listen on all interfaces (the provider still advertises loopback). |
+| `port` | `0` | Bind port. `0` = let the OS pick a free ephemeral port (the embedded router's default). |
+| `apiKey` | unset | Optional client bearer token. When set, every request must send `Authorization: Bearer <key>`. |
+| `harnessId` | unset | Harness identity sent as `X-Omp-Harness`; scopes per-harness daily budgets and toasts. |
 
-The full set of configurable fields (the ones `/router` walks) is the
-same set `omp config` walks — Server, OpenRouter, Tiers, Tasks, Filters,
-Classifier, Escalation, Hysteresis, Cache, Budgets, Ledger, Logging, plus the
-Profiles list.
+### `openrouter`
 
----
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `baseUrl` | `https://openrouter.ai/api/v1` | Upstream OpenRouter endpoint. |
+| `apiKey` | unset | OpenRouter key. Falls back to `OPENROUTER_API_KEY`, then omp's auth store. |
+| `referer` | unset | HTTP `Referer` header sent upstream (OpenRouter attribution). |
+| `title` | `omp-router` | Attribution title sent upstream. |
+| `timeoutMs` | `600000` (10 min) | Upstream request timeout. Agent turns stream for minutes, so keep this high. |
+| `catalogTtlMs` | `21600000` (6 h) | How long the model catalog is cached before a forced refetch. |
+| `catalogRefreshMs` | `300000` (5 min) | Background catalog refetch interval; `0` disables it. |
+
+### `tiers` — per-tier economic envelope
+
+Each tier (`trivial`, `simple`, `moderate`, `hard`) is a `tierConfig`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `minQuality` | `0/40/60/72` | Minimum quality score (on the task's axis) a model needs to be eligible. `0` admits unscored models. |
+| `maxInputPerMtok` | `0.3/1.5/4.0` (hard: none) | Price ceiling on input, USD per million tokens. `hard` has no ceiling. |
+| `maxOutputPerMtok` | unset | Optional output price ceiling, USD per million tokens. |
+| `qualityExponent` | `0/0/1/3` | How strongly quality beats price when ranking candidates. `0` = cheapest above the floor; higher = prefer quality. |
+| `pin` | `[]` | Force specific model slugs into this tier (they bypass the floor/ceiling). |
+
+### `tasks` — per-task-type capability and quality
+
+Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
+`taskConfig`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `axis` | coding→`coding`, others→`intelligence` | Which quality axis to score on. |
+| `minQuality` | unset | RAISES the tier floor for this task (never relaxed by adaptive floors). |
+| `requireImage` | vision: `true`, others unset | Require image input support. |
+| `prefer` | `[]` | Preferred model slugs for this task. |
+
+### `filters` — candidate allow/deny and trust
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `allow` | `[]` | Glob allowlist; when non-empty, only matching slugs are eligible. |
+| `deny` | `[]` | Glob denylist; matching slugs are excluded. |
+| `includeFree` | `false` | Include free models (rate-limited hard; usually excluded). |
+| `requireToolSupport` | `true` | Only models that support tool calls. |
+| `minTrust` | `0.7` | Minimum success rate; models below this (after `minTrustSamples`) are demoted. |
+| `minTrustSamples` | `12` | Attempts before trust is enforced. |
+| `trustScopedByHarness` | `false` | `true` = each harness reads only its own trust rows. |
+| `contextHeadroom` | `1.25` | Fraction of context kept free (a model must fit prompt × this). |
+
+### `classifier` — complexity adjudication
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `ambiguityThreshold` | `0.6` | Below this heuristic confidence, the adjudicator model decides the tier. |
+| `model` | `qwen/qwen3.7-flash` | Adjudicator model slug. |
+| `maxCostFraction` | `0.02` | Adjudicator cost cap as a fraction of the turn's budget. |
+| `maxCostUsd` | `0.002` | Absolute adjudicator cost cap, USD. |
+| `timeoutMs` | `4000` | Adjudicator request timeout. |
+| `cacheSize` | `512` | Adjudication result cache size. |
+| `toolAxis` | `coding` | Quality axis for tool-heavy turns. |
+| `chatAxis` | `intelligence` | Quality axis for chat turns. |
+| `agenticLoopDepth` | `3` | Tool-loop depth at which a turn is treated as agentic. |
+
+### `escalation` — mid-stream retry upward
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Enable the mid-stream escalation guard. |
+| `probeTokens` | `48` | Tokens held before deciding whether to escalate. |
+| `maxHoldMs` | `8000` | Max time to hold the first tokens waiting for a verdict. |
+| `maxAttempts` | `3` | Original try + retries. Direct dial between reliability and wasted spend. |
+| `probeTiers` | `["trivial","simple","moderate"]` | Tiers that may escalate upward (`hard` has nowhere to go). |
+| `triggers` | 5 signals | `malformed_tool_args`, `refusal`, `empty_completion`, `repeat_tool_call`, `missing_expected_tool_call`. |
+| `escalateOnLengthStop` | `true` | Escalate on a `length` finish that truncated tool-call args. |
+
+### `hysteresis` — cache-aware model stickiness
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `holdTurns` | `2` | Hold a chosen model this many turns before it can downgrade. |
+| `holdTurnsAfterEscalation` | `4` | Hold longer after an escalation. |
+| `switchMargin` | `1.3` | Switching must beat the warm-cache discount by this factor. Lower = switch away from a warm model more readily. |
+| `cacheWarmTtlMs` | `300000` (5 min) | How long a model's prompt cache is considered warm. |
+| `maxDowngradePerTurn` | `1` | Max tiers a turn may drop in one step (avoids quality cliffs). |
+
+### `cache` — prompt-cache breakpoints
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `injectBreakpoints` | `true` | Insert prompt-cache breakpoints into long prompts. |
+| `maxBreakpoints` | `4` | Max breakpoints (Anthropic allows 4; OpenRouter translates). |
+| `minPromptTokens` | `2048` | Minimum prompt size before breakpoints are injected. |
+
+### `budget` — cost caps
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `perTurnUsd` | unset | Per-turn cap (checked against the cold forecast). |
+| `perConversationUsd` | unset | Per-conversation cap. |
+| `perDayUsd` | unset | Rolling 24h cap, scoped per harness when `harnessId` is set. |
+| `onExceeded` | `downgrade` | `downgrade` = pick the cheapest viable model; `reject` = fail the turn. |
+
+### `profiles` — the virtual models omp sees
+
+Each profile is a complete entry (arrays replace wholesale):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `id` | `auto` / `auto-cheap` / `auto-max` | Model id omp selects. |
+| `name` | `Auto (omp-router)` etc. | Display name. |
+| `minTier` / `maxTier` | `trivial`/`hard`, `trivial`/`simple`, `moderate`/`hard` | Tier envelope. |
+| `contextWindow` | `400000` | Advertised context window (drives omp's compaction). |
+| `maxTokens` | `32000` | Advertised max output tokens. |
+| `budget` | unset | Per-profile budget overrides. |
+
+### `ledger` — cost measurement
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `path` | `$OMP_ROUTER_HOME/router.db` | SQLite ledger path. |
+| `blendWindowDays` | `7` | Window for the blended cost rate. |
+| `blendMinSamples` | `25` | Turns before the measured blend replaces the fallback. |
+| `fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend (USD/Mtok) for omp's cost display. |
+| `conversationTtlMs` | `604800000` (7 d) | Drop conversation state untouched this long. |
+
+### Top-level
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `adaptiveTierFloors` | `true` | Derive tier floors from the models actually available (relaxing, never raising, the configured floors). |
+| `logLevel` | `info` | `silent`/`error`/`warn`/`info`/`debug`. |
 
 ## Multiple coding harnesses, one router
 
