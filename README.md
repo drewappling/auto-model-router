@@ -116,18 +116,30 @@ extensions:
 
 Then restart the omp session (extensions load at session start).
 
-### Install as an omp plugin
+or install it from the marketplace (see below). The plugin declares all three
+extensions (`router-embed`, `router-toast`, `router-configure`), so installing
+it wires the router in without editing `config.yml` by hand.
 
-The repo is packaged as an installable omp plugin (see the `omp.extensions`
-manifest in `package.json`). From a clone, link it into omp:
+### Install from the marketplace
+
+This repo doubles as its own marketplace: it ships a catalog at
+`.omp-plugin/marketplace.json` listing the `omp-router` plugin. Add the repo as
+a marketplace source, then install the plugin:
 
 ```bash
-omp plugin link /path/to/omp-router
+omp plugin marketplace add drewappling/omp-autorouter
+omp plugin install omp-router@omp-autorouter
 ```
 
-or, once published, install it from a marketplace or npm. The plugin declares
-all three extensions (`router-embed`, `router-toast`, `router-configure`), so
-installing it wires the router in without editing `config.yml` by hand.
+or in the TUI:
+
+```
+/marketplace add drewappling/omp-autorouter
+/marketplace install omp-router@omp-autorouter
+```
+
+The plugin's `omp.extensions` manifest wires in all three extensions. Restart
+the omp session after installing (extension modules load at session start).
 
 ### The OpenRouter key
 

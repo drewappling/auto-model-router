@@ -1,0 +1,30 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "omp-autorouter",
+  "owner": {
+    "name": "drewappling",
+    "email": "drewappling@gmail.com"
+  },
+  "metadata": {
+    "description": "omp-router: a local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
+    "version": "0.1.0",
+    "pluginRoot": "."
+  },
+  "plugins": [
+    {
+      "name": "omp-router",
+      "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter. Runs in-process, routes per turn by price and task complexity, with budget caps, mid-stream escalation, and cache-aware hysteresis.",
+      "version": "0.1.0",
+      "author": {
+        "name": "drewappling",
+        "email": "drewappling@gmail.com"
+      },
+      "homepage": "https://github.com/drewappling/omp-autorouter",
+      "repository": "https://github.com/drewappling/omp-autorouter.git",
+      "license": "MIT",
+      "keywords": ["router", "openrouter", "cost", "model", "omp", "oh-my-pi"],
+      "category": "development",
+      "source": "./"
+    }
+  ]
+}
