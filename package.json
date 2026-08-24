@@ -1,7 +1,7 @@
 {
   "name": "omp-router",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
   "type": "module",
   "bin": {
@@ -22,5 +22,21 @@
   },
   "engines": {
     "bun": ">=1.2.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/drewappling/omp-autorouter.git"
+  },
+  "homepage": "https://github.com/drewappling/omp-autorouter",
+  "bugs": {
+    "url": "https://github.com/drewappling/omp-autorouter/issues"
+  },
+  "omp": {
+    "extensions": [
+      "./omp-extension/router-embed.ts",
+      "./omp-extension/router-toast.ts",
+      "./omp-extension/router-configure.ts"
+    ]
   }
 }

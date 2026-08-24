@@ -116,18 +116,18 @@ extensions:
 
 Then restart the omp session (extensions load at session start).
 
-There is nothing to install system-wide. Add the extension paths to omp's
-`~/.omp/agent/config.yml`:
+### Install as an omp plugin
 
-```yaml
-# ~/.omp/agent/config.yml
-extensions:
-  - /path/to/omp-router/omp-extension/router-embed.ts
-  - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router command
+The repo is packaged as an installable omp plugin (see the `omp.extensions`
+manifest in `package.json`). From a clone, link it into omp:
+
+```bash
+omp plugin link /path/to/omp-router
 ```
 
-Then restart the omp session (extensions load at session start).
+or, once published, install it from a marketplace or npm. The plugin declares
+all three extensions (`router-embed`, `router-toast`, `router-configure`), so
+installing it wires the router in without editing `config.yml` by hand.
 
 ### The OpenRouter key
 
@@ -573,3 +573,11 @@ Known gaps:
   OpenAI-compatible wire exists today.
 - Blended `cost` figures in `models.yml` are refreshed by re-running
   `omp-router config --write`, not automatically.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for the full text.
+
+Copyright (c) 2026 drewappling. Released under the MIT License — free to use,
+modify, and distribute, including commercially, provided the copyright notice
+is preserved.
