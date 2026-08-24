@@ -102,7 +102,7 @@ The installer adds:
 
 - `router-embed.ts` — **required**; runs the router in-process.
 - `router-toast.ts` — optional; chosen-model toasts.
-- `router-configure.ts` — optional; the `/router configure` command.
+- `router-configure.ts` — optional; the `/router` command.
 
 Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 
@@ -111,7 +111,7 @@ Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 extensions:
   - /path/to/omp-router/omp-extension/router-embed.ts
   - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router configure command
+  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router command
 ```
 
 Then restart the omp session (extensions load at session start).
@@ -124,7 +124,7 @@ There is nothing to install system-wide. Add the extension paths to omp's
 extensions:
   - /path/to/omp-router/omp-extension/router-embed.ts
   - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router configure command
+  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router command
 ```
 
 Then restart the omp session (extensions load at session start).
@@ -173,23 +173,6 @@ Each top-level omp session binds its own router on its own ephemeral port, so
 they never conflict. The `X-Omp-Harness` header (from `server.harnessId`)
 scopes budgets, toasts, and optional trust per harness.
 
-At session start, `router-embed.ts`:
-
-1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
-   sessions never collide on a fixed port;
-2. writes the actual bound port to a PID-scoped file `$OMP_ROUTER_HOME/embed.<pid>`;
-3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
-   virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
-
-The router lives and dies with the omp session — no orphan process, no "is the
-server running?" stopping the omp process frees the port automatically.
-
-### Multiple omp sessions, one machine
-
-Each omp process gets its own ephemeral port, so they never conflict. The
-`X-Omp-Harness` header (from `server.harnessId`) scopes budgets, toasts, and
-optional trust per harness.
-
 ---
 
 ## Selecting the provider / model
@@ -222,13 +205,9 @@ virtual profile it picked. Every routed response carries
 There are two ways to edit the router's own config (`$OMP_ROUTER_HOME/config.yml`,
 default `~/.omp-router/config.yml`):
 
-### Via `/router configure` (in-omp, native UI)
+### Via `/router` (in-omp, native UI)
 
-Install the `router-configure` extension, restart omp, then run:
-
-```
-/router configure
-```
+Install the `router-configure` extension, restart omp, then run `/router` in the session prompt.
 
 It shows a section picker (Server, OpenRouter, Tiers, Tasks, Filters,
 Classifier, Escalation, Hysteresis, Cache, Budget, Ledger, Logging, Profiles).
@@ -306,7 +285,7 @@ The built-in defaults (everything below can be overridden in `config.yml`):
 | `ledger.fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend for omp's display. |
 | `logLevel` | `info` | |
 
-The full set of configurable fields (the ones `/router configure` walks) is the
+The full set of configurable fields (the ones `/router` walks) is the
 same set `omp config` walks — Server, OpenRouter, Tiers, Tasks, Filters,
 Classifier, Escalation, Hysteresis, Cache, Budgets, Ledger, Logging, plus the
 Profiles list.

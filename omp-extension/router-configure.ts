@@ -1,5 +1,5 @@
 /**
- * omp extension: `/router configure` — edit omp-router's settings through
+ * omp extension: `/router` — edit omp-router's settings through
  * omp's native UI dialogs.
  *
  * The command walks the same sections and fields as `omp-router config`
@@ -16,7 +16,7 @@
  *     - /path/to/omp-router/omp-extension/router-embed.ts
  *     - /path/to/omp-router/omp-extension/router-configure.ts
  *
- * Run `/router configure` in an omp session to pick a section, edit its
+ * Run `/router` in an omp session to pick a section, edit its
  * fields, and save.
  */
 
@@ -32,7 +32,7 @@ import { editProfile, sectionTitles, walkSection, type ConfigUi } from "./config
 export default function (pi: ExtensionAPI): void {
 	pi.setLabel("omp-router configure");
 
-	pi.registerCommand("router configure", {
+	pi.registerCommand("router", {
 		description: "Configure omp-router settings through the native UI",
 		handler: async (_args, ctx) => {
 			const ui = ctx.ui;
