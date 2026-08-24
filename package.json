@@ -38,5 +38,18 @@
       "./omp-extension/router-toast.ts",
       "./omp-extension/router-configure.ts"
     ]
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./omp-extension/router-embed.ts",
+      "./omp-extension/router-toast.ts",
+      "./omp-extension/router-configure.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*"
   }
 }

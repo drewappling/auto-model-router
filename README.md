@@ -138,8 +138,32 @@ or in the TUI:
 /marketplace install omp-router@omp-autorouter
 ```
 
-The plugin's `omp.extensions` manifest wires in all three extensions. Restart
-the omp session after installing (extension modules load at session start).
+### Install from the Pi package marketplace
+
+The repo is also a Pi package (see the `pi` manifest and `pi-package` keyword
+in `package.json`), so it can be installed with the Pi CLI and listed on
+[pi.dev/packages](https://pi.dev/packages):
+
+```bash
+pi install npm:omp-router
+```
+
+or from git:
+
+```bash
+pi install git:github.com/drewappling/omp-autorouter
+```
+
+To publish to npm (which auto-indexes on pi.dev/packages):
+
+```bash
+npm publish
+```
+
+The `pi.extensions` manifest declares the three extension entry points, and
+`@oh-my-pi/pi-coding-agent` is a `peerDependency` (omp provides it at runtime).
+
+### The OpenRouter key
 
 ### The OpenRouter key
 
