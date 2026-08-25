@@ -26,11 +26,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/drewappling/omp-autorouter.git"
+    "url": "https://github.com/drewappling/auto-model-router.git"
   },
-  "homepage": "https://github.com/drewappling/omp-autorouter",
+  "homepage": "https://github.com/drewappling/auto-model-router",
   "bugs": {
-    "url": "https://github.com/drewappling/omp-autorouter/issues"
+    "url": "https://github.com/drewappling/auto-model-router/issues"
   },
   "omp": {
     "extensions": [

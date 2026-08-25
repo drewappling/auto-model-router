@@ -127,15 +127,15 @@ This repo doubles as its own marketplace: it ships a catalog at
 a marketplace source, then install the plugin:
 
 ```bash
-omp plugin marketplace add drewappling/omp-autorouter
-omp plugin install auto-model-router@omp-autorouter
+omp plugin marketplace add drewappling/auto-model-router
+omp plugin install auto-model-router@auto-model-router
 ```
 
 or in the TUI:
 
 ```
-/marketplace add drewappling/omp-autorouter
-/marketplace install auto-model-router@omp-autorouter
+/marketplace add drewappling/auto-model-router
+/marketplace install auto-model-router@auto-model-router
 ```
 
 ### Install from the Pi package marketplace
@@ -151,7 +151,7 @@ pi install npm:auto-model-router
 or from git:
 
 ```bash
-pi install git:github.com/drewappling/omp-autorouter
+pi install git:github.com/drewappling/auto-model-router
 ```
 
 To publish to npm (which auto-indexes on pi.dev/packages):

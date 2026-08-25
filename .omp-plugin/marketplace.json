@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "omp-autorouter",
+  "name": "auto-model-router",
   "owner": {
     "name": "drewappling",
     "email": "drewappling@gmail.com"
@@ -19,8 +19,8 @@
         "name": "drewappling",
         "email": "drewappling@gmail.com"
       },
-      "homepage": "https://github.com/drewappling/omp-autorouter",
-      "repository": "https://github.com/drewappling/omp-autorouter.git",
+      "homepage": "https://github.com/drewappling/auto-model-router",
+      "repository": "https://github.com/drewappling/auto-model-router.git",
       "license": "MIT",
       "keywords": ["router", "openrouter", "cost", "model", "omp", "oh-my-pi"],
       "category": "development",
