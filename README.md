@@ -255,17 +255,29 @@ providers:
 
 ### The OpenRouter key
 
-There should be exactly one OpenRouter key on the machine, and omp already owns
-a credential store. Resolution order:
+**omp does not need to be authenticated to OpenRouter.** On a routed turn omp
+never calls OpenRouter directly: the embed extension registers the
+`auto-model-router` provider with a placeholder bearer (`embedded`) pointing at
+the in-process router, and the router holds the real OpenRouter key and makes
+the upstream call. omp only needs to see that the provider "has credentials",
+which the placeholder satisfies.
 
-1. `openrouter.apiKey` in `$AUTO_MODEL_ROUTER_HOME/config.yml`
-2. `OPENROUTER_API_KEY` (including any `.env` omp loaded into the environment)
-3. **omp's own auth store** — `~/.omp/agent/agent.db`, provider `openrouter`
+There should be exactly one OpenRouter key on the machine. The router resolves
+it in this order:
 
-So `/login openrouter` inside omp is sufficient setup; nothing needs copying.
-The store is opened read-only and never written: omp owns it, including OAuth
-refresh. An expired OAuth access token is rejected rather than sent, because
-refreshing is omp's job and a stale bearer just burns a turn on a 401. Under
+1. `openrouter.apiKey` in `$AUTO_MODEL_ROUTER_HOME/config.yml` — router-owned,
+   never enters omp's environment. Set it with `auto-model-router config` or by
+   hand.
+2. `OPENROUTER_API_KEY` in the environment omp launches from (including any
+   `.env` omp loaded).
+3. **omp's own auth store** — `~/.omp/agent/agent.db`, provider `openrouter`, so
+   `/login openrouter` inside omp is sufficient and nothing needs copying.
+
+Options 1–2 give the router its own key with omp left unauthenticated; option 3
+is a zero-config convenience for when you *have* logged omp in. The store is
+opened read-only and never written: omp owns it, including OAuth refresh. An
+expired OAuth access token is rejected rather than sent, because refreshing is
+omp's job and a stale bearer just burns a turn on a 401. Under
 `OMP_AUTH_BROKER_URL` the local store is not consulted at all, since a broker
 replaces it.
 
