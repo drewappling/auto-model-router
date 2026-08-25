@@ -74,9 +74,10 @@ without touching routing.
 - **Reported** — `usage.cost` from OpenRouter, authoritative after the fact.
   Drives the ledger, `stats`, and prediction-error calibration.
 
-  it. No separate Bun install is needed for the embedded path. The standalone
-  `serve` binary (`npm install -g auto-model-router`) bundles Bun.
-  it. No separate Bun install is needed for the embedded path.
+## Installing
+
+No separate Bun install is needed for the embedded path. The standalone
+`serve` binary (`npm install -g auto-model-router`) bundles Bun.
 
 Two ways to get the router into omp. The **npm package** is the modern path —
 it installs the `auto-model-router` binary and wires the omp extensions; the
@@ -137,45 +138,6 @@ or install it from the marketplace (see below). The plugin declares all three
 extensions (`router-embed`, `router-toast`, `router-configure`), so installing
 it wires the router in without editing `config.yml` by hand.
 
-There is nothing to install system-wide. Run the cross-platform installer
-(Windows, macOS, Linux) from the repo:
-
-```bash
-bun tools/install.ts
-```
-
-It wires the auto-model-router extensions into omp's `~/.omp/agent/config.yml`
-(`$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent dir),
-backing up the previous file first. It is idempotent — re-running is a no-op.
-
-Options:
-
-```bash
-bun tools/install.ts --no-toast --no-configure   # only the required embed extension
-```
-
-The installer adds:
-
-- `router-embed.ts` — **required**; runs the router in-process.
-- `router-toast.ts` — optional; chosen-model toasts.
-- `router-configure.ts` — optional; the `/router` command.
-
-Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
-
-```yaml
-# ~/.omp/agent/config.yml
-extensions:
-  - /path/to/auto-model-router/omp-extension/router-embed.ts
-  - /path/to/auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router command
-```
-
-Then restart the omp session (extensions load at session start).
-
-or install it from the marketplace (see below). The plugin declares all three
-extensions (`router-embed`, `router-toast`, `router-configure`), so installing
-it wires the router in without editing `config.yml` by hand.
-
 ### Install from the marketplace
 
 This repo doubles as its own marketplace: it ships a catalog at
@@ -193,6 +155,9 @@ or in the TUI:
 /marketplace add drewappling/auto-model-router
 /marketplace install auto-model-router@auto-model-router
 ```
+
+After installing, restart the omp session (extensions load at session start),
+then `/model` and pick `auto-model-router/auto`.
 
 ### Install from the Pi package marketplace
 
