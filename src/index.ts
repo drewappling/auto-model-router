@@ -33,7 +33,6 @@ Global options:
 
   serve    --port <n>  --host <addr>  --log <level>
   stats    --days <n>  --json
-  stats    --days <n>  --json
   models   --tier <trivial|simple|moderate|hard>  --limit <n>  --json
   explain  --file <request.json>  --json          (reads stdin when --file is absent)
   config   --print  --write  --path <models.yml>  --config <router-config.yml>

@@ -6,12 +6,13 @@ OpenRouter model **per turn** based on measured price and estimated task
 complexity — including mid-conversation, when a session shifts from mechanical
 tool-loop churn to genuine reasoning work.
 
-All LLM inference is offloaded to OpenRouter. Nothing runs on-device except
-routing arithmetic.
-
 auto-model-router runs **embedded inside the omp process** (as an omp extension) — no
 separate server, no orphaned process. It binds a free OS-assigned port and
 lives and dies with the omp session.
+
+For non-omp harnesses (Hermes, Claude, any OpenAI-compatible client), run it as
+a standalone process with `auto-model-router serve --port <n>` — the same core,
+on a fixed port, owned by you. See [Hermes](#hermes) below.
 
 ## Why this exists when OpenRouter already ships routers
 
@@ -62,7 +63,7 @@ without touching routing.
 | `src/router/` | Feature extraction, complexity classification, candidate filtering and scoring, hysteresis, cache-breakpoint placement, budget guard, probe planning. |
 | `src/upstream/` | OpenRouter transport: streaming dispatch, `session_id` stickiness, error classification, fallback arrays. |
 | `src/config/` | Configuration loading, schema validation, and the built-in defaults. |
-| `src/cli/` | `stats`, `models`, `explain`, `config` commands. |
+| `src/cli/` | `serve`, `stats`, `models`, `explain`, `config` commands. |
 | `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts`. |
 
 ### Two cost numbers, never conflated
@@ -73,13 +74,68 @@ without touching routing.
 - **Reported** — `usage.cost` from OpenRouter, authoritative after the fact.
   Drives the ledger, `stats`, and prediction-error calibration.
 
-## Requirements
-
-- **omp** (the Oh My Pi harness) — the router runs as an omp extension.
-- **Bun** `>= 1.2.0` — omp itself is a Bun process; the router code runs inside
+  it. No separate Bun install is needed for the embedded path. The standalone
+  `serve` binary (`npm install -g auto-model-router`) bundles Bun.
   it. No separate Bun install is needed for the embedded path.
 
-## Installation
+Two ways to get the router into omp. The **npm package** is the modern path —
+it installs the `auto-model-router` binary and wires the omp extensions; the
+**repo-local installer** is for developing against the source.
+
+### Via npm (installs the `auto-model-router` binary)
+
+```bash
+npm install -g auto-model-router
+```
+
+Then add the shipped extensions to omp's `~/.omp/agent/config.yml`
+(`$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent dir):
+
+```yaml
+# ~/.omp/agent/config.yml
+extensions:
+  - auto-model-router/omp-extension/router-embed.ts
+  - auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
+  - auto-model-router/omp-extension/router-configure.ts # optional: /router command
+```
+
+### From the repo (cross-platform installer)
+
+```bash
+bun tools/install.ts
+```
+
+It wires the auto-model-router extensions into omp's `~/.omp/agent/config.yml`
+(`$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent dir),
+backing up the previous file first. It is idempotent — re-running is a no-op.
+
+Options:
+
+```bash
+bun tools/install.ts --no-toast --no-configure   # only the required embed extension
+```
+
+The installer adds:
+
+- `router-embed.ts` — **required**; runs the router in-process.
+- `router-toast.ts` — optional; chosen-model toasts.
+- `router-configure.ts` — optional; the `/router` command.
+
+Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
+
+```yaml
+# ~/.omp/agent/config.yml
+extensions:
+  - /path/to/auto-model-router/omp-extension/router-embed.ts
+  - /path/to/auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
+  - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router command
+```
+
+Then restart the omp session (extensions load at session start).
+
+or install it from the marketplace (see below). The plugin declares all three
+extensions (`router-embed`, `router-toast`, `router-configure`), so installing
+it wires the router in without editing `config.yml` by hand.
 
 There is nothing to install system-wide. Run the cross-platform installer
 (Windows, macOS, Linux) from the repo:
@@ -162,36 +218,64 @@ npm publish
 
 ### Hermes
 
-Hermes speaks the OpenAI-compatible wire, so it connects to the router with no
-code change. Two ways to run the router for Hermes:
+Install the router globally (puts the `serve` binary on PATH) and
+install the native plugin, then point Hermes at it:
 
-**Standalone server (recommended for Hermes):** run the router as its own
-process on a fixed port, then point Hermes at it:
+**1. Install the router binary:**
+
+```bash
+npm install -g auto-model-router
+```
+
+**2. Install the Hermes plugin.** Copy `hermes-plugin/` to
+`$HERMES_HOME/plugins/model-providers/auto-model-router/` (where
+`HERMES_HOME` is `C:\Users\<you>\AppData\Local\hermes` on Windows,
+`~/.hermes` on macOS/Linux):
+
+```bash
+mkdir -p "$HERMES_HOME/plugins/model-providers"
+cp -r hermes-plugin/ "$HERMES_HOME/plugins/model-providers/auto-model-router/"
+```
+
+**3. Surface the provider in Hermes's picker.** Hermes only lists providers
+that have a credential. The router itself is keyless (it resolves its own
+OpenRouter key), but to make Hermes show it as selectable, add a marker value
+to `$HERMES_HOME/.env`:
+
+```bash
+echo "AUTO_MODEL_ROUTER_API_KEY=local" >> "$HERMES_HOME/.env"
+```
+
+**4. Restart Hermes.** On load, the plugin spawns the router (`auto-model-router
+serve`) as a subprocess on port 8788 and registers the provider profile. Select
+`auto-model-router/auto` as the model.
+
+The plugin runs the router against its **own** config home
+(`$HERMES_HOME/auto-model-router/`), separate from omp's
+`~/.auto-model-router/`, so the two harnesses never share a ledger or
+conversation state and don't leak routing toasts into each other's UIs.
+
+The router serves `GET /v1/models` (returning the `auto`, `auto-cheap`,
+`auto-max` profiles) and `POST /v1/chat/completions`, which Hermes's custom
+endpoint discovery verifies. The router's own OpenRouter key resolution
+(config → env → omp auth store) applies — Hermes does not need its own
+OpenRouter key.
+
+**Standalone alternative (no plugin):** run the router yourself, then add a
+custom provider:
 
 ```bash
 auto-model-router serve --port 8788
 ```
 
 ```yaml
-# ~/.hermes/config.yaml
+# $HERMES_HOME/config.yaml
 providers:
   auto-model-router:
     base_url: http://127.0.0.1:8788/v1
-    api_key: no-key-required
+    api_key: local
     default_model: auto
 ```
-
-**Hermes plugin (native):** copy `hermes-plugin/` to
-`$HERMES_HOME/plugins/model-providers/auto-model-router/` and restart Hermes.
-The plugin spawns the router as a subprocess on load and registers the provider
-profile, so Hermes routes each turn through the router automatically.
-
-The router serves `GET /v1/models` (returning the `auto`, `auto-cheap`,
-`auto-max` profiles) and `POST /v1/chat/completions`, which Hermes's custom
-endpoint discovery verifies. Select `auto-model-router/auto` as the model and
-the router routes each turn by price and complexity. The router's own OpenRouter
-key resolution (config → env → omp auth store) applies — Hermes does not need
-its own OpenRouter key.
 
 ### The OpenRouter key
 
@@ -307,7 +391,8 @@ disk and back up the previous file to a timestamped `.bak`.
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | OpenRouter key (overrides the auth store). | — |
 | `AUTO_MODEL_ROUTER_HOME` | Config + database directory. | `~/.auto-model-router` |
-| `AUTO_MODEL_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
+| `AUTO_MODEL_ROUTER_HOST` | Bind address override. | `127.0.0.1` |
+| `AUTO_MODEL_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
 | `AUTO_MODEL_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
 | `AUTO_MODEL_ROUTER_DB` | Override the ledger path. | `$AUTO_MODEL_ROUTER_HOME/router.db` |
 | `AUTO_MODEL_ROUTER_URL` | Toast/base URL override (the toast reads the shared port file first). | — |
