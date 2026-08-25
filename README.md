@@ -210,11 +210,22 @@ or from git:
 pi install git:github.com/drewappling/auto-model-router
 ```
 
-To publish to npm (which auto-indexes on pi.dev/packages):
+#### Releasing
+
+Cut releases with `npm version` (or `bun run release <patch|minor|major>`), not a
+bare `npm publish`:
 
 ```bash
-npm publish
+npm version patch && git push --follow-tags   # or: bun run release patch
 ```
+
+`npm version` runs the `version` lifecycle script
+(`tools/sync-marketplace-version.ts`), which rewrites the Git-marketplace
+catalog (`.omp-plugin/marketplace.json`) to the new version and stages it into
+the version commit — so the npm package and the marketplace catalog can never
+drift. Pushing the `vX.Y.Z` tag triggers the release workflow (npm publish,
+which auto-indexes on pi.dev/packages, plus a GitHub Release). A bare
+`npm publish` skips both the catalog sync and the tag, so avoid it.
 
 ### Hermes
 

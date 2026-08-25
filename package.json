@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run tools/smoke.ts",
+    "version": "bun run tools/sync-marketplace-version.ts",
     "release": "npm version $1 && git push --follow-tags"
   },
   "dependencies": {
