@@ -1,0 +1,40 @@
+name: release
+
+# Release flow: push a version tag (v0.2.0) to publish to npm AND create a
+# visible GitHub Release. This is the single source of truth for shipping —
+# bump package.json, commit, tag vX.Y.Z, push. The tag triggers both the npm
+# publish and the GitHub Release, so every update is visible.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: auto-model-router ${{ github.ref_name }}
+          body: |
+            Published to npm as [`auto-model-router@${{ github.ref_name }}`](https://www.npmjs.com/package/auto-model-router).
+            Install with `pi install npm:auto-model-router`.
