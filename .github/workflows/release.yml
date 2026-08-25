@@ -1,9 +1,10 @@
 name: release
 
 # Release flow: push a version tag (v0.2.0) to publish to npm AND create a
-# visible GitHub Release. This is the single source of truth for shipping —
-# bump package.json, commit, tag vX.Y.Z, push. The tag triggers both the npm
-# publish and the GitHub Release, so every update is visible.
+# visible GitHub Release. Bump package.json, commit, tag vX.Y.Z, push. The tag
+# triggers both the npm publish and the GitHub Release, so every update is
+# visible. If the version is already on npm (e.g. tagging an existing release),
+# the publish step is skipped and only the GitHub Release is created.
 on:
   push:
     tags:
@@ -25,7 +26,20 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Check if version already published
+        id: version
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view auto-model-router version 2>/dev/null || echo "0.0.0")
+          echo "local=$LOCAL published=$PUBLISHED"
+          if [ "$LOCAL" != "$PUBLISHED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.version.outputs.changed == 'true'
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
