@@ -1,14 +1,19 @@
 """Hermes provider plugin for auto-model-router.
 
-Spawns the router as a standalone subprocess on a fixed port and registers a
-ProviderProfile pointing at it, so Hermes routes each turn through the router's
-per-turn cost/complexity logic. The router is a Bun process; this Python plugin
-manages it as a child process (Hermes plugins may spawn subprocesses).
+Requires auto-model-router installed globally via npm so its `serve` binary is
+on PATH:
+
+    npm install -g auto-model-router
+
+The plugin spawns `auto-model-router serve` as a subprocess on a fixed port and
+registers a ProviderProfile pointing at it, so Hermes routes each turn through
+the router's per-turn cost/complexity logic. The router is a Bun process; this
+Python plugin manages it as a child process (Hermes plugins may spawn
+subprocesses).
 
 Install by copying this directory to
 ``$HERMES_HOME/plugins/model-providers/auto-model-router/`` (or symlinking it),
-then restart Hermes. The router binary must be on PATH as ``auto-model-router``
-(or set ``AUTO_MODEL_ROUTER_BIN`` to its path).
+then restart Hermes. Override the port with ``AUTO_MODEL_ROUTER_PORT``.
 """
 
 from __future__ import annotations
@@ -26,9 +31,8 @@ from providers.base import ProviderProfile
 PORT = int(os.environ.get("AUTO_MODEL_ROUTER_PORT", "8788"))
 BASE_URL = f"http://127.0.0.1:{PORT}/v1"
 
-# The router binary. Defaults to `auto-model-router` on PATH; override with
-# AUTO_MODEL_ROUTER_BIN for a non-PATH install.
-BIN = os.environ.get("AUTO_MODEL_ROUTER_BIN", "auto-model-router")
+# The router binary, provided by `npm install -g auto-model-router`.
+BIN = "auto-model-router"
 
 
 def _router_running() -> bool:
@@ -44,9 +48,10 @@ def _spawn_router() -> None:
     if _router_running():
         return
     if shutil.which(BIN) is None:
-        # Not on PATH and not running — log and register anyway; Hermes will
-        # surface the connection failure rather than crash the plugin.
-        return
+        raise RuntimeError(
+            "auto-model-router is not installed or not on PATH. "
+            "Run `npm install -g auto-model-router` first."
+        )
     subprocess.Popen(
         [BIN, "serve", "--port", str(PORT)],
         stdout=subprocess.DEVNULL,
@@ -58,6 +63,7 @@ def _spawn_router() -> None:
         if _router_running():
             return
         time.sleep(0.2)
+    raise RuntimeError(f"auto-model-router did not come up on port {PORT}")
 
 
 _spawn_router()
