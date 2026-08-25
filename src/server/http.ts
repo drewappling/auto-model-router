@@ -135,11 +135,32 @@ function wireErrorResponse(err: WireError): Response {
 function toWireError(err: unknown): WireError {
 	if (err instanceof WireErrorException) return err.wireError;
 	if (err instanceof UpstreamError) return err.toWireError();
+	// Never forward the raw exception text to the client: it can contain
+	// filesystem paths, internal URLs, or unexpected exception detail that aids
+	// reconnaissance. The caller logs the real message server-side.
 	return {
 		status: 500,
 		code: "internal_error",
-		message: err instanceof Error ? err.message : String(err),
+		message: "internal error",
 	};
+}
+
+/** True when the server is bound to a loopback address (the default). */
+function isLoopbackHost(host: string): boolean {
+	return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "::";
+}
+
+/**
+ * True when a request's Host header names a loopback address. Blunts DNS
+ * rebinding: a malicious page that resolves a host to 127.0.0.1 sends a Host
+ * header naming its own domain, which this rejects. Only enforced when the
+ * server itself is bound to loopback; an operator who explicitly widens the
+ * bind to 0.0.0.0 opts out of the check.
+ */
+function isLoopbackHostHeader(hostHeader: string | null): boolean {
+	if (hostHeader === null) return false;
+	const host = hostHeader.split(":")[0] ?? "";
+	return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
 }
 
 export function startServer(cfg: RouterConfig): StartedServer {
@@ -189,6 +210,21 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		catalogRefreshTimer.unref();
 	}
 
+	// Cap concurrent in-flight turns so a burst of requests cannot hold many
+	// upstream streams at once (each can run up to idleTimeout). Excess requests
+	// are rejected with 429 rather than queued, so a local flood cannot pile up
+	// unbounded upstream spend or memory.
+	const MAX_CONCURRENT_TURNS = 8;
+	let inFlightTurns = 0;
+	const acquireTurn = (): boolean => {
+		if (inFlightTurns >= MAX_CONCURRENT_TURNS) return false;
+		inFlightTurns++;
+		return true;
+	};
+	const releaseTurn = (): void => {
+		inFlightTurns--;
+	};
+
 	const handleChatCompletions = async (req: Request): Promise<Response> => {
 		let normReq: NormRequest;
 		try {
@@ -209,10 +245,16 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		// The client signal aborts the upstream dispatch on disconnect. runTurn is
 		// expected to render its own failures into the sink; this catch is the last
 		// line of defence so a rejected turn can never wedge the response.
-		runTurn(normReq, sink, turnDeps, req.signal).catch((err: unknown) => {
-			log.error("turn failed", { error: err instanceof Error ? err.message : String(err) });
-			Promise.resolve(sink.error(toWireError(err))).catch(() => {});
-		});
+		runTurn(normReq, sink, turnDeps, req.signal)
+			.catch((err: unknown) => {
+				log.error("turn failed", { error: err instanceof Error ? err.message : String(err) });
+				return Promise.resolve(sink.error(toWireError(err))).catch(() => {});
+			})
+			.finally(() => {
+				// Release the concurrency slot when the turn settles, not when the
+				// streaming response object is handed back.
+				releaseTurn();
+			});
 
 		return response;
 	};
@@ -229,6 +271,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		// SECONDS (max 255), so convert from the ms upstream timeout and cap.
 		idleTimeout: Math.min(Math.ceil(cfg.openrouter.timeoutMs / 1000), 255),
 		async fetch(req: Request): Promise<Response> {
+			// Reject requests whose Host header does not name a loopback address
+			// when the server is bound to loopback. This blunts DNS rebinding: a
+			// malicious page resolving a host to 127.0.0.1 sends its own domain as
+			// the Host header, which this rejects. An operator who explicitly
+			// widens the bind to 0.0.0.0 opts out of the check.
+			if (isLoopbackHost(cfg.server.host) && !isLoopbackHostHeader(req.headers.get("host"))) {
+				return wireErrorResponse({ status: 403, code: "forbidden", message: "invalid host" });
+			}
+
 			if (cfg.server.apiKey !== undefined && cfg.server.apiKey !== "") {
 				if (req.headers.get("authorization") !== `Bearer ${cfg.server.apiKey}`) {
 					return wireErrorResponse({ status: 401, code: "unauthorized", message: "invalid or missing bearer token" });
@@ -238,6 +289,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			const url = new URL(req.url);
 			try {
 				if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+					if (!acquireTurn()) {
+						return wireErrorResponse({ status: 429, code: "too_many_requests", message: "too many concurrent turns" });
+					}
 					return await handleChatCompletions(req);
 				}
 				if (req.method === "GET" && url.pathname === "/v1/models") {
