@@ -168,8 +168,6 @@ listed as `peerDependencies` so either harness provides the types.
 
 ### The OpenRouter key
 
-### The OpenRouter key
-
 There should be exactly one OpenRouter key on the machine, and omp already owns
 a credential store. Resolution order:
 
@@ -188,6 +186,8 @@ The embedded router reports the key source via its in-process `GET /health`
 (`config` | `env` | `omp-auth-store` | `none`) — never the key itself.
 
 ---
+
+## How it runs
 
 At session start, the **main** omp session's `router-embed.ts`:
 
@@ -474,7 +474,7 @@ Install it by adding the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file
-(`$AUTO_MODEL_ROUTER_HOME/embed.<pid>`), then `AUTO_MODEL_ROUTER_URL`, then `AUTO_MODEL_ROUTER_PORT`,
+(`$AUTO_MODEL_ROUTER_HOME/embed.port`), then `AUTO_MODEL_ROUTER_URL`, then `AUTO_MODEL_ROUTER_PORT`,
 then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
 port file each tick means the toast always polls the port the router actually
 bound, even though it changes every session.
