@@ -160,11 +160,28 @@ To publish to npm (which auto-indexes on pi.dev/packages):
 npm publish
 ```
 
-The `pi.extensions` manifest declares the three extension entry points. The
-extensions are harness-agnostic at runtime (their `ExtensionAPI` import is
-type-only, erased by the runtime) and load under both omp and its upstream Pi
-agent; `@oh-my-pi/pi-coding-agent` and `@earendil-works/pi-coding-agent` are
-listed as `peerDependencies` so either harness provides the types.
+### Hermes (day-1 support)
+
+Hermes speaks the OpenAI-compatible wire, so it connects to the router with no
+code change — just a custom provider pointing at the router's URL. Add a named
+provider to `~/.hermes/config.yaml`:
+
+```yaml
+providers:
+  auto-model-router:
+    base_url: http://127.0.0.1:8788/v1
+    api_key: no-key-required
+    default_model: auto
+```
+
+The router serves `GET /v1/models` (returning the `auto`, `auto-cheap`,
+`auto-max` profiles) and `POST /v1/chat/completions`, which Hermes's custom
+endpoint discovery verifies. Select `auto-model-router/auto` as the model and
+the router routes each turn by price and complexity. The router's own OpenRouter
+key resolution (config → env → omp auth store) applies — Hermes does not need
+its own OpenRouter key.
+
+### The OpenRouter key
 
 ### The OpenRouter key
 
