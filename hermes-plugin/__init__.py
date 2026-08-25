@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -52,12 +53,23 @@ def _spawn_router() -> None:
             "auto-model-router is not installed or not on PATH. "
             "Run `npm install -g auto-model-router` first."
         )
-    subprocess.Popen(
-        [BIN, "serve", "--port", str(PORT)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    if sys.platform.startswith("win"):
+        # npm installs a `.cmd` shim that cannot be exec'd as a bare argv
+        # list; shell=True resolves it through the command shell.
+        subprocess.Popen(
+            f'"{BIN}" serve --port {PORT}',
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=True,
+            start_new_session=True,
+        )
+    else:
+        subprocess.Popen(
+            [BIN, "serve", "--port", str(PORT)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     # Wait for it to come up (bounded).
     for _ in range(50):
         if _router_running():
