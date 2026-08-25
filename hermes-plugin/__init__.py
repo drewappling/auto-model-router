@@ -35,10 +35,23 @@ BASE_URL = f"http://127.0.0.1:{PORT}/v1"
 # The router binary, provided by `npm install -g auto-model-router`.
 BIN = "auto-model-router"
 
+# The router's config home. Must be SEPARATE from the default (~/.auto-model-router)
+# which omp's embedded router shares: both read the same ledger + config there,
+# so sharing it would leak omp's routing toasts into this harness (and vice versa)
+# and let the two routers fight over conversation state. Use a hermes-owned home.
+_ROUTER_HOME = os.environ.get(
+    "AUTO_MODEL_ROUTER_HOME",
+    os.path.join(
+        os.environ.get("HERMES_HOME", os.path.expanduser("~")), "auto-model-router"
+    ),
+)
+
 
 def _router_running() -> bool:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=1) as resp:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{PORT}/health", timeout=1
+        ) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -53,6 +66,7 @@ def _spawn_router() -> None:
             "auto-model-router is not installed or not on PATH. "
             "Run `npm install -g auto-model-router` first."
         )
+    env = {**os.environ, "AUTO_MODEL_ROUTER_HOME": _ROUTER_HOME}
     if sys.platform.startswith("win"):
         # npm installs a `.cmd` shim that cannot be exec'd as a bare argv
         # list; shell=True resolves it through the command shell.
@@ -62,6 +76,7 @@ def _spawn_router() -> None:
             stderr=subprocess.DEVNULL,
             shell=True,
             start_new_session=True,
+            env=env,
         )
     else:
         subprocess.Popen(
@@ -69,6 +84,7 @@ def _spawn_router() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
     # Wait for it to come up (bounded).
     for _ in range(50):
