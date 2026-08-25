@@ -32,6 +32,7 @@ interface LedgerRow {
 	turn: number;
 	requested_model: string;
 	harness_id: string;
+	omp_session_id: string;
 	slug: string;
 	served_slug: string | null;
 	tier: string;
@@ -128,6 +129,7 @@ function toEntry(row: LedgerRow): LedgerEntry {
 		turn: row.turn,
 		requestedModel: row.requested_model,
 		harnessId: row.harness_id,
+		ompSessionId: row.omp_session_id,
 		slug: row.slug,
 		servedSlug: row.served_slug,
 		tier: row.tier,
@@ -151,11 +153,11 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	// Prepared once: record() runs on every turn.
 	const insertStmt = db.query(
 		`INSERT INTO ledger (
-			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, slug, served_slug,
+			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
 			error_kind
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -215,6 +217,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.turn,
 				entry.requestedModel,
 				entry.harnessId,
+				entry.ompSessionId,
 				entry.slug,
 				entry.servedSlug,
 				entry.tier,

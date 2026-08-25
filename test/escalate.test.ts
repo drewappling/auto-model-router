@@ -22,6 +22,7 @@ function req(messages: NormMessage[] = [], over: Partial<NormRequest> = {}): Nor
 		protocol: "openai-chat",
 		conversationKey: "k",
 		harnessId: "",
+		ompSessionId: "",
 		requestedModel: "auto",
 		messages,
 		tools: [],

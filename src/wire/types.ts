@@ -68,6 +68,13 @@ export interface NormRequest {
 	 * client sends no header (single-harness default).
 	 */
 	harnessId: string;
+	/**
+	 * omp UI session id from the `X-Omp-Session` request header, when the client
+	 * sends one. Scopes toasts to a single interactive session so concurrent
+	 * sessions sharing one router don't surface each other's choices. Empty when
+	 * the client sends no header.
+	 */
+	ompSessionId: string;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	messages: NormMessage[];

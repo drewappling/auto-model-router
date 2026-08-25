@@ -204,6 +204,10 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	// this via the provider block's `headers:` override; absent ⇒ single harness.
 	const harnessId = (headers.get("x-omp-harness") ?? "").trim();
 
+	// omp UI session id for per-session toast scoping. The embed extension sets
+	// this header to ctx.sessionManager.getSessionId(); absent ⇒ unknown session.
+	const ompSessionId = (headers.get("x-omp-session") ?? "").trim();
+
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
 	}
@@ -262,6 +266,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		protocol: "openai-chat",
 		conversationKey,
 		harnessId,
+		ompSessionId,
 		requestedModel,
 		messages,
 		tools,

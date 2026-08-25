@@ -141,6 +141,7 @@ export async function runTurn(
 				turn: turnNumber,
 				requestedModel: req.requestedModel,
 				harnessId: req.harnessId,
+				ompSessionId: req.ompSessionId,
 				slug: decision.slug,
 				servedSlug,
 				tier: decision.tier,

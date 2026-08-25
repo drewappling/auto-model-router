@@ -557,8 +557,15 @@ on each other:
 - **Per-harness daily budget** — each harness sends an `X-Omp-Harness` header
   (from the provider block's `headers:`), and the router scopes the rolling
   24h `perDayUsd` ceiling to it. One harness can't exhaust the day for another.
-- **Per-harness toasts** — set `OMP_HARNESS_ID` to the same value so the
-  extension only toasts that harness's model choices.
+- **Per-session toasts** — the toast surfaces only the decisions made by *its
+  own* omp session. The embed extension tags every request with an
+  `X-Omp-Session` header (`ctx.sessionManager.getSessionId()`), the router
+  records it on each ledger row, and the toast filters on it. Two concurrent
+  interactive sessions — even of the same harness — never surface each other's
+  model choices. This needs no configuration.
+- **Per-harness toasts** — additionally set `OMP_HARNESS_ID` to the same value
+  so the extension only toasts that harness's model choices. Session scoping is
+  finer-grained; harness scoping still applies on top when set.
 
 Configure a harness by setting `server.harnessId`; set the same id in that
 harness's `OMP_HARNESS_ID` env var.
@@ -594,7 +601,8 @@ bound, even though it changes every session.
 The toast logic is a pure, unit-tested module
 (`omp-extension/toast-logic.ts`, covered by `test/toast-logic.test.ts`): it
 toasts only decisions newer than the last seen one, skips `wasted` escalation
-attempts, and prefers the actual serving slug over the requested one.
+attempts, prefers the actual serving slug over the requested one, and filters
+to the toast's own omp session id (and harness id, when set).
 
 ---
 

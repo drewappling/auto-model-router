@@ -43,15 +43,20 @@ import {
  * Registers the auto-model-router provider (and its virtual models) into omp's model
  * registry at a specific bound port.
  */
-function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig): void {
+function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig, sessionId: string): void {
 	const providerConfig = buildProviderConfig(port, cfg);
+	const headers: Record<string, string> = {};
+	if (providerConfig.harnessId !== undefined && providerConfig.harnessId !== "") {
+		headers["X-Omp-Harness"] = providerConfig.harnessId;
+	}
+	// Per-session scoping: lets the toast surface only this session's decisions
+	// even when several omp sessions share one embedded router's ledger.
+	if (sessionId !== "") headers["X-Omp-Session"] = sessionId;
 	pi.registerProvider(EMBED_PROVIDER_ID, {
 		baseUrl: providerConfig.baseUrl,
 		api: "openai-completions",
 		apiKey: EMBED_DUMMY_API_KEY,
-		...(providerConfig.harnessId !== undefined && providerConfig.harnessId !== ""
-			? { headers: { "X-Omp-Harness": providerConfig.harnessId } }
-			: {}),
+		...(Object.keys(headers).length > 0 ? { headers } : {}),
 		models: providerConfig.models.map((m) => ({
 			id: m.id,
 			name: m.name,
@@ -90,9 +95,12 @@ export default function (pi: ExtensionAPI): void {
 		// Subagents and headless sessions do not bind their own router; they
 		// route to the main's router via the shared port file. The main writes
 		// the file before spawning subagents, so the port is available here.
+		// The omp UI session id tags every request so the toast can scope its
+		// notifications to that exact session (see router-toast.ts).
+		const sessionId = ctx.sessionManager.getSessionId();
 		if (!ctx.hasUI) {
 			const port = readEmbedPort(portFile);
-			if (port !== null) registerRouterProvider(pi, port, cfg);
+			if (port !== null) registerRouterProvider(pi, port, cfg, sessionId);
 			return;
 		}
 
@@ -108,7 +116,7 @@ export default function (pi: ExtensionAPI): void {
 
 		// Publish the shared port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
-		registerRouterProvider(pi, actualPort, cfg);
+		registerRouterProvider(pi, actualPort, cfg, sessionId);
 
 		pi.on("session_shutdown", () => {
 			void app?.stop().catch(() => {});

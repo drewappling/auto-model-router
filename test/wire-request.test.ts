@@ -58,6 +58,17 @@ describe("parseChatRequest normalization", () => {
 		expect(prefixed.requestedModel).toBe("auto");
 	});
 
+	test("reads harness and omp session ids from headers, trimmed", () => {
+		const headers = new Headers({ "x-omp-harness": " prod-a ", "x-omp-session": " sess-1 " });
+		const req = parseChatRequest(userBody("hi"), headers);
+		expect(req.harnessId).toBe("prod-a");
+		expect(req.ompSessionId).toBe("sess-1");
+	});
+
+	test("omp session id defaults to empty when the header is absent", () => {
+		expect(parseChatRequest(userBody("hi"), HEADERS).ompSessionId).toBe("");
+	});
+
 	test("tool schemas, names, and descriptions contribute to promptBytes", () => {
 		const parameters = { type: "object", properties: { path: { type: "string" } } };
 		const withTools = parseChatRequest(

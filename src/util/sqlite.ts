@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 4;
+const USER_VERSION = 5;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS ledger (
   turn INTEGER NOT NULL,
   requested_model TEXT NOT NULL,
   harness_id TEXT NOT NULL DEFAULT '',
+  omp_session_id TEXT NOT NULL DEFAULT '',
   slug TEXT NOT NULL,
   served_slug TEXT,
   tier TEXT NOT NULL,
@@ -118,6 +119,15 @@ END
 WHERE error IS NOT NULL;
 `;
 
+// v5: ledger gains omp_session_id, so the toast extension can scope decisions to
+// its own omp session. Before this, the only scoping was per-harness, so two
+// interactive omp sessions of the same harness (the default: empty) each
+// surfaced the other's routing toasts from the shared ledger. Existing rows
+// backfill to '' (unknown session), matching the no-header default.
+const MIGRATE_V5 = `
+ALTER TABLE ledger ADD COLUMN omp_session_id TEXT NOT NULL DEFAULT '';
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -134,6 +144,7 @@ export function openDb(path: string): Database {
 		const ledgerCols = db.query("PRAGMA table_info(ledger)").all() as { name: string }[];
 		if (!ledgerCols.some((c) => c.name === "harness_id")) db.exec(MIGRATE_V3);
 		if (!ledgerCols.some((c) => c.name === "error_kind")) db.exec(MIGRATE_V4);
+		if (!ledgerCols.some((c) => c.name === "omp_session_id")) db.exec(MIGRATE_V5);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

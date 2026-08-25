@@ -16,6 +16,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		turn: 1,
 		requestedModel: "auto",
 		harnessId: "",
+		ompSessionId: "",
 		slug: "vendor/model",
 		servedSlug: "vendor/model",
 		tier: "simple",
@@ -163,11 +164,24 @@ describe("v4 migration", () => {
 		}
 	});
 
-	test("schema is at user_version 4", () => {
+	test("schema is at user_version 5", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(4);
+			expect(row.user_version).toBe(5);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("persists omp_session_id and returns it via recentEntries", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			ledger.record(entry({ ompSessionId: "sess-a" }));
+			ledger.record(entry({ ompSessionId: "" }));
+			const got = ledger.recentEntries(10).map((e) => e.ompSessionId).sort();
+			expect(got).toEqual(["", "sess-a"]);
 		} finally {
 			db.close();
 		}

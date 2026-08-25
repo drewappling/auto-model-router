@@ -73,6 +73,11 @@ export default function (pi: ExtensionAPI): void {
 		// poll loop entirely rather than waking every 2s to do nothing.
 		if (!ctx.hasUI) return;
 
+		// This session's omp id. The embed extension tags every request with it
+		// (X-Omp-Session), so filtering on it scopes toasts to this session even
+		// when several omp sessions share one embedded router's ledger.
+		const sessionId = ctx.sessionManager.getSessionId();
+
 		// The poll request's own deadline (3s) exceeds the poll period (2s), so
 		// a slow router could let a second tick start while the first is still in
 		// flight — both read the same lastSeenId and raise duplicate toasts. An
@@ -115,7 +120,7 @@ export default function (pi: ExtensionAPI): void {
 				const entries = body.entries;
 				if (!Array.isArray(entries) || entries.length === 0) return;
 
-				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID)) {
+				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID, sessionId)) {
 					ctx.ui.notify(t.text, "info");
 				}
 				lastSeenId = newestId(entries) ?? lastSeenId;

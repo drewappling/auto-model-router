@@ -141,6 +141,38 @@ describe("selectToasts", () => {
 		];
 		expect(selectToasts(entries, "", "")).toHaveLength(2);
 	});
+
+	test("filters to the requesting omp session when one is set", () => {
+		// Two interactive omp sessions sharing one router's ledger: session-a's
+		// toast must not surface session-b's decisions.
+		const entries = [
+			dec({ id: "d3", slug: "mine", ompSessionId: "sess-a" }),
+			dec({ id: "d2", slug: "other", ompSessionId: "sess-b" }),
+			dec({ id: "d1", slug: "prior", ompSessionId: "sess-a" }),
+		];
+		const toasts = selectToasts(entries, "d1", "", "sess-a");
+		expect(toasts).toHaveLength(1);
+		expect(toasts[0]?.model).toBe("mine");
+	});
+
+	test("empty omp session id toasts every session", () => {
+		const entries = [
+			dec({ id: "d2", slug: "a", ompSessionId: "sess-a" }),
+			dec({ id: "d1", slug: "b", ompSessionId: "sess-b" }),
+		];
+		expect(selectToasts(entries, "", "", "")).toHaveLength(2);
+	});
+
+	test("harness and session filters compose", () => {
+		const entries = [
+			dec({ id: "d3", slug: "keep", harnessId: "h", ompSessionId: "sess-a" }),
+			dec({ id: "d2", slug: "wrong-session", harnessId: "h", ompSessionId: "sess-b" }),
+			dec({ id: "d1", slug: "wrong-harness", harnessId: "other", ompSessionId: "sess-a" }),
+		];
+		const toasts = selectToasts(entries, "", "h", "sess-a");
+		expect(toasts).toHaveLength(1);
+		expect(toasts[0]?.model).toBe("keep");
+	});
 });
 
 describe("toToastText", () => {

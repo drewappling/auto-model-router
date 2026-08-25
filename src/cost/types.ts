@@ -74,6 +74,12 @@ export interface LedgerEntry {
 	requestedModel: string;
 	/** Harness id from the request header; empty for the default harness. */
 	harnessId: string;
+	/**
+	 * omp UI session id from the `X-Omp-Session` request header; empty when the
+	 * client sends no header. Scopes toasts to a single interactive session so
+	 * concurrent sessions sharing one ledger don't surface each other's choices.
+	 */
+	ompSessionId: string;
 	/** Concrete slug we dispatched to. */
 	slug: string;
 	/** Slug that actually served it, per the response `model` field. */

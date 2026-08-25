@@ -83,6 +83,11 @@ export interface ToastDecision {
 	wasted: boolean;
 	/** Harness id from the request header; empty for the default harness. */
 	harnessId: string;
+	/**
+	 * omp UI session id from the `X-Omp-Session` header; empty for the no-header
+	 * default. Lets the toast scope to a single interactive session.
+	 */
+	ompSessionId?: string;
 }
 
 export interface ToastMessage {
@@ -111,6 +116,7 @@ export function selectToasts(
 	entries: ToastDecision[],
 	lastSeenId: string | null,
 	harnessId = "",
+	ompSessionId = "",
 ): ToastMessage[] {
 	if (lastSeenId === null) return [];
 	// `entries` is newest-first. Entries strictly newer than lastSeenId are the
@@ -124,6 +130,7 @@ export function selectToasts(
 		if (d === undefined) continue;
 		if (d.wasted) continue;
 		if (harnessId !== "" && d.harnessId !== harnessId) continue;
+		if (ompSessionId !== "" && d.ompSessionId !== ompSessionId) continue;
 		out.push({ model: d.servedSlug ?? d.slug, tier: d.tier, costUsd: d.reportedUsd, text: toToastText(d) });
 	}
 	return out;
