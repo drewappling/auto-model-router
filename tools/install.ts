@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * omp-router installer.
+ * auto-model-router installer.
  *
- * Wires the omp-router extensions into omp's `~/.omp/agent/config.yml`
+ * Wires the auto-model-router extensions into omp's `~/.omp/agent/config.yml`
  * (or `$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent
  * dir). Cross-platform: Windows, macOS, and Linux.
  *
@@ -132,7 +132,7 @@ function main(): void {
 	mkdirSync(dirname(target), { recursive: true });
 	writeFileSync(target, next, "utf8");
 
-	console.log(`installed omp-router extensions into ${target}:`);
+	console.log(`installed auto-model-router extensions into ${target}:`);
 	for (const e of selected) console.log(`  - ${extensionPath(e.file)}  (${e.label})`);
 	console.log("restart the omp session to load them.");
 }

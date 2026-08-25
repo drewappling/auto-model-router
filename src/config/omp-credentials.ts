@@ -2,7 +2,7 @@
  * Borrows a provider credential from omp's own auth store.
  *
  * The point is that there is exactly ONE OpenRouter key on the machine, owned
- * by omp. Once `/login openrouter` has been run there, omp-router picks the key
+ * by omp. Once `/login openrouter` has been run there, auto-model-router picks the key
  * up with no config and no second copy to rotate or leak.
  *
  * The store is opened READ-ONLY and never written: omp owns that file, including

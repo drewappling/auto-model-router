@@ -1,9 +1,9 @@
 /**
- * omp extension: run omp-router IN the omp process.
+ * omp extension: run auto-model-router IN the omp process.
  *
  * The MAIN omp session embeds the router: it binds a free OS-assigned port,
- * publishes it to the shared `$OMP_ROUTER_HOME/embed.port`, and registers the
- * omp-router provider. Subagents do NOT bind their own router — they are
+ * publishes it to the shared `$AUTO_MODEL_ROUTER_HOME/embed.port`, and registers the
+ * auto-model-router provider. Subagents do NOT bind their own router — they are
  * ephemeral worker processes whose PIDs get recycled, so a per-PID port file
  * is a race. Instead every subagent registers the same shared provider and
  * routes to the main session's single router.
@@ -15,8 +15,8 @@
  *
  *   # ~/.omp/agent/config.yml
  *   extensions:
- *     - /path/to/omp-router/omp-extension/router-embed.ts
- *     - /path/to/omp-router/omp-extension/router-toast.ts
+ *     - /path/to/auto-model-router/omp-extension/router-embed.ts
+ *     - /path/to/auto-model-router/omp-extension/router-toast.ts
  */
 
 import { homedir } from "node:os";
@@ -40,7 +40,7 @@ import {
 } from "./embed-logic.ts";
 
 /**
- * Registers the omp-router provider (and its virtual models) into omp's model
+ * Registers the auto-model-router provider (and its virtual models) into omp's model
  * registry at a specific bound port.
  */
 function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig): void {
@@ -71,12 +71,12 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 }
 
 export default function (pi: ExtensionAPI): void {
-	pi.setLabel("omp-router embed");
+	pi.setLabel("auto-model-router embed");
 
-	const requestedPort = resolveEmbedPort(process.env.OMP_ROUTER_PORT);
+	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT);
 
 	// Shared port file, written only by the main session's router.
-	const homeRaw = process.env.OMP_ROUTER_HOME ?? join(homedir(), ".omp-router");
+	const homeRaw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
 	const home =
 		homeRaw === "~" || homeRaw.startsWith("~/") || homeRaw.startsWith("~\\")
 			? join(homedir(), homeRaw.slice(1))

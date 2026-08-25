@@ -1,5 +1,5 @@
 /**
- * `omp-router config`.
+ * `auto-model-router config`.
  *
  * Bare invocation opens the interactive wizard over the router's own
  * config.yml (see `config-wizard.ts`). `--print` emits the `models.yml`
@@ -34,8 +34,8 @@ import {
 	type WizardIo,
 } from "./config-wizard.ts";
 
-export const BEGIN_GUARD = "# BEGIN omp-router";
-export const END_GUARD = "# END omp-router";
+export const BEGIN_GUARD = "# BEGIN auto-model-router";
+export const END_GUARD = "# END auto-model-router";
 
 /**
  * Cache-price multipliers used only when the ledger has no measured blend yet.
@@ -67,7 +67,7 @@ export function renderProviderBlock(cfg: RouterConfig, blend: BlendedRate | null
 	const host = cfg.server.host === "0.0.0.0" || cfg.server.host === "::" ? "127.0.0.1" : cfg.server.host;
 
 	const provider: Record<string, unknown> = {
-		"omp-router": {
+		"auto-model-router": {
 			baseUrl: `http://${host}:${cfg.server.port}/v1`,
 			api: "openai-completions",
 			auth: "none",
@@ -136,8 +136,8 @@ export function spliceProviderBlock(existing: string, block: string): SpliceResu
 	const bom = existing.startsWith("\uFEFF") ? "\uFEFF" : "";
 	const source = bom === "" ? existing : existing.slice(1);
 	const eol = detectEol(source === "" ? "\n" : source);
-	const note = "# Managed by omp-router. Cost figures are a rolling blend of actual routed";
-	const note2 = "# spend; re-run `omp-router config --write` to refresh them.";
+	const note = "# Managed by auto-model-router. Cost figures are a rolling blend of actual routed";
+	const note2 = "# spend; re-run `auto-model-router config --write` to refresh them.";
 
 	if (source.trim() === "") {
 		const indent = "    ";
@@ -224,14 +224,14 @@ export function assertUsableModelsYaml(text: string): void {
 		throw new Error("refusing to write: the spliced models.yml has no top-level `providers` mapping.");
 	}
 	const providers = parsed.providers;
-	if (typeof providers !== "object" || providers === null || !("omp-router" in providers)) {
-		throw new Error("refusing to write: the spliced models.yml does not contain the omp-router provider.");
+	if (typeof providers !== "object" || providers === null || !("auto-model-router" in providers)) {
+		throw new Error("refusing to write: the spliced models.yml does not contain the auto-model-router provider.");
 	}
 }
 
 /** The router's own config file path (the one `loadConfig` reads). */
 export function routerConfigPath(): string {
-	const home = resolveTilde(process.env.OMP_ROUTER_HOME ?? "~/.omp-router");
+	const home = resolveTilde(process.env.AUTO_MODEL_ROUTER_HOME ?? "~/.auto-model-router");
 	return join(home, "config.yml");
 }
 
@@ -334,7 +334,7 @@ export async function configCommand(args: CliArgs): Promise<void> {
 				? `# cost figures are estimates (no measured blend yet: needs ${cfg.ledger.blendMinSamples} routed turns)`
 				: `# cost figures blended from ${blend.sampleCount} routed turns over ${blend.windowDays}d`,
 		);
-		console.log(`# apply with: omp-router config --write   (target: ${ompModelsPath()})`);
+		console.log(`# apply with: auto-model-router config --write   (target: ${ompModelsPath()})`);
 		return;
 	}
 
@@ -357,6 +357,6 @@ export async function configCommand(args: CliArgs): Promise<void> {
 
 	mkdirSync(dirname(target), { recursive: true });
 	writeFileSync(target, result.text, "utf8");
-	console.log(`${result.action} omp-router provider block in ${target}`);
+	console.log(`${result.action} auto-model-router provider block in ${target}`);
 	console.log(`restart omp (or run /models) to pick up the change`);
 }

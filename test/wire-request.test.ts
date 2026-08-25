@@ -52,7 +52,7 @@ describe("parseChatRequest normalization", () => {
 	test("provider prefix is stripped from model", () => {
 		expect(parseChatRequest(userBody("hi"), HEADERS).requestedModel).toBe("auto");
 		const prefixed = parseChatRequest(
-			{ model: "omp-router/auto", messages: [{ role: "user", content: "hi" }] },
+			{ model: "auto-model-router/auto", messages: [{ role: "user", content: "hi" }] },
 			HEADERS,
 		);
 		expect(prefixed.requestedModel).toBe("auto");

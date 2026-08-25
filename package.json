@@ -1,11 +1,11 @@
 {
-  "name": "omp-router",
+  "name": "auto-model-router",
   "version": "0.1.0",
   "private": false,
   "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
   "type": "module",
   "bin": {
-    "omp-router": "./src/index.ts"
+    "auto-model-router": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -50,6 +50,7 @@
     ]
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-coding-agent": "*"
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "*"
   }
 }

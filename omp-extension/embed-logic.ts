@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
  * already pins `baseUrl`/`auth` for the same id is overridden by the
  * extension (extension registration wins at runtime).
  */
-export const EMBED_PROVIDER_ID = "omp-router";
+export const EMBED_PROVIDER_ID = "auto-model-router";
 
 /**
  * A dummy bearer the extension registers so omp treats the provider as
@@ -31,7 +31,7 @@ export const EMBED_PROVIDER_ID = "omp-router";
 export const EMBED_DUMMY_API_KEY = "embedded";
 
 /**
- * Filename (in `$OMP_ROUTER_HOME` / `~/.omp-router`) of the shared embed port
+ * Filename (in `$AUTO_MODEL_ROUTER_HOME` / `~/.auto-model-router`) of the shared embed port
  * file. Written only by the main session's router; read by every subagent and
  * the toast. A single writer and single file means there is never a stale
  * per-PID file pointing at a recycled process's dead port.
@@ -55,7 +55,7 @@ export interface EmbedConfig {
 }
 
 /**
- * Resolves the desired bind port: an explicit `OMP_ROUTER_PORT` when set and
+ * Resolves the desired bind port: an explicit `AUTO_MODEL_ROUTER_PORT` when set and
  * valid, else `0` so Bun assigns a free ephemeral port (the "random port" that
  * lets multiple local omp sessions coexist without colliding). Returning 0
  * means "let the OS pick"; the caller must read the actual port back off the

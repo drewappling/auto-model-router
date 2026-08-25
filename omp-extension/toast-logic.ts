@@ -20,11 +20,11 @@ export const DEFAULT_ROUTER_URL = "http://127.0.0.1:8788";
 
 /**
  * Resolves the router base URL from, in precedence order:
- *   1. an explicit `OMP_ROUTER_URL` override;
+ *   1. an explicit `AUTO_MODEL_ROUTER_URL` override;
  *   2. the embedded router's port file (`embedPort`, when it holds a valid
  *      port) — the embed extension binds a free OS-assigned port and writes it
  *      to the port file, so the toast must poll that actual address;
- *   3. an explicit `OMP_ROUTER_PORT` (`envPort`);
+ *   3. an explicit `AUTO_MODEL_ROUTER_PORT` (`envPort`);
  *   4. the `server` block of the router's own config;
  *   5. `DEFAULT_ROUTER_URL`.
  *

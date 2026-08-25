@@ -6,7 +6,7 @@
  * actually served, what it cost, whether the cache went warm). Routing that
  * also persisted would race that save and lose the sticky window.
  *
- * The read-only property is what makes `omp-router explain` safe: it routes a
+ * The read-only property is what makes `auto-model-router explain` safe: it routes a
  * real request without perturbing the conversation it belongs to.
  */
 

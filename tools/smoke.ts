@@ -62,7 +62,7 @@ const BufferedSchema = z
 /** Streaming frame, modelled loosely: unknown fields must survive passthrough. */
 const FrameSchema = z.object({
 	model: z.string().optional(),
-	x_omp_router: z.object({ model: z.string().optional(), tier: z.string().optional() }).loose().optional(),
+	x_auto_model_router: z.object({ model: z.string().optional(), tier: z.string().optional() }).loose().optional(),
 	choices: z
 		.array(
 			z.object({
@@ -140,7 +140,7 @@ async function drain(res: Response) {
 		const frame = FrameSchema.safeParse(parsed);
 		if (!frame.success) continue;
 		if (frame.data.model !== undefined) seenModel = frame.data.model;
-		if (frame.data.x_omp_router !== undefined) meta = frame.data.x_omp_router;
+		if (frame.data.x_auto_model_router !== undefined) meta = frame.data.x_auto_model_router;
 		const delta = frame.data.choices?.[0]?.delta;
 		if (typeof delta?.content === "string") content += delta.content;
 		for (const call of delta?.tool_calls ?? []) toolArgs += call.function?.arguments ?? "";
@@ -148,7 +148,7 @@ async function drain(res: Response) {
 	return { content, meta, toolArgs, seenModel, raw: text };
 }
 
-const home = mkdtempSync(join(tmpdir(), "omp-router-smoke-"));
+const home = mkdtempSync(join(tmpdir(), "auto-model-router-smoke-"));
 const mock = await startMockOpenRouter("test/fixtures/openrouter-models.json");
 console.log(`mock openrouter: ${mock.url}`);
 
@@ -163,7 +163,7 @@ cfg.classifier.ambiguityThreshold = 0;
 
 const app = startServer(cfg);
 const base = `http://127.0.0.1:${app.server.port}`;
-console.log(`omp-router: ${base}\n`);
+console.log(`auto-model-router: ${base}\n`);
 
 const post = (path: string, payload: unknown) =>
 	fetch(`${base}${path}`, {

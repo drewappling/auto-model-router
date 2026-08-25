@@ -51,7 +51,7 @@ export interface RouterStats {
 }
 
 /**
- * Aggregates the ledger for `/v1/router/stats` and `omp-router stats`.
+ * Aggregates the ledger for `/v1/router/stats` and `auto-model-router stats`.
  *
  * The ledger exposes no aggregate queries, so per-model breakdowns are
  * computed over a bounded tail of recent entries; the headline spend numbers

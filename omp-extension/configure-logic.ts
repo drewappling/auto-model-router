@@ -3,7 +3,7 @@
  *
  * Reuses the router's existing wizard field definitions and validation
  * (`src/cli/config-wizard.ts`) so the in-omp UI edits exactly the same set of
- * settings as `omp-router config`, and persists them through the same
+ * settings as `auto-model-router config`, and persists them through the same
  * validated merge (`writeRouterConfig`). The only thing this module adds is a
  * UI-adapter seam so the command can drive omp's native dialogs (`ctx.ui`)
  * while remaining unit-testable with a fake UI.

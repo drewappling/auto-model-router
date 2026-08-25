@@ -1,8 +1,8 @@
 /**
- * omp extension: `/router` — edit omp-router's settings through
+ * omp extension: `/router` — edit auto-model-router's settings through
  * omp's native UI dialogs.
  *
- * The command walks the same sections and fields as `omp-router config`
+ * The command walks the same sections and fields as `auto-model-router config`
  * (reusing `WIZARD_SECTIONS` / `PROFILE_FIELDS` from the router's CLI) but
  * prompts through `ctx.ui` select/input/confirm dialogs instead of stdin.
  * Edits are persisted through the router's own validated merge
@@ -13,8 +13,8 @@
  *
  *   # ~/.omp/agent/config.yml
  *   extensions:
- *     - /path/to/omp-router/omp-extension/router-embed.ts
- *     - /path/to/omp-router/omp-extension/router-configure.ts
+ *     - /path/to/auto-model-router/omp-extension/router-embed.ts
+ *     - /path/to/auto-model-router/omp-extension/router-configure.ts
  *
  * Run `/router` in an omp session to pick a section, edit its
  * fields, and save.
@@ -30,10 +30,10 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { editProfile, sectionTitles, walkSection, type ConfigUi } from "./configure-logic.ts";
 
 export default function (pi: ExtensionAPI): void {
-	pi.setLabel("omp-router configure");
+	pi.setLabel("auto-model-router configure");
 
 	pi.registerCommand("router", {
-		description: "Configure omp-router settings through the native UI",
+		description: "Configure auto-model-router settings through the native UI",
 		handler: async (_args, ctx) => {
 			const ui = ctx.ui;
 			const cfg = loadConfig();
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI): void {
 
 			for (;;) {
 				const options = [...sectionTitles(WIZARD_SECTIONS), "Profiles", "Save and exit", "Quit without saving"];
-				const chosen = await ui.select("omp-router configure", options);
+				const chosen = await ui.select("auto-model-router configure", options);
 				if (chosen === undefined) return;
 				if (chosen === "Quit without saving") return;
 				if (chosen === "Save and exit") break;

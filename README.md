@@ -1,4 +1,4 @@
-# omp-router
+# auto-model-router
 
 A local model router for [Oh My Pi](https://github.com/oh-my-pi). It presents
 itself as one keyless OpenAI-compatible provider, then picks a concrete
@@ -9,7 +9,7 @@ tool-loop churn to genuine reasoning work.
 All LLM inference is offloaded to OpenRouter. Nothing runs on-device except
 routing arithmetic.
 
-omp-router runs **embedded inside the omp process** (as an omp extension) — no
+auto-model-router runs **embedded inside the omp process** (as an omp extension) — no
 separate server, no orphaned process. It binds a free OS-assigned port and
 lives and dies with the omp session.
 
@@ -29,7 +29,7 @@ This router exists for the things a prompt classifier structurally cannot do:
 | **Mid-stream escalation** | Hold the first N tokens; on a malformed tool call, refusal, empty completion, or repeated tool call, abort and re-dispatch upward. omp never observes the failure. |
 | **Cache-aware hysteresis** | Switching models forfeits the warm prompt cache. The decision is arithmetic, not vibes: expected saving must beat the forfeited cache-read discount by a configured margin. |
 | **Closed-loop trust** | Per-model escalation and error rates from *your* traffic demote cheap-but-flaky models automatically. |
-| **Explainability** | Every decision — candidates, rejections, forecasts, reasons — is persisted and replayable via `omp-router explain`. |
+| **Explainability** | Every decision — candidates, rejections, forecasts, reasons — is persisted and replayable via `auto-model-router explain`. |
 
 ## Architecture
 
@@ -88,7 +88,7 @@ There is nothing to install system-wide. Run the cross-platform installer
 bun tools/install.ts
 ```
 
-It wires the omp-router extensions into omp's `~/.omp/agent/config.yml`
+It wires the auto-model-router extensions into omp's `~/.omp/agent/config.yml`
 (`$PI_CODING_AGENT_DIR/config.yml` when that env var relocates the agent dir),
 backing up the previous file first. It is idempotent — re-running is a no-op.
 
@@ -109,9 +109,9 @@ Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 ```yaml
 # ~/.omp/agent/config.yml
 extensions:
-  - /path/to/omp-router/omp-extension/router-embed.ts
-  - /path/to/omp-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/omp-router/omp-extension/router-configure.ts # optional: /router command
+  - /path/to/auto-model-router/omp-extension/router-embed.ts
+  - /path/to/auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
+  - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router command
 ```
 
 Then restart the omp session (extensions load at session start).
@@ -123,19 +123,19 @@ it wires the router in without editing `config.yml` by hand.
 ### Install from the marketplace
 
 This repo doubles as its own marketplace: it ships a catalog at
-`.omp-plugin/marketplace.json` listing the `omp-router` plugin. Add the repo as
+`.omp-plugin/marketplace.json` listing the `auto-model-router` plugin. Add the repo as
 a marketplace source, then install the plugin:
 
 ```bash
 omp plugin marketplace add drewappling/omp-autorouter
-omp plugin install omp-router@omp-autorouter
+omp plugin install auto-model-router@omp-autorouter
 ```
 
 or in the TUI:
 
 ```
 /marketplace add drewappling/omp-autorouter
-/marketplace install omp-router@omp-autorouter
+/marketplace install auto-model-router@omp-autorouter
 ```
 
 ### Install from the Pi package marketplace
@@ -145,7 +145,7 @@ in `package.json`), so it can be installed with the Pi CLI and listed on
 [pi.dev/packages](https://pi.dev/packages):
 
 ```bash
-pi install npm:omp-router
+pi install npm:auto-model-router
 ```
 
 or from git:
@@ -160,8 +160,11 @@ To publish to npm (which auto-indexes on pi.dev/packages):
 npm publish
 ```
 
-The `pi.extensions` manifest declares the three extension entry points, and
-`@oh-my-pi/pi-coding-agent` is a `peerDependency` (omp provides it at runtime).
+The `pi.extensions` manifest declares the three extension entry points. The
+extensions are harness-agnostic at runtime (their `ExtensionAPI` import is
+type-only, erased by the runtime) and load under both omp and its upstream Pi
+agent; `@oh-my-pi/pi-coding-agent` and `@earendil-works/pi-coding-agent` are
+listed as `peerDependencies` so either harness provides the types.
 
 ### The OpenRouter key
 
@@ -170,7 +173,7 @@ The `pi.extensions` manifest declares the three extension entry points, and
 There should be exactly one OpenRouter key on the machine, and omp already owns
 a credential store. Resolution order:
 
-1. `openrouter.apiKey` in `$OMP_ROUTER_HOME/config.yml`
+1. `openrouter.apiKey` in `$AUTO_MODEL_ROUTER_HOME/config.yml`
 2. `OPENROUTER_API_KEY` (including any `.env` omp loaded into the environment)
 3. **omp's own auth store** — `~/.omp/agent/agent.db`, provider `openrouter`
 
@@ -190,8 +193,8 @@ At session start, the **main** omp session's `router-embed.ts`:
 
 1. binds a **free OS-assigned port** (`Bun.serve({ port: 0 })`) so several omp
    sessions never collide on a fixed port;
-2. writes the actual bound port to the shared `$OMP_ROUTER_HOME/embed.port`;
-3. registers an `omp-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
+2. writes the actual bound port to the shared `$AUTO_MODEL_ROUTER_HOME/embed.port`;
+3. registers an `auto-model-router` provider with omp (`auto`, `auto-cheap`, `auto-max`
    virtual models) pointing at `http://127.0.0.1:$PORT/v1`.
 
 Subagents do **not** bind their own router. They are ephemeral worker processes
@@ -213,7 +216,7 @@ scopes budgets, toasts, and optional trust per harness.
 
 ## Selecting the provider / model
 
-The router registers three virtual models under the `omp-router` provider:
+The router registers three virtual models under the `auto-model-router` provider:
 
 | Profile | Min tier | Max tier | Use |
 | --- | --- | --- | --- |
@@ -221,25 +224,25 @@ The router registers three virtual models under the `omp-router` provider:
 | `auto-cheap` | trivial | simple | Cost-first — caps at the `simple` tier. |
 | `auto-max` | moderate | hard | Quality-first — never below `moderate`. |
 
-Select one in omp via `/model` and pick `omp-router/auto` (or one of the
+Select one in omp via `/model` and pick `auto-model-router/auto` (or one of the
 others). Or set it as the default for a role in `~/.omp/agent/config.yml`:
 
 ```yaml
 modelRoles:
-  default: omp-router/auto
+  default: auto-model-router/auto
 ```
 
 The router decides the concrete OpenRouter model **per turn**; omp only sees the
 virtual profile it picked. Every routed response carries
-`x-omp-router-model`, `x-omp-router-tier`, `x-omp-router-cost-usd`, and
-`x-omp-router-attempts`.
+`x-auto-model-router-model`, `x-auto-model-router-tier`, `x-auto-model-router-cost-usd`, and
+`x-auto-model-router-attempts`.
 
 ---
 
 ## Configuring the router
 
-The router's own config lives at `$OMP_ROUTER_HOME/config.yml` (default
-`~/.omp-router/config.yml`). Every key is optional — unset keys use the
+The router's own config lives at `$AUTO_MODEL_ROUTER_HOME/config.yml` (default
+`~/.auto-model-router/config.yml`). Every key is optional — unset keys use the
 built-in defaults below. There are two ways to edit it:
 
 ### Via `/router` (in-omp, native UI)
@@ -252,36 +255,36 @@ empty input keeps the current value, `-` clears an optional field. `Save and
 exit` writes the merged config (schema-checked and backed up first). Restart
 the omp session after saving.
 
-### Via `omp-router config` (text wizard / CLI)
+### Via `auto-model-router config` (text wizard / CLI)
 
 ```bash
-omp-router config
+auto-model-router config
 ```
 
 Same fields, prompted on the terminal. Also:
 
-- `omp-router config --print` — prints the `models.yml` provider block.
-- `omp-router config --write` — merges that block into omp's `models.yml`.
+- `auto-model-router config --print` — prints the `models.yml` provider block.
+- `auto-model-router config --write` — merges that block into omp's `models.yml`.
 
 Both write paths validate the merged file against the schema before touching
 disk and back up the previous file to a timestamped `.bak`.
 
 ### Configuration file location
 
-- Router config: `$OMP_ROUTER_HOME/config.yml` (default `~/.omp-router/config.yml`).
-- Ledger DB: `$OMP_ROUTER_HOME/router.db` (SQLite, WAL).
+- Router config: `$AUTO_MODEL_ROUTER_HOME/config.yml` (default `~/.auto-model-router/config.yml`).
+- Ledger DB: `$AUTO_MODEL_ROUTER_HOME/router.db` (SQLite, WAL).
 
 ### Environment variables
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | OpenRouter key (overrides the auth store). | — |
-| `OMP_ROUTER_HOME` | Config + database directory. | `~/.omp-router` |
-| `OMP_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
-| `OMP_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
-| `OMP_ROUTER_DB` | Override the ledger path. | `$OMP_ROUTER_HOME/router.db` |
-| `OMP_ROUTER_URL` | Toast/base URL override (the toast reads the shared port file first). | — |
-| `OMP_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
+| `AUTO_MODEL_ROUTER_HOME` | Config + database directory. | `~/.auto-model-router` |
+| `AUTO_MODEL_ROUTER_PORT` | Pin a specific bind port (rarely needed; the embedded router picks a free one otherwise). | OS-assigned |
+| `AUTO_MODEL_ROUTER_LOG` | Log level: `silent`/`error`/`warn`/`info`/`debug`. | `info` |
+| `AUTO_MODEL_ROUTER_DB` | Override the ledger path. | `$AUTO_MODEL_ROUTER_HOME/router.db` |
+| `AUTO_MODEL_ROUTER_URL` | Toast/base URL override (the toast reads the shared port file first). | — |
+| `AUTO_MODEL_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
 | `OMP_HARNESS_ID` | Per-harness toast scoping. | — |
 
 ---
@@ -307,7 +310,7 @@ what each one does. All values are optional; omit a key to use its default.
 | `baseUrl` | `https://openrouter.ai/api/v1` | Upstream OpenRouter endpoint. |
 | `apiKey` | unset | OpenRouter key. Falls back to `OPENROUTER_API_KEY`, then omp's auth store. |
 | `referer` | unset | HTTP `Referer` header sent upstream (OpenRouter attribution). |
-| `title` | `omp-router` | Attribution title sent upstream. |
+| `title` | `auto-model-router` | Attribution title sent upstream. |
 | `timeoutMs` | `600000` (10 min) | Upstream request timeout. Agent turns stream for minutes, so keep this high. |
 | `catalogTtlMs` | `21600000` (6 h) | How long the model catalog is cached before a forced refetch. |
 | `catalogRefreshMs` | `300000` (5 min) | Background catalog refetch interval; `0` disables it. |
@@ -409,7 +412,7 @@ Each profile is a complete entry (arrays replace wholesale):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `id` | `auto` / `auto-cheap` / `auto-max` | Model id omp selects. |
-| `name` | `Auto (omp-router)` etc. | Display name. |
+| `name` | `Auto (auto-model-router)` etc. | Display name. |
 | `minTier` / `maxTier` | `trivial`/`hard`, `trivial`/`simple`, `moderate`/`hard` | Tier envelope. |
 | `contextWindow` | `400000` | Advertised context window (drives omp's compaction). |
 | `maxTokens` | `32000` | Advertised max output tokens. |
@@ -419,7 +422,7 @@ Each profile is a complete entry (arrays replace wholesale):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `path` | `$OMP_ROUTER_HOME/router.db` | SQLite ledger path. |
+| `path` | `$AUTO_MODEL_ROUTER_HOME/router.db` | SQLite ledger path. |
 | `blendWindowDays` | `7` | Window for the blended cost rate. |
 | `blendMinSamples` | `25` | Turns before the measured blend replaces the fallback. |
 | `fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend (USD/Mtok) for omp's cost display. |
@@ -458,7 +461,7 @@ harness's reliability from only its own ledger rows.
 
 ## Toast notifications for the chosen model
 
-omp-router is headless and cannot draw into omp's TUI, so chosen-model toasts
+auto-model-router is headless and cannot draw into omp's TUI, so chosen-model toasts
 come from a small omp extension that polls the router's in-process ledger:
 
 ```ts
@@ -471,7 +474,7 @@ Install it by adding the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file
-(`$OMP_ROUTER_HOME/embed.<pid>`), then `OMP_ROUTER_URL`, then `OMP_ROUTER_PORT`,
+(`$AUTO_MODEL_ROUTER_HOME/embed.<pid>`), then `AUTO_MODEL_ROUTER_URL`, then `AUTO_MODEL_ROUTER_PORT`,
 then the router's own `config.yml`, then `http://127.0.0.1:8788`. Reading the
 port file each tick means the toast always polls the port the router actually
 bound, even though it changes every session.
@@ -499,7 +502,7 @@ to a cheaper tier than an architecture question in the same conversation; a
 malformed tool call is escalated to a stronger model without the client ever
 seeing the failure; and the abandoned attempt is booked as wasted spend.
 
-`omp-router explain --file request.json` routes a saved request and prints the
+`auto-model-router explain --file request.json` routes a saved request and prints the
 feature vector, classification reasoning, ranked candidates with forecasts, and
 every rejection with its cause — without dispatching a completion.
 
@@ -553,7 +556,7 @@ tier floor, never raise one. Two things are deliberately exempt:
   four floors compute to 0 and the price ceiling plus `qualityExponent` do the
   differentiating.
 
-`omp-router models` shows any relaxation explicitly:
+`auto-model-router models` shows any relaxation explicitly:
 
 ```
 [hard]  quality floor 95 → 76.1 (adaptive) on the coding axis  -  3 eligible, 16 excluded
@@ -575,7 +578,7 @@ tasks:
     minQuality: 68
 ```
 
-`omp-router models` names whichever mechanism moved a floor, so a surprising
+`auto-model-router models` names whichever mechanism moved a floor, so a surprising
 eligible set is always explainable.
 
 This is usually the right dial for an agentic coding harness. Most turns after
@@ -608,7 +611,7 @@ Known gaps:
 - The `pi-native` front end is designed for but not implemented; only the
   OpenAI-compatible wire exists today.
 - Blended `cost` figures in `models.yml` are refreshed by re-running
-  `omp-router config --write`, not automatically.
+  `auto-model-router config --write`, not automatically.
 
 ## License
 

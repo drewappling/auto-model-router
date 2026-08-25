@@ -15,7 +15,7 @@ import {
 } from "../omp-extension/embed-logic.ts";
 
 describe("resolveEmbedPort", () => {
-	test("returns 0 (let the OS assign a free port) when OMP_ROUTER_PORT is absent", () => {
+	test("returns 0 (let the OS assign a free port) when AUTO_MODEL_ROUTER_PORT is absent", () => {
 		expect(resolveEmbedPort(undefined)).toBe(0);
 		expect(resolveEmbedPort("")).toBe(0);
 	});
@@ -64,8 +64,8 @@ describe("buildProviderConfig", () => {
 	const base = {
 		server: { host: "127.0.0.1" },
 		profiles: [
-			{ id: "auto", name: "Auto (omp-router)", contextWindow: 400_000, maxTokens: 32_000 },
-			{ id: "auto-cheap", name: "Auto Cheap (omp-router)", contextWindow: 400_000, maxTokens: 32_000 },
+			{ id: "auto", name: "Auto (auto-model-router)", contextWindow: 400_000, maxTokens: 32_000 },
+			{ id: "auto-cheap", name: "Auto Cheap (auto-model-router)", contextWindow: 400_000, maxTokens: 32_000 },
 		],
 		ledger: { fallbackBlend: { inputPerMtok: 0.2, outputPerMtok: 0.8 } },
 	};
@@ -99,7 +99,7 @@ describe("buildProviderConfig", () => {
 
 describe("embed constants", () => {
 	test("provider id and dummy key stay stable", () => {
-		expect(EMBED_PROVIDER_ID).toBe("omp-router");
+		expect(EMBED_PROVIDER_ID).toBe("auto-model-router");
 	});
 	test("port file name is stable", () => {
 		expect(EMBED_PORT_FILE).toBe("embed.port");

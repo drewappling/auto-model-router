@@ -32,7 +32,7 @@ const baseCfg = {
 	server: { host: "127.0.0.1", port: 8788, apiKey: undefined, harnessId: undefined },
 	openrouter: {
 		baseUrl: "https://openrouter.ai/api/v1",
-		title: "omp-router",
+		title: "auto-model-router",
 		timeoutMs: 600000,
 		catalogTtlMs: 3600000,
 		catalogRefreshMs: 300000,

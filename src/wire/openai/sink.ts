@@ -6,7 +6,7 @@ import { renderErrorEnvelope } from "./errors.ts";
  * The four observability fields every routed response carries. Streaming
  * responses cannot use real headers (they flush with the first chunk, long
  * before the TurnSummary exists), so the streaming sink emits these in a final
- * `x_omp_router` SSE frame instead — see createStreamingSink.finish.
+ * `x_auto_model_router` SSE frame instead — see createStreamingSink.finish.
  */
 function summaryFields(summary: TurnSummary): Record<string, unknown> {
 	return {
@@ -40,14 +40,14 @@ export function createStreamingSink(virtualModel: string): { sink: ResponseSink;
 			const raw = chunk.raw;
 			// The client asked for the virtual id and must see it, so its own
 			// bookkeeping stays consistent; the served slug stays observable
-			// under x_omp_router. The tier is only known at finish time, so
+			// under x_auto_model_router. The tier is only known at finish time, so
 			// per-chunk frames carry the slug and the final frame carries all
 			// summary fields.
 			send(
 				encodeSseData({
 					...raw,
 					model: virtualModel,
-					x_omp_router: { model: typeof raw.model === "string" ? raw.model : null },
+					x_auto_model_router: { model: typeof raw.model === "string" ? raw.model : null },
 				}),
 			);
 		},
@@ -59,9 +59,9 @@ export function createStreamingSink(virtualModel: string): { sink: ResponseSink;
 			close();
 		},
 		finish(summary: TurnSummary) {
-			// Response headers flushed with the first chunk, so x-omp-router-*
+			// Response headers flushed with the first chunk, so x-auto-model-router-*
 			// cannot be real headers here; this final frame is their carrier.
-			send(encodeSseData({ x_omp_router: summaryFields(summary) }));
+			send(encodeSseData({ x_auto_model_router: summaryFields(summary) }));
 			send(SSE_DONE_BYTES);
 			close();
 		},
@@ -173,7 +173,7 @@ export function createBufferedSink(virtualModel: string): {
 				choices.set(0, { role: "assistant", text: "", reasoning: "", toolCalls: new Map(), finishReason: null });
 			}
 			const completion: Record<string, unknown> = {
-				id: id ?? "chatcmpl-omp-router",
+				id: id ?? "chatcmpl-auto-model-router",
 				object: "chat.completion",
 				created: created ?? Math.floor(Date.now() / 1000),
 				model: virtualModel,
@@ -197,13 +197,13 @@ export function createBufferedSink(virtualModel: string): {
 			if (usage !== null) completion.usage = usage;
 			// Header names are hyphenated by HTTP convention while the SSE frame
 			// keys are snake_case by JSON convention. Deriving one from the other
-			// silently produced `x-omp-router-cost_usd`.
+			// silently produced `x-auto-model-router-cost_usd`.
 			const headers: Record<string, string> = {
 				"content-type": "application/json",
-				"x-omp-router-model": summary.servedSlug,
-				"x-omp-router-tier": summary.tier,
-				"x-omp-router-cost-usd": String(summary.reportedUsd ?? summary.predictedUsd),
-				"x-omp-router-attempts": String(summary.attempts),
+				"x-auto-model-router-model": summary.servedSlug,
+				"x-auto-model-router-tier": summary.tier,
+				"x-auto-model-router-cost-usd": String(summary.reportedUsd ?? summary.predictedUsd),
+				"x-auto-model-router-attempts": String(summary.attempts),
 			};
 			resolveResponse(new Response(JSON.stringify(completion), { status: 200, headers }));
 		},

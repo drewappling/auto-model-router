@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Input schema for `$OMP_ROUTER_HOME/config.yml`: a deep partial of
+ * Input schema for `$AUTO_MODEL_ROUTER_HOME/config.yml`: a deep partial of
  * `RouterConfig` — every field is optional so the file carries only
  * overrides. Nested objects are strict so a misspelled key fails loudly
  * instead of being silently dropped.

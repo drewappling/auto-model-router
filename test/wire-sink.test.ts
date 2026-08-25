@@ -26,7 +26,7 @@ function parseFrames(text: string): unknown[] {
 }
 
 describe("createStreamingSink", () => {
-	test("rewrites model to the virtual id and preserves the served slug under x_omp_router", async () => {
+	test("rewrites model to the virtual id and preserves the served slug under x_auto_model_router", async () => {
 		const { sink, response } = createStreamingSink("auto");
 		expect(response.headers.get("content-type")).toBe("text/event-stream");
 		expect(response.headers.get("cache-control")).toBe("no-cache");
@@ -46,14 +46,14 @@ describe("createStreamingSink", () => {
 		const frames = parseFrames(text);
 		const first = frames[0] as Record<string, unknown>;
 		expect(first.model).toBe("auto");
-		expect(first.x_omp_router).toEqual({ model: "openai/gpt-5.5" });
+		expect(first.x_auto_model_router).toEqual({ model: "openai/gpt-5.5" });
 		// Unknown upstream fields ride along verbatim.
 		expect(first.id).toBe("gen-1");
 
 		// Headers flushed with the first chunk, so the summary arrives as the
-		// final x_omp_router frame before [DONE].
+		// final x_auto_model_router frame before [DONE].
 		const last = frames[frames.length - 1] as Record<string, unknown>;
-		expect(last.x_omp_router).toEqual({
+		expect(last.x_auto_model_router).toEqual({
 			model: "openai/gpt-5.5",
 			tier: "simple",
 			cost_usd: 0.0012,
@@ -122,10 +122,10 @@ describe("createBufferedSink", () => {
 		sink.finish(SUMMARY);
 
 		const res = await response;
-		expect(res.headers.get("x-omp-router-model")).toBe("openai/gpt-5.5");
-		expect(res.headers.get("x-omp-router-tier")).toBe("simple");
-		expect(res.headers.get("x-omp-router-cost-usd")).toBe("0.0012");
-		expect(res.headers.get("x-omp-router-attempts")).toBe("1");
+		expect(res.headers.get("x-auto-model-router-model")).toBe("openai/gpt-5.5");
+		expect(res.headers.get("x-auto-model-router-tier")).toBe("simple");
+		expect(res.headers.get("x-auto-model-router-cost-usd")).toBe("0.0012");
+		expect(res.headers.get("x-auto-model-router-attempts")).toBe("1");
 
 		const body = (await res.json()) as {
 			object: string;

@@ -43,9 +43,9 @@ function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
 /**
  * Resolves the effective configuration:
  *   DEFAULT_CONFIG
- *   <- `$OMP_ROUTER_HOME/config.yml|config.yaml` (or `opts.path`)
- *   <- environment (`OPENROUTER_API_KEY`, `OMP_ROUTER_PORT`,
- *      `OMP_ROUTER_HOST`, `OMP_ROUTER_LOG`, `OMP_ROUTER_DB`)
+ *   <- `$AUTO_MODEL_ROUTER_HOME/config.yml|config.yaml` (or `opts.path`)
+ *   <- environment (`OPENROUTER_API_KEY`, `AUTO_MODEL_ROUTER_PORT`,
+ *      `AUTO_MODEL_ROUTER_HOST`, `AUTO_MODEL_ROUTER_LOG`, `AUTO_MODEL_ROUTER_DB`)
  *   <- `opts.overrides`
  *
  * A missing OpenRouter API key is NOT an error here: catalog refresh and
@@ -53,7 +53,7 @@ function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
  * fail at dispatch time.
  */
 export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterConfig> }): RouterConfig {
-	const home = resolveTilde(process.env.OMP_ROUTER_HOME ?? "~/.omp-router");
+	const home = resolveTilde(process.env.AUTO_MODEL_ROUTER_HOME ?? "~/.auto-model-router");
 
 	// Config file, when present.
 	const filePath = opts?.path !== undefined
@@ -87,24 +87,24 @@ export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterCon
 	};
 	const envApiKey = process.env.OPENROUTER_API_KEY;
 	if (envApiKey !== undefined && envApiKey !== "") putSection("openrouter", "apiKey", envApiKey);
-	const envPort = process.env.OMP_ROUTER_PORT;
+	const envPort = process.env.AUTO_MODEL_ROUTER_PORT;
 	if (envPort !== undefined && envPort !== "") {
 		const port = Number.parseInt(envPort, 10);
 		if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-			throw new Error(`OMP_ROUTER_PORT must be an integer between 0 and 65535, got "${envPort}"`);
+			throw new Error(`AUTO_MODEL_ROUTER_PORT must be an integer between 0 and 65535, got "${envPort}"`);
 		}
 		putSection("server", "port", port);
 	}
-	const envHost = process.env.OMP_ROUTER_HOST;
+	const envHost = process.env.AUTO_MODEL_ROUTER_HOST;
 	if (envHost !== undefined && envHost !== "") putSection("server", "host", envHost);
-	const envLog = process.env.OMP_ROUTER_LOG;
+	const envLog = process.env.AUTO_MODEL_ROUTER_LOG;
 	if (envLog !== undefined && envLog !== "") {
 		if (!(LOG_LEVELS as readonly string[]).includes(envLog)) {
-			throw new Error(`OMP_ROUTER_LOG must be one of ${LOG_LEVELS.join(", ")}, got "${envLog}"`);
+			throw new Error(`AUTO_MODEL_ROUTER_LOG must be one of ${LOG_LEVELS.join(", ")}, got "${envLog}"`);
 		}
 		envInput.logLevel = envLog;
 	}
-	const envDb = process.env.OMP_ROUTER_DB;
+	const envDb = process.env.AUTO_MODEL_ROUTER_DB;
 	if (envDb !== undefined && envDb !== "") putSection("ledger", "path", envDb);
 	cfg = deepMerge(cfg, envInput);
 

@@ -27,7 +27,7 @@ export function renderModelList(cfg: RouterConfig, blend: BlendedRate | null): u
 				id: p.id,
 				object: "model",
 				created: PROFILES_CREATED,
-				owned_by: "omp-router",
+				owned_by: "auto-model-router",
 				name: p.name,
 				context_length: p.contextWindow,
 				pricing,

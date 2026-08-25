@@ -1,7 +1,7 @@
 /**
- * Interactive configuration wizard for `omp-router config`.
+ * Interactive configuration wizard for `auto-model-router config`.
  *
- * Edits the router's OWN config (`~/.omp-router/config.yml`), covering every
+ * Edits the router's OWN config (`~/.auto-model-router/config.yml`), covering every
  * section: server, openrouter, tiers, tasks, filters, classifier, escalation,
  * hysteresis, cache, budget, ledger, logging.
  *
@@ -329,7 +329,7 @@ function fieldPrompt(field: FieldSpec, current: unknown): string {
 
 /** Renders the top-level section menu. */
 function renderMenu(edits: Record<string, unknown>): string {
-	const lines: string[] = ["", "omp-router config", ""];
+	const lines: string[] = ["", "auto-model-router config", ""];
 	WIZARD_SECTIONS.forEach((section, i) => {
 		const touched = Object.keys(edits).filter((p) =>
 			section.fields.some((f) => f.path === p),

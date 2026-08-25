@@ -1,11 +1,11 @@
 import type { RouterConfig } from "./types.ts";
 
 /**
- * Built-in configuration. Layered beneath `$OMP_ROUTER_HOME/config.yml`,
+ * Built-in configuration. Layered beneath `$AUTO_MODEL_ROUTER_HOME/config.yml`,
  * environment variables, and CLI overrides (see `load.ts`).
  *
  * `ledger.path` is intentionally empty: `loadConfig` resolves it to
- * `$OMP_ROUTER_HOME/router.db`, which is only known at load time.
+ * `$AUTO_MODEL_ROUTER_HOME/router.db`, which is only known at load time.
  */
 export const DEFAULT_CONFIG: RouterConfig = {
 	server: {
@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		baseUrl: "https://openrouter.ai/api/v1",
 		// May stay empty: catalog and `config` work keyless; only dispatch fails.
 		apiKey: "",
-		title: "omp-router",
+		title: "auto-model-router",
 		// Agent turns are long; a frontier model with tools can stream for minutes.
 		timeoutMs: 600_000,
 		catalogTtlMs: 6 * 60 * 60 * 1000,
@@ -114,12 +114,12 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		onExceeded: "downgrade",
 	},
 	profiles: [
-		{ id: "auto", name: "Auto (omp-router)", minTier: "trivial", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
-		{ id: "auto-cheap", name: "Auto Cheap (omp-router)", minTier: "trivial", maxTier: "simple", contextWindow: 400_000, maxTokens: 32_000 },
-		{ id: "auto-max", name: "Auto Max (omp-router)", minTier: "moderate", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
+		{ id: "auto", name: "Auto (auto-model-router)", minTier: "trivial", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
+		{ id: "auto-cheap", name: "Auto Cheap (auto-model-router)", minTier: "trivial", maxTier: "simple", contextWindow: 400_000, maxTokens: 32_000 },
+		{ id: "auto-max", name: "Auto Max (auto-model-router)", minTier: "moderate", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
 	],
 	ledger: {
-		// Resolved by loadConfig: empty ⇒ `$OMP_ROUTER_HOME/router.db`.
+		// Resolved by loadConfig: empty ⇒ `$AUTO_MODEL_ROUTER_HOME/router.db`.
 		path: "",
 		blendWindowDays: 7,
 		blendMinSamples: 25,

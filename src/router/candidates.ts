@@ -1,7 +1,7 @@
 /**
  * Candidate construction: hard capability filters over the catalog, then
  * forecast + scoring for the survivors. The `rejected` array is what
- * `omp-router explain` shows, so every drop records its precise reason.
+ * `auto-model-router explain` shows, so every drop records its precise reason.
  */
 
 import type { CatalogModel, CatalogSnapshot } from "../catalog/types.ts";

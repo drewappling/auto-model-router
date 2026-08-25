@@ -2,7 +2,7 @@
  * Routing brain contracts: features -> complexity tier -> concrete model.
  *
  * Every stage is a pure function of explicit inputs so decisions are
- * reproducible and `omp-router explain` can replay them offline.
+ * reproducible and `auto-model-router explain` can replay them offline.
  */
 
 import type { CatalogModel } from "../catalog/types.ts";

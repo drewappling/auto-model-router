@@ -1,7 +1,7 @@
 /**
  * Router configuration.
  *
- * Layered: built-in defaults <- `$OMP_ROUTER_HOME/config.yml` <- environment
+ * Layered: built-in defaults <- `$AUTO_MODEL_ROUTER_HOME/config.yml` <- environment
  * <- CLI flags. Every field is optional on disk; `RouterConfig` is the fully
  * resolved shape the rest of the code consumes.
  */
@@ -208,7 +208,7 @@ export interface ProfileConfig {
 }
 
 export interface LedgerConfig {
-	/** SQLite path. Defaults to `$OMP_ROUTER_HOME/router.db`. */
+	/** SQLite path. Defaults to `$AUTO_MODEL_ROUTER_HOME/router.db`. */
 	path: string;
 	/** Window for the blended rate published to omp, days. */
 	blendWindowDays: number;

@@ -1,5 +1,5 @@
 /**
- * `omp-router explain` - route a real request and show the reasoning, without
+ * `auto-model-router explain` - route a real request and show the reasoning, without
  * dispatching it.
  *
  * The only network call this can make is a catalog refresh; no completion is

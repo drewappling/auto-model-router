@@ -41,7 +41,7 @@ afterEach(() => {
 describe("loadConfig", () => {
 	test("loads defaults with no config file and no API key", () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
-		setEnv("OMP_ROUTER_HOME", tempDir());
+		setEnv("AUTO_MODEL_ROUTER_HOME", tempDir());
 		setEnv("PI_CODING_AGENT_DIR", tempDir());
 		const cfg = loadConfig({});
 		expect(cfg.server.port).toBe(DEFAULT_CONFIG.server.port);
@@ -53,7 +53,7 @@ describe("loadConfig", () => {
 
 	test("resolves the ledger path under the router home", () => {
 		const home = tempDir();
-		setEnv("OMP_ROUTER_HOME", home);
+		setEnv("AUTO_MODEL_ROUTER_HOME", home);
 		const cfg = loadConfig({});
 		expect(cfg.ledger.path).toContain(home);
 	});
@@ -89,13 +89,13 @@ describe("loadConfig", () => {
 
 	test("environment variables override file values", () => {
 		const path = writeConfig("server:\n  port: 9001\n");
-		setEnv("OMP_ROUTER_PORT", "9999");
+		setEnv("AUTO_MODEL_ROUTER_PORT", "9999");
 		const cfg = loadConfig({ path });
 		expect(cfg.server.port).toBe(9999);
 	});
 
 	test("explicit overrides beat the environment", () => {
-		setEnv("OMP_ROUTER_PORT", "9999");
+		setEnv("AUTO_MODEL_ROUTER_PORT", "9999");
 		const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: 7777 } } });
 		expect(cfg.server.port).toBe(7777);
 	});

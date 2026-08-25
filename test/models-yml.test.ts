@@ -50,7 +50,7 @@ function countOf(text: string, needle: string): number {
 describe("renderProviderBlock", () => {
 	test("emits costs in USD per MILLION tokens, not per token", () => {
 		const providers = providersOf(`providers:\n${BLOCK.split("\n").map((l) => (l === "" ? "" : `  ${l}`)).join("\n")}\n`);
-		const router = providers["omp-router"];
+		const router = providers["auto-model-router"];
 		expect(typeof router).toBe("object");
 		const parsed: unknown = parseYaml(BLOCK);
 		expect(typeof parsed).toBe("object");
@@ -85,7 +85,7 @@ describe("spliceProviderBlock", () => {
 	test("leaves the pre-existing providers intact and adds ours", () => {
 		const result = spliceProviderBlock(EXISTING, BLOCK);
 		const providers = providersOf(result.text);
-		expect(Object.keys(providers).sort()).toEqual(["fastflowlm", "ollama", "omp-router"]);
+		expect(Object.keys(providers).sort()).toEqual(["auto-model-router", "fastflowlm", "ollama"]);
 	});
 
 	test("is idempotent: a second run replaces rather than duplicates", () => {
@@ -94,7 +94,7 @@ describe("spliceProviderBlock", () => {
 		expect(twice.action).toBe("replaced");
 		expect(countOf(twice.text, BEGIN_GUARD)).toBe(1);
 		expect(countOf(twice.text, END_GUARD)).toBe(1);
-		expect(countOf(twice.text, "omp-router:")).toBe(1);
+		expect(countOf(twice.text, "auto-model-router:")).toBe(1);
 		providersOf(twice.text);
 	});
 
@@ -120,13 +120,13 @@ describe("spliceProviderBlock", () => {
 		const result = spliceProviderBlock("# just a comment\n", BLOCK);
 		expect(result.text).toContain("# just a comment");
 		expect(countOf(result.text, "providers:")).toBe(1);
-		expect(Object.keys(providersOf(result.text))).toContain("omp-router");
+		expect(Object.keys(providersOf(result.text))).toContain("auto-model-router");
 	});
 
 	test("creates a whole file from empty input", () => {
 		const result = spliceProviderBlock("", BLOCK);
 		expect(result.action).toBe("created");
-		expect(Object.keys(providersOf(result.text))).toContain("omp-router");
+		expect(Object.keys(providersOf(result.text))).toContain("auto-model-router");
 	});
 
 	test("survives a UTF-8 BOM without producing a duplicate providers key", () => {
@@ -137,7 +137,7 @@ describe("spliceProviderBlock", () => {
 		expect(result.text.startsWith("\uFEFF")).toBe(true);
 		const lines = result.text.split("\n");
 		expect(lines.filter((l) => /^\uFEFF?providers\s*:/.test(l))).toHaveLength(1);
-		expect(Object.keys(providersOf(result.text)).sort()).toEqual(["fastflowlm", "ollama", "omp-router"]);
+		expect(Object.keys(providersOf(result.text)).sort()).toEqual(["auto-model-router", "fastflowlm", "ollama"]);
 	});
 
 	test("preserves CRLF line endings", () => {

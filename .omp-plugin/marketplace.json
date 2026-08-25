@@ -6,13 +6,13 @@
     "email": "drewappling@gmail.com"
   },
   "metadata": {
-    "description": "omp-router: a local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
+    "description": "auto-model-router: a local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
     "version": "0.1.0",
     "pluginRoot": "."
   },
   "plugins": [
     {
-      "name": "omp-router",
+      "name": "auto-model-router",
       "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter. Runs in-process, routes per turn by price and task complexity, with budget caps, mid-stream escalation, and cache-aware hysteresis.",
       "version": "0.1.0",
       "author": {

@@ -14,9 +14,9 @@ import { explainCommand } from "./cli/explain.ts";
 import { modelsCommand } from "./cli/models.ts";
 import { statsCommand } from "./cli/stats.ts";
 
-const USAGE = `omp-router - local cost/complexity-aware model router for omp, backed by OpenRouter
+const USAGE = `auto-model-router - local cost/complexity-aware model router for omp, backed by OpenRouter
 
-Usage: omp-router <command> [options]
+Usage: auto-model-router <command> [options]
 
 Commands:
   stats      Show routed spend, per-model share, and escalation rates
@@ -38,7 +38,7 @@ Command options:
 
 Environment:
   OPENROUTER_API_KEY   Required for completions; the catalog is readable without it.
-  OMP_ROUTER_HOME      Config and database directory (default ~/.omp-router)
+  AUTO_MODEL_ROUTER_HOME      Config and database directory (default ~/.auto-model-router)
 `;
 
 async function main(): Promise<number> {

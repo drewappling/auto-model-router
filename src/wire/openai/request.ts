@@ -207,7 +207,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
 	}
-	// Strip any provider prefix so `auto` and `omp-router/auto` both resolve to
+	// Strip any provider prefix so `auto` and `auto-model-router/auto` both resolve to
 	// the profile id.
 	const requestedModel = b.model.slice(b.model.lastIndexOf("/") + 1);
 	if (requestedModel.length === 0) throw modelNotFound(b.model);

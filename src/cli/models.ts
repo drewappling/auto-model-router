@@ -1,5 +1,5 @@
 /**
- * `omp-router models` - the operator's window into routing policy.
+ * `auto-model-router models` - the operator's window into routing policy.
  *
  * Eligibility is computed by calling the REAL `buildCandidates` path against a
  * representative synthetic request, not by reimplementing the filters here.

@@ -15,7 +15,7 @@ describe("resolveRouterUrl", () => {
 	const resolve = (env: string | undefined, text: string | null): string =>
 		resolveRouterUrl(env, text, parseYaml);
 
-	test("the embed port file wins over OMP_ROUTER_PORT and the config", () => {
+	test("the embed port file wins over AUTO_MODEL_ROUTER_PORT and the config", () => {
 		// The embedded router binds a free OS-assigned port and writes it to the
 		// port file; the toast must poll that actual address, not a stale config.
 		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "8812", 45678)).toBe(
@@ -23,26 +23,26 @@ describe("resolveRouterUrl", () => {
 		);
 	});
 
-	test("OMP_ROUTER_URL still beats the embed port file", () => {
+	test("AUTO_MODEL_ROUTER_URL still beats the embed port file", () => {
 		expect(resolveRouterUrl("http://host:9999", "server:\n  port: 8788\n", parseYaml, "8812", 45678)).toBe(
 			"http://host:9999",
 		);
 	});
 
-	test("an embed port file of null falls back to OMP_ROUTER_PORT", () => {
+	test("an embed port file of null falls back to AUTO_MODEL_ROUTER_PORT", () => {
 		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "8812", null)).toBe("http://127.0.0.1:8812");
 	});
 
-	test("OMP_ROUTER_URL still beats OMP_ROUTER_PORT", () => {
+	test("AUTO_MODEL_ROUTER_URL still beats AUTO_MODEL_ROUTER_PORT", () => {
 		expect(resolveRouterUrl("http://host:9999", "server:\n  port: 8788\n", parseYaml, "8812")).toBe("http://host:9999");
 	});
 
-	test("an invalid OMP_ROUTER_PORT falls back to the config port", () => {
+	test("an invalid AUTO_MODEL_ROUTER_PORT falls back to the config port", () => {
 		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "notaport")).toBe("http://127.0.0.1:8788");
 		expect(resolveRouterUrl(undefined, "server:\n  port: 8788\n", parseYaml, "70000")).toBe("http://127.0.0.1:8788");
 	});
 
-	test("OMP_ROUTER_PORT with no config uses loopback", () => {
+	test("AUTO_MODEL_ROUTER_PORT with no config uses loopback", () => {
 		expect(resolveRouterUrl(undefined, null, parseYaml, "8812")).toBe("http://127.0.0.1:8812");
 	});
 
