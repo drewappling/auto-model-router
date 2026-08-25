@@ -1,0 +1,5 @@
+name: auto-model-router-provider
+kind: model-provider
+version: 1.0.0
+description: auto-model-router — per-turn cost/complexity-aware model routing
+author: drewappling

@@ -160,13 +160,20 @@ To publish to npm (which auto-indexes on pi.dev/packages):
 npm publish
 ```
 
-### Hermes (day-1 support)
+### Hermes
 
 Hermes speaks the OpenAI-compatible wire, so it connects to the router with no
-code change — just a custom provider pointing at the router's URL. Add a named
-provider to `~/.hermes/config.yaml`:
+code change. Two ways to run the router for Hermes:
+
+**Standalone server (recommended for Hermes):** run the router as its own
+process on a fixed port, then point Hermes at it:
+
+```bash
+auto-model-router serve --port 8788
+```
 
 ```yaml
+# ~/.hermes/config.yaml
 providers:
   auto-model-router:
     base_url: http://127.0.0.1:8788/v1
@@ -174,14 +181,17 @@ providers:
     default_model: auto
 ```
 
+**Hermes plugin (native):** copy `hermes-plugin/` to
+`$HERMES_HOME/plugins/model-providers/auto-model-router/` and restart Hermes.
+The plugin spawns the router as a subprocess on load and registers the provider
+profile, so Hermes routes each turn through the router automatically.
+
 The router serves `GET /v1/models` (returning the `auto`, `auto-cheap`,
 `auto-max` profiles) and `POST /v1/chat/completions`, which Hermes's custom
 endpoint discovery verifies. Select `auto-model-router/auto` as the model and
 the router routes each turn by price and complexity. The router's own OpenRouter
 key resolution (config → env → omp auth store) applies — Hermes does not need
 its own OpenRouter key.
-
-### The OpenRouter key
 
 ### The OpenRouter key
 

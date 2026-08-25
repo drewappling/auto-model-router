@@ -12,13 +12,14 @@ import { parseArgv } from "./cli/args.ts";
 import { configCommand } from "./cli/config-cmd.ts";
 import { explainCommand } from "./cli/explain.ts";
 import { modelsCommand } from "./cli/models.ts";
+import { serveCommand } from "./cli/serve.ts";
 import { statsCommand } from "./cli/stats.ts";
 
 const USAGE = `auto-model-router - local cost/complexity-aware model router for omp, backed by OpenRouter
 
 Usage: auto-model-router <command> [options]
 
-Commands:
+  serve      Run the router as a standalone process (for non-omp harnesses)
   stats      Show routed spend, per-model share, and escalation rates
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
@@ -30,7 +31,8 @@ Global options:
   --help, -h        Show help
   --version         Show version
 
-Command options:
+  serve    --port <n>  --host <addr>  --log <level>
+  stats    --days <n>  --json
   stats    --days <n>  --json
   models   --tier <trivial|simple|moderate|hard>  --limit <n>  --json
   explain  --file <request.json>  --json          (reads stdin when --file is absent)
@@ -58,12 +60,20 @@ async function main(): Promise<number> {
 		process.stdout.write(USAGE);
 		return args.flags.has("help") ? 0 : 1;
 	}
-	if (args.flags.has("help")) {
-		process.stdout.write(USAGE);
-		return 0;
-	}
-
 	switch (args.command) {
+		case "serve":
+			// Resolves once listening; the server itself keeps the loop alive.
+			await serveCommand(args);
+			return 0;
+		case "stats":
+			await statsCommand(args);
+			return 0;
+		case "models":
+
+		case "serve":
+			// Resolves once listening; the server itself keeps the loop alive.
+			await serveCommand(args);
+			return 0;
 		case "stats":
 			await statsCommand(args);
 			return 0;
