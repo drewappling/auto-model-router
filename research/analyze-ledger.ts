@@ -141,4 +141,33 @@ section(
 	 ORDER BY n DESC`,
 );
 
+// ---------------------------------------------------------------------------
+// Hold-length experiment (schema v8).
+//
+// ~95% of hard-tier spend arrives by hysteresis hold rather than by
+// classification, and the hold length is a hand-picked constant. Each
+// conversation is assigned one arm, so arms compare on cost PER
+// CONVERSATION -- comparing per-turn would reward short holds automatically,
+// since a shorter hold simply produces fewer expensive turns.
+//
+// Escalations are the quality guardrail: a shorter hold that costs less but
+// escalates more has moved the cost, not removed it.
+// ---------------------------------------------------------------------------
+
+section(
+	"hold-length arms",
+	`SELECT hold_arm AS arm,
+	        COUNT(DISTINCT conversation_key) AS conversations,
+	        COUNT(*) AS turns,
+	        ROUND(SUM(COALESCE(reported_usd, predicted_usd)), 4) AS usd,
+	        ROUND(SUM(COALESCE(reported_usd, predicted_usd))
+	              / NULLIF(COUNT(DISTINCT conversation_key), 0), 4) AS usd_per_conversation,
+	        SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
+	        ROUND(100.0 * SUM(CASE WHEN wasted = 1 THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_wasted
+	 FROM ledger
+	 WHERE hold_arm IS NOT NULL
+	 GROUP BY hold_arm
+	 ORDER BY hold_arm`,
+);
+
 db.close();
