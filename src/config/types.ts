@@ -176,10 +176,28 @@ export interface HysteresisConfig {
 export interface ExplorationConfig {
 	/** Off by default: this deliberately degrades a slice of real turns. */
 	enabled: boolean;
-	/** Fraction of eligible turns to explore, 0-1. */
-	rate: number;
-	/** Tiers eligible to be dropped. `trivial` is the floor and cannot drop. */
-	tiers: Tier[];
+	/**
+	 * Per-tier sampling rate, 0-1. A tier that is absent, or set to 0, is
+	 * never explored. `trivial` is the floor and cannot drop, so a rate for
+	 * it has no effect.
+	 *
+	 * Rates are per-tier because the tiers are wildly unequal as evidence.
+	 * In one observed window 635 explorable turns were `simple` and 1 was
+	 * `hard`, while `hard` carried ~30% of all spend. A single uniform rate
+	 * therefore spends nearly the whole exploration budget on the cheapest
+	 * question in the system.
+	 */
+	rates: Partial<Record<Tier, number>>;
+	/**
+	 * Explore hysteresis-held turns once their prompt cache has gone cold.
+	 *
+	 * The hold exists to protect a warm cache, so exploring while one is live
+	 * would destroy exactly what the hold is for. Once the cache has expired
+	 * that objection lapses -- and this is the only way to sample the held
+	 * population at all. Most expensive turns are held rather than freshly
+	 * classified, so excluding them confines exploration to the cheap tiers.
+	 */
+	exploreStickyWhenCacheCold: boolean;
 }
 
 export interface CacheConfig {

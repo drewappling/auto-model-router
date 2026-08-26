@@ -158,31 +158,49 @@ export function select(args: SelectArgs): Decision {
 		}
 	}
 
+	// Whether a usable warm prompt cache exists right now. Shared by
+	// exploration (2c) and candidate building (3) so both agree on the term.
+	const cacheWarm = state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs;
+
 	// 2c. Epsilon-greedy exploration: on a small deterministic fraction of
-	//     turns, route one tier BELOW the classified tier and record it.
+	//     turns, route one tier BELOW the tier we would otherwise use, so the
+	//     ledger witnesses whether the cheaper tier would have sufficed.
 	//
 	//     Escalation is what makes this safe rather than reckless: if the
 	//     cheaper tier flounders, the probe rejects the attempt and the turn
-	//     escalates, so a bad draw costs one wasted cheap attempt, not a
-	//     failed turn.
+	//     escalates, so a bad draw costs one wasted cheap attempt rather than
+	//     a failed turn.
 	//
-	//     Skipped while hysteresis holds (exploring would cold-start the very
-	//     cache the hold exists to protect), on forced escalations (the probe
-	//     already proved the cheaper tier failed), and on failover retries
-	//     (excludeSlugs non-empty), where a second confound is not wanted.
+	//     Sticky turns are explored only once their cache has gone cold. The
+	//     hold exists to protect a warm cache, so exploring while one is live
+	//     would destroy precisely what the hold is for; once it has expired
+	//     the objection lapses. This matters more than it sounds: most
+	//     expensive turns reach their tier by hold rather than by
+	//     classification, so excluding held turns confines exploration to the
+	//     cheapest boundary in the system.
+	//
+	//     Still skipped on forced escalations (the probe already proved the
+	//     cheaper tier failed) and on failover retries, where a second
+	//     confound is not wanted.
+	//
+	//     This deliberately bypasses maxDowngradePerTurn by one tier: that
+	//     limiter guards against a noisy classification, not against a probe
+	//     that is sampled on purpose and escalates when it is wrong.
 	let explored: Exploration | null = null;
 	const ex = cfg.exploration;
+	const stickyAllows = cls.source !== "sticky" || (ex.exploreStickyWhenCacheCold && !cacheWarm);
+	const tierRate = ex.rates[effective] ?? 0;
 	if (
 		ex.enabled &&
-		ex.rate > 0 &&
-		cls.source !== "sticky" &&
+		tierRate > 0 &&
+		stickyAllows &&
 		classification.source !== "escalation" &&
-		(args.excludeSlugs === undefined || args.excludeSlugs.length === 0) &&
-		ex.tiers.includes(effective)
+		(args.excludeSlugs === undefined || args.excludeSlugs.length === 0)
 	) {
 		const target = tierAt(Math.max(tierIdx(effective) - 1, minI));
-		if (target !== null && target !== effective && explorationDraw(req.conversationKey, state.turn) < ex.rate) {
-			reasons.push(`exploration: deliberately routing ${effective} → ${target} (rate ${ex.rate})`);
+		if (target !== null && target !== effective && explorationDraw(req.conversationKey, state.turn) < tierRate) {
+			const held = cls.source === "sticky" ? ", held tier with a cold cache" : "";
+			reasons.push(`exploration: deliberately routing ${effective} → ${target} (rate ${tierRate}${held})`);
 			explored = { from: effective, to: target };
 			effective = target;
 		}
@@ -191,10 +209,7 @@ export function select(args: SelectArgs): Decision {
 	//    downward, and only fail when the whole profile envelope is exhausted.
 	// The task type selects the quality axis and capability filters; the tier
 	// still bounds cost (task selects, tier budgets).
-	const warmSlug =
-		state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs
-			? state.cacheWarmSlug
-			: null;
+	const warmSlug = cacheWarm ? state.cacheWarmSlug : null;
 	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,

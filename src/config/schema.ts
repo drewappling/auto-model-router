@@ -90,8 +90,17 @@ const hysteresis = z.strictObject({
 
 const exploration = z.strictObject({
 	enabled: z.boolean().optional(),
-	rate: z.number().min(0).max(1).optional(),
-	tiers: z.array(z.enum(["trivial", "simple", "moderate", "hard"])).optional(),
+	// Spelled out per tier rather than z.record so an unknown tier name is a
+	// config error instead of a silently ignored key.
+	rates: z
+		.strictObject({
+			trivial: z.number().min(0).max(1).optional(),
+			simple: z.number().min(0).max(1).optional(),
+			moderate: z.number().min(0).max(1).optional(),
+			hard: z.number().min(0).max(1).optional(),
+		})
+		.optional(),
+	exploreStickyWhenCacheCold: z.boolean().optional(),
 });
 const cache = z.strictObject({
 	injectBreakpoints: z.boolean().optional(),

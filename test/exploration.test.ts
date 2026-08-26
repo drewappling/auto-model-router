@@ -24,6 +24,7 @@ const PROFILE: ProfileConfig = {
 	contextWindow: 400_000,
 	maxTokens: 32_000,
 };
+const NOW = Date.now();
 
 function request(userText: string): NormRequest {
 	return parseChatRequest(
@@ -51,9 +52,21 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 		lastPromptTokens: 0,
 		cacheWarmSlug: null,
 		cacheWarmAtMs: 0,
-		updatedAtMs: Date.now(),
+		updatedAtMs: NOW,
 		...over,
 	};
+}
+
+/** A hysteresis hold at the given tier, with the prompt cache warm or expired. */
+function heldState(held: Tier, cache: "warm" | "cold"): ConversationState {
+	return state({
+		turn: 1,
+		stickyUntilTurn: 5,
+		currentTier: held,
+		currentSlug: "vendor/model",
+		cacheWarmSlug: cache === "warm" ? "vendor/model" : null,
+		cacheWarmAtMs: cache === "warm" ? NOW : 0,
+	});
 }
 
 function withExploration(over: Partial<ExplorationConfig>): RouterConfig {
@@ -87,10 +100,12 @@ function run(opts: {
 		snapshot: SNAPSHOT,
 		ledger: null,
 		cfg,
-		nowMs: Date.now(),
+		nowMs: NOW,
 		...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
 	});
 }
+
+const ALWAYS = { simple: 1, moderate: 1, hard: 1 };
 
 describe("exploration is opt-in", () => {
 	test("never fires under the shipped defaults", () => {
@@ -100,25 +115,44 @@ describe("exploration is opt-in", () => {
 		}
 	});
 
-	test("a zero rate never fires even when enabled", () => {
-		const cfg = withExploration({ enabled: true, rate: 0 });
+	test("enabled with no rates configured still never fires", () => {
+		const cfg = withExploration({ enabled: true, rates: {} });
 		for (const tier of ["simple", "moderate", "hard"] as Tier[]) {
 			expect(run({ tier, cfg }).explored).toBeNull();
 		}
 	});
 });
 
+describe("per-tier rates", () => {
+	test("each tier is governed by its own rate, not one global one", () => {
+		const cfg = withExploration({ enabled: true, rates: { simple: 0, moderate: 0, hard: 1 } });
+		expect(run({ tier: "simple", cfg }).explored).toBeNull();
+		expect(run({ tier: "moderate", cfg }).explored).toBeNull();
+		expect(run({ tier: "hard", cfg }).explored).toEqual({ from: "hard", to: "moderate" });
+	});
+
+	test("a tier absent from the rates map is never explored", () => {
+		const cfg = withExploration({ enabled: true, rates: { hard: 1 } });
+		expect(run({ tier: "moderate", cfg }).explored).toBeNull();
+		expect(run({ tier: "hard", cfg }).explored).not.toBeNull();
+	});
+
+	test("the shipped defaults weight expensive tiers far above cheap ones", () => {
+		const r = BASE.exploration.rates;
+		expect(r.hard ?? 0).toBeGreaterThan(r.simple ?? 0);
+		expect(r.moderate ?? 0).toBeGreaterThan(r.simple ?? 0);
+	});
+});
+
 describe("exploration drops exactly one tier", () => {
-	const cfg = withExploration({ enabled: true, rate: 1 });
+	const cfg = withExploration({ enabled: true, rates: ALWAYS });
 
 	test("moderate explores down to simple", () => {
-		const d = run({ tier: "moderate", cfg });
-		expect(d.explored).toEqual({ from: "moderate", to: "simple" });
+		expect(run({ tier: "moderate", cfg }).explored).toEqual({ from: "moderate", to: "simple" });
 	});
 
 	test("hard explores down to moderate, never further", () => {
-		const d = run({ tier: "hard", cfg });
-		expect(d.explored).toEqual({ from: "hard", to: "moderate" });
+		expect(run({ tier: "hard", cfg }).explored).toEqual({ from: "hard", to: "moderate" });
 	});
 
 	test("trivial is the floor and cannot be explored below", () => {
@@ -126,45 +160,56 @@ describe("exploration drops exactly one tier", () => {
 	});
 
 	test("the decision trail says so out loud", () => {
-		const d = run({ tier: "moderate", cfg });
-		expect(d.reasons.some((r) => r.startsWith("exploration:"))).toBe(true);
+		expect(run({ tier: "moderate", cfg }).reasons.some((r) => r.startsWith("exploration:"))).toBe(true);
 	});
 });
 
-describe("exploration respects the guards", () => {
-	const cfg = withExploration({ enabled: true, rate: 1 });
+describe("hysteresis holds are explored only once the cache is cold", () => {
+	const cfg = withExploration({ enabled: true, rates: ALWAYS, exploreStickyWhenCacheCold: true });
+
+	test("a held tier with a WARM cache is left alone", () => {
+		expect(run({ tier: "simple", cfg, st: heldState("hard", "warm") }).explored).toBeNull();
+	});
+
+	test("a held tier with a COLD cache is explorable", () => {
+		// This is the population that carries most of the spend: turns that
+		// reach hard by hold rather than by classification.
+		expect(run({ tier: "simple", cfg, st: heldState("hard", "cold") }).explored).toEqual({
+			from: "hard",
+			to: "moderate",
+		});
+	});
+
+	test("the reason names the hold, so the sample is identifiable later", () => {
+		const d = run({ tier: "simple", cfg, st: heldState("hard", "cold") });
+		expect(d.reasons.some((r) => r.includes("held tier with a cold cache"))).toBe(true);
+	});
+
+	test("the cold-cache exception can be switched off", () => {
+		const off = withExploration({ enabled: true, rates: ALWAYS, exploreStickyWhenCacheCold: false });
+		expect(run({ tier: "simple", cfg: off, st: heldState("hard", "cold") }).explored).toBeNull();
+	});
+});
+
+describe("exploration respects the remaining guards", () => {
+	const cfg = withExploration({ enabled: true, rates: ALWAYS });
 
 	test("never routes below the profile floor", () => {
 		const floored: ProfileConfig = { ...PROFILE, minTier: "moderate" };
-		const d = run({ tier: "moderate", cfg, profile: floored });
-		expect(d.explored).toBeNull();
-	});
-
-	test("skips a tier the config excludes", () => {
-		const only = withExploration({ enabled: true, rate: 1, tiers: ["hard"] });
-		expect(run({ tier: "moderate", cfg: only }).explored).toBeNull();
-		expect(run({ tier: "hard", cfg: only }).explored).not.toBeNull();
+		expect(run({ tier: "moderate", cfg, profile: floored }).explored).toBeNull();
 	});
 
 	test("skips forced escalations, which already proved the cheap tier failed", () => {
-		const d = run({ tier: "moderate", cfg, source: "escalation" });
-		expect(d.explored).toBeNull();
+		expect(run({ tier: "moderate", cfg, source: "escalation" }).explored).toBeNull();
 	});
 
 	test("skips failover retries so a second confound is not introduced", () => {
-		const d = run({ tier: "moderate", cfg, excludeSlugs: ["vendor/broken"] });
-		expect(d.explored).toBeNull();
-	});
-
-	test("skips while hysteresis holds, protecting the warm cache", () => {
-		const held = state({ turn: 1, stickyUntilTurn: 5, currentTier: "hard" });
-		const d = run({ tier: "moderate", cfg, st: held });
-		expect(d.explored).toBeNull();
+		expect(run({ tier: "moderate", cfg, excludeSlugs: ["vendor/broken"] }).explored).toBeNull();
 	});
 });
 
 describe("exploration is deterministic", () => {
-	const cfg = withExploration({ enabled: true, rate: 0.5 });
+	const cfg = withExploration({ enabled: true, rates: { simple: 0.5, moderate: 0.5, hard: 0.5 } });
 
 	test("the same turn always draws the same way, so explain can replay it", () => {
 		for (const text of ["alpha task", "beta task", "gamma task"]) {
@@ -176,11 +221,11 @@ describe("exploration is deterministic", () => {
 	});
 
 	test("the draw honours the configured rate across many turns", () => {
-		const cfg25 = withExploration({ enabled: true, rate: 0.25 });
+		const cfg25 = withExploration({ enabled: true, rates: { moderate: 0.25 } });
 		let explored = 0;
 		const N = 400;
 		for (let i = 0; i < N; i++) {
-			if (run({ userText: `distinct task ${i}`, tier: "moderate", cfg: cfg25 }).explored !== null) explored++;
+			if (run({ userText: "distinct task " + i, tier: "moderate", cfg: cfg25 }).explored !== null) explored++;
 		}
 		// Deterministic hash, so this cannot flake; the band is wide enough that
 		// only a genuinely biased draw would fail it.

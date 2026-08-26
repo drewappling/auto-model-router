@@ -104,13 +104,16 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		maxDowngradePerTurn: 1,
 	},
 	exploration: {
-		// Opt-in. Exploration knowingly routes some turns below the classified
-		// tier; escalation bounds the damage, but it is still a real cost.
+		// Opt-in. Exploration knowingly routes some turns below the tier that
+		// would otherwise be used; escalation bounds the damage, but it is
+		// still a real cost paid on real traffic.
 		enabled: false,
-		// 3% is enough to accumulate counterfactual labels within days at
-		// ~1k turns/day, without a user noticing the degraded slice.
-		rate: 0.03,
-		tiers: ["simple", "moderate", "hard"],
+		// Weighted by scarcity and by spend, not uniformly: `simple` turns are
+		// abundant and cheap to be wrong about, `hard` turns are rare and hold
+		// most of the money, so they need a far higher rate to yield any
+		// sample at all within a useful number of days.
+		rates: { simple: 0.03, moderate: 0.15, hard: 0.2 },
+		exploreStickyWhenCacheCold: true,
 	},
 	cache: {
 		injectBreakpoints: true,
