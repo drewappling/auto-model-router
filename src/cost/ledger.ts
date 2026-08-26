@@ -44,6 +44,7 @@ interface LedgerRow {
 	task: string | null;
 	classifier_reasons: string | null;
 	explored_from: string | null;
+	hold_arm: number | null;
 	predicted_usd: number;
 	reported_usd: number | null;
 	usage: string;
@@ -147,6 +148,7 @@ function toEntry(row: LedgerRow): LedgerEntry {
 		task: row.task,
 		classifierReasons: row.classifier_reasons === null ? null : (JSON.parse(row.classifier_reasons) as string[]),
 		exploredFrom: row.explored_from,
+		holdArm: row.hold_arm,
 		predictedUsd: row.predicted_usd,
 		reportedUsd: row.reported_usd,
 		usage: JSON.parse(row.usage) as UsageCounts,
@@ -168,8 +170,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
-			error_kind, features, score, confidence, task, classifier_reasons, explored_from
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -254,6 +256,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.task,
 				entry.classifierReasons === null ? null : JSON.stringify(entry.classifierReasons),
 				entry.exploredFrom,
+				entry.holdArm,
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only

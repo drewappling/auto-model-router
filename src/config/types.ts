@@ -189,15 +189,37 @@ export interface ExplorationConfig {
 	 */
 	rates: Partial<Record<Tier, number>>;
 	/**
-	 * Explore hysteresis-held turns once their prompt cache has gone cold.
+	 * Which hysteresis-held turns exploration may touch.
 	 *
-	 * The hold exists to protect a warm cache, so exploring while one is live
-	 * would destroy exactly what the hold is for. Once the cache has expired
-	 * that objection lapses -- and this is the only way to sample the held
-	 * population at all. Most expensive turns are held rather than freshly
-	 * classified, so excluding them confines exploration to the cheap tiers.
+	 * `never`      the held population is untouchable.
+	 * `cold-cache` explore a hold only after its prompt cache has expired.
+	 * `always`     explore holds regardless, forfeiting a live cache read.
+	 *
+	 * This matters more than it sounds. ~95% of hard-tier spend arrives by
+	 * hold rather than by classification, so `never` confines exploration to
+	 * the cheapest boundary in the system. But held turns are consecutive
+	 * turns of an active loop and are therefore warm BY CONSTRUCTION, so
+	 * `cold-cache` barely reaches them either: on one real window it moved
+	 * explorable hard turns from 1 to 11. Reaching that population in any
+	 * useful volume means `always`, and paying the forfeited cache read --
+	 * a real cost, but a bounded and directly measurable one.
 	 */
-	exploreStickyWhenCacheCold: boolean;
+	stickyPolicy: "never" | "cold-cache" | "always";
+	/**
+	 * Randomise the POST-ESCALATION hold length per conversation, to learn
+	 * what it should be.
+	 *
+	 * `holdTurnsAfterEscalation` is a hand-picked constant that nothing has
+	 * ever validated, and it governs most expensive spend: a turn escalates
+	 * once, then the hold bills the next several turns at the escalated
+	 * tier. Assignment is per conversation, so each conversation is one
+	 * clean randomised arm rather than a confounded mixture.
+	 */
+	holdTurns: {
+		enabled: boolean;
+		/** Candidate hold lengths. One is drawn per conversation. */
+		values: number[];
+	};
 }
 
 export interface CacheConfig {

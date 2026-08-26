@@ -12,6 +12,7 @@ import type { CatalogSource } from "../catalog/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
+import { resolveHoldTurns } from "../router/explore.ts";
 import {
 	TIER_ORDER,
 	type ConversationStore,
@@ -153,6 +154,7 @@ export async function runTurn(
 				task: decision.classification.task,
 				classifierReasons: decision.classification.reasons,
 				exploredFrom: decision.explored?.from ?? null,
+				holdArm: resolveHoldTurns(config, req.conversationKey, escalations > 0).arm,
 				predictedUsd: decision.forecast.expectedUsd,
 				reportedUsd,
 				usage,
@@ -364,8 +366,7 @@ export async function runTurn(
 		// actually easy.
 		const tierChanged = prevTier !== decision.tier;
 		if (tierChanged || escalations > 0) {
-			state.stickyUntilTurn =
-				turnNumber + (escalations > 0 ? config.hysteresis.holdTurnsAfterEscalation : config.hysteresis.holdTurns);
+			state.stickyUntilTurn = turnNumber + resolveHoldTurns(config, req.conversationKey, escalations > 0).turns;
 		}
 		// Reported cost is authoritative; fall back to the forecast so the
 		// budget guard still works when the provider omits cost.

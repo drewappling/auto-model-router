@@ -113,7 +113,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// most of the money, so they need a far higher rate to yield any
 		// sample at all within a useful number of days.
 		rates: { simple: 0.03, moderate: 0.15, hard: 0.2 },
-		exploreStickyWhenCacheCold: true,
+		// Conservative default: never sacrifice a live prompt cache without
+		// the operator choosing to. `always` is what actually reaches the
+		// held population that carries the spend.
+		stickyPolicy: "cold-cache",
+		holdTurns: { enabled: false, values: [2, 3, 4] },
 	},
 	cache: {
 		injectBreakpoints: true,

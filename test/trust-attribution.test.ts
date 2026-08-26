@@ -28,6 +28,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		task: null,
 		classifierReasons: null,
 		exploredFrom: null,
+		holdArm: null,
 		predictedUsd: 0.001,
 		reportedUsd: 0.001,
 		usage: EMPTY_USAGE,
@@ -170,11 +171,11 @@ describe("v4 migration", () => {
 		}
 	});
 
-	test("schema is at user_version 7", () => {
+	test("schema is at user_version 8", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(7);
+			expect(row.user_version).toBe(8);
 		} finally {
 			db.close();
 		}

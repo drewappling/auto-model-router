@@ -100,7 +100,15 @@ const exploration = z.strictObject({
 			hard: z.number().min(0).max(1).optional(),
 		})
 		.optional(),
-	exploreStickyWhenCacheCold: z.boolean().optional(),
+	stickyPolicy: z.enum(["never", "cold-cache", "always"]).optional(),
+	holdTurns: z
+		.strictObject({
+			enabled: z.boolean().optional(),
+			// Non-empty and positive: an empty set or a 0 would silently disable
+			// the experiment while reading as enabled.
+			values: z.array(z.number().int().positive()).min(1).optional(),
+		})
+		.optional(),
 });
 const cache = z.strictObject({
 	injectBreakpoints: z.boolean().optional(),

@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 7;
+const USER_VERSION = 8;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -159,6 +159,16 @@ const MIGRATE_V7 = `
 ALTER TABLE ledger ADD COLUMN explored_from TEXT;
 `;
 
+// v8: records the hold-length arm a conversation was assigned by hold
+// exploration. NULL means the conversation was not part of the experiment.
+//
+// Recorded on EVERY turn of the conversation, not only the turns a hold
+// actually affects, so arms can be compared on total conversation cost
+// rather than on the subset the treatment happened to touch.
+const MIGRATE_V8 = `
+ALTER TABLE ledger ADD COLUMN hold_arm INTEGER;
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -178,6 +188,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "omp_session_id")) db.exec(MIGRATE_V5);
 		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
 		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
+		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

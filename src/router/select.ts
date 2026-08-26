@@ -10,7 +10,7 @@ import type { CatalogSnapshot } from "../catalog/types.ts";
 import type { ProfileConfig, RouterConfig } from "../config/types.ts";
 import { priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
-import { sha256Hex } from "../util/hash.ts";
+import { explorationDraw } from "./explore.ts";
 import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
 import { planCacheBreakpoints } from "./cache-control.ts";
 import { buildCandidates } from "./candidates.ts";
@@ -101,21 +101,6 @@ function wideningOrder(tier: Tier, minTier: Tier, maxTier: Tier): Tier[] {
 	return out;
 }
 
-/**
- * Deterministic uniform draw in [0,1) from the turn's identity.
- *
- * Math.random() would make routing unreplayable, and every stage of this
- * pipeline is a pure function of explicit inputs precisely so `explain` can
- * re-derive a past decision offline. Hashing the conversation key and turn
- * gives an unbiased sample that is stable across replays and across the
- * failover retries of a single turn.
- */
-function explorationDraw(conversationKey: string, turn: number): number {
-	// 8 hex chars = 32 bits of the digest, divided by 2^32.
-	const bits = Number.parseInt(sha256Hex(`explore:${conversationKey}:${turn}`).slice(0, 8), 16);
-	return bits / 0x1_0000_0000;
-}
-
 export function select(args: SelectArgs): Decision {
 	const { req, features, classification, profile, state, snapshot, ledger, cfg, nowMs } = args;
 	const reasons: string[] = [];
@@ -188,7 +173,10 @@ export function select(args: SelectArgs): Decision {
 	//     that is sampled on purpose and escalates when it is wrong.
 	let explored: Exploration | null = null;
 	const ex = cfg.exploration;
-	const stickyAllows = cls.source !== "sticky" || (ex.exploreStickyWhenCacheCold && !cacheWarm);
+	const stickyAllows =
+		cls.source !== "sticky" ||
+		ex.stickyPolicy === "always" ||
+		(ex.stickyPolicy === "cold-cache" && !cacheWarm);
 	const tierRate = ex.rates[effective] ?? 0;
 	if (
 		ex.enabled &&
@@ -198,8 +186,8 @@ export function select(args: SelectArgs): Decision {
 		(args.excludeSlugs === undefined || args.excludeSlugs.length === 0)
 	) {
 		const target = tierAt(Math.max(tierIdx(effective) - 1, minI));
-		if (target !== null && target !== effective && explorationDraw(req.conversationKey, state.turn) < tierRate) {
-			const held = cls.source === "sticky" ? ", held tier with a cold cache" : "";
+		if (target !== null && target !== effective && explorationDraw(`explore:${req.conversationKey}:${state.turn}`) < tierRate) {
+			const held = cls.source === "sticky" ? `, held tier (${cacheWarm ? "warm" : "cold"} cache)` : "";
 			reasons.push(`exploration: deliberately routing ${effective} → ${target} (rate ${tierRate}${held})`);
 			explored = { from: effective, to: target };
 			effective = target;

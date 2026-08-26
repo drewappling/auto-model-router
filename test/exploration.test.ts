@@ -165,7 +165,7 @@ describe("exploration drops exactly one tier", () => {
 });
 
 describe("hysteresis holds are explored only once the cache is cold", () => {
-	const cfg = withExploration({ enabled: true, rates: ALWAYS, exploreStickyWhenCacheCold: true });
+	const cfg = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "cold-cache" });
 
 	test("a held tier with a WARM cache is left alone", () => {
 		expect(run({ tier: "simple", cfg, st: heldState("hard", "warm") }).explored).toBeNull();
@@ -180,14 +180,30 @@ describe("hysteresis holds are explored only once the cache is cold", () => {
 		});
 	});
 
-	test("the reason names the hold, so the sample is identifiable later", () => {
+	test("the reason names the hold and the cache state, for later analysis", () => {
 		const d = run({ tier: "simple", cfg, st: heldState("hard", "cold") });
-		expect(d.reasons.some((r) => r.includes("held tier with a cold cache"))).toBe(true);
+		expect(d.reasons.some((r) => r.includes("held tier (cold cache)"))).toBe(true);
 	});
 
-	test("the cold-cache exception can be switched off", () => {
-		const off = withExploration({ enabled: true, rates: ALWAYS, exploreStickyWhenCacheCold: false });
+	test("stickyPolicy never leaves holds alone entirely", () => {
+		const off = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "never" });
 		expect(run({ tier: "simple", cfg: off, st: heldState("hard", "cold") }).explored).toBeNull();
+		expect(run({ tier: "simple", cfg: off, st: heldState("hard", "warm") }).explored).toBeNull();
+	});
+
+	test("stickyPolicy always reaches held turns even with a live cache", () => {
+		// The only setting that samples the population carrying most of the
+		// spend, at the price of a forfeited cache read.
+		const always = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "always" });
+		expect(run({ tier: "simple", cfg: always, st: heldState("hard", "warm") }).explored).toEqual({
+			from: "hard",
+			to: "moderate",
+		});
+		expect(
+			run({ tier: "simple", cfg: always, st: heldState("hard", "warm") }).reasons.some((r) =>
+				r.includes("held tier (warm cache)"),
+			),
+		).toBe(true);
 	});
 });
 

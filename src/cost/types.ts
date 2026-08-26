@@ -107,6 +107,11 @@ export interface LedgerEntry {
 	 * one step cheaper. NULL when the turn was routed normally.
 	 */
 	exploredFrom: string | null;
+	/**
+	 * Hold-length arm this conversation was assigned by hold exploration,
+	 * or NULL when it was not part of that experiment.
+	 */
+	holdArm: number | null;
 	predictedUsd: number;
 	reportedUsd: number | null;
 	usage: UsageCounts;
