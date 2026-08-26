@@ -80,4 +80,65 @@ section(
 	 FROM ledger GROUP BY kind ORDER BY n DESC`,
 );
 
+
+
+// ---------------------------------------------------------------------------
+// Exploration (schema v7): the counterfactual natural traffic cannot supply.
+//
+// A turn we deliberately routed one tier cheaper either escalated (the cheap
+// model genuinely could not do it) or committed (the classifier was over-
+// routing, and the cheaper tier would have served the turn fine).
+// ---------------------------------------------------------------------------
+
+section(
+	"exploration coverage",
+	`SELECT
+	   SUM(CASE WHEN explored_from IS NOT NULL THEN 1 ELSE 0 END) AS explored,
+	   COUNT(*) AS total,
+	   ROUND(100.0 * SUM(CASE WHEN explored_from IS NOT NULL THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct
+	 FROM ledger`,
+);
+
+section(
+	"exploration verdict by dropped-from tier",
+	`SELECT
+	   explored_from AS dropped_from,
+	   COUNT(*) AS n,
+	   SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalated,
+	   ROUND(100.0 * SUM(CASE WHEN escalation_signal IS NULL THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_cheap_sufficed
+	 FROM ledger
+	 WHERE explored_from IS NOT NULL
+	 GROUP BY explored_from
+	 ORDER BY n DESC`,
+);
+
+section(
+	"what exploration cost vs. what it revealed",
+	`SELECT
+	   ROUND(SUM(CASE WHEN explored_from IS NOT NULL AND wasted = 1
+	                  THEN COALESCE(reported_usd, predicted_usd) ELSE 0 END), 4) AS wasted_on_exploration_usd,
+	   ROUND(SUM(CASE WHEN explored_from IS NOT NULL THEN COALESCE(reported_usd, predicted_usd) ELSE 0 END), 4) AS explored_spend_usd
+	 FROM ledger`,
+);
+
+// Confidence distribution: this is what determines whether the LLM adjudicator
+// is ever reached at all. Turns below the configured ambiguityThreshold should
+// be adjudicated; if that bucket is populated but no row has source 'llm', the
+// adjudicator is failing silently rather than never being needed.
+section(
+	"confidence distribution vs. the adjudication band",
+	`SELECT
+	   CASE
+	     WHEN confidence IS NULL THEN '(uninstrumented)'
+	     WHEN confidence < 0.6 THEN 'below 0.6 (should adjudicate)'
+	     WHEN confidence < 0.8 THEN '0.6 - 0.8'
+	     ELSE '0.8 - 1.0'
+	   END AS band,
+	   COUNT(*) AS n,
+	   SUM(CASE WHEN classification_source = 'llm' THEN 1 ELSE 0 END) AS adjudicated
+	 FROM ledger
+	 GROUP BY band
+	 ORDER BY n DESC`,
+);
+
 db.close();
