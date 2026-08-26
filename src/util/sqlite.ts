@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 5;
+const USER_VERSION = 6;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -128,6 +128,25 @@ const MIGRATE_V5 = `
 ALTER TABLE ledger ADD COLUMN omp_session_id TEXT NOT NULL DEFAULT '';
 `;
 
+// v6: classifier INPUTS. Before this the ledger recorded only what routing
+// decided (tier, slug, cost, escalation) and never what it decided FROM, so a
+// turn could not be replayed, and no weight could be fit offline. `features`
+// is the verbatim feature vector as JSON; `score` and `confidence` are the
+// classifier's own outputs, kept alongside because they are cheap and make
+// weight drift detectable when the scorer changes under a fixed feature set.
+// `classifier_reasons` is the per-feature breakdown, which `select.ts` drops
+// from the decision trail on every path except a hysteresis hold.
+//
+// All nullable with no backfill: pre-v6 rows genuinely lack these inputs and
+// NULL says so honestly. A DEFAULT would invent data that was never observed.
+const MIGRATE_V6 = `
+ALTER TABLE ledger ADD COLUMN features TEXT;
+ALTER TABLE ledger ADD COLUMN score REAL;
+ALTER TABLE ledger ADD COLUMN confidence REAL;
+ALTER TABLE ledger ADD COLUMN task TEXT;
+ALTER TABLE ledger ADD COLUMN classifier_reasons TEXT;
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -145,6 +164,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "harness_id")) db.exec(MIGRATE_V3);
 		if (!ledgerCols.some((c) => c.name === "error_kind")) db.exec(MIGRATE_V4);
 		if (!ledgerCols.some((c) => c.name === "omp_session_id")) db.exec(MIGRATE_V5);
+		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

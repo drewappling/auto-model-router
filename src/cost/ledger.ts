@@ -38,6 +38,11 @@ interface LedgerRow {
 	tier: string;
 	classification_source: string;
 	reasons: string;
+	features: string | null;
+	score: number | null;
+	confidence: number | null;
+	task: string | null;
+	classifier_reasons: string | null;
 	predicted_usd: number;
 	reported_usd: number | null;
 	usage: string;
@@ -135,6 +140,11 @@ function toEntry(row: LedgerRow): LedgerEntry {
 		tier: row.tier,
 		classificationSource: row.classification_source,
 		reasons: JSON.parse(row.reasons) as string[],
+		features: row.features === null ? null : (JSON.parse(row.features) as object),
+		score: row.score,
+		confidence: row.confidence,
+		task: row.task,
+		classifierReasons: row.classifier_reasons === null ? null : (JSON.parse(row.classifier_reasons) as string[]),
 		predictedUsd: row.predicted_usd,
 		reportedUsd: row.reported_usd,
 		usage: JSON.parse(row.usage) as UsageCounts,
@@ -156,8 +166,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
-			error_kind
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_kind, features, score, confidence, task, classifier_reasons
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -236,6 +246,11 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.upstreamGenerationId,
 				entry.error,
 				errorKindOf(entry.error),
+				entry.features === null ? null : JSON.stringify(entry.features),
+				entry.score,
+				entry.confidence,
+				entry.task,
+				entry.classifierReasons === null ? null : JSON.stringify(entry.classifierReasons),
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only
