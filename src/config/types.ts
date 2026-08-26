@@ -163,6 +163,25 @@ export interface HysteresisConfig {
 	maxDowngradePerTurn: number;
 }
 
+/**
+ * Epsilon-greedy exploration: deliberately route a small fraction of turns
+ * one tier BELOW the classified tier, to learn whether the cheaper model
+ * would have sufficed.
+ *
+ * Without it the ledger only ever witnesses UNDER-routing: a tier that was
+ * too low escalates and is recorded, while over-routing stays invisible
+ * because the cheaper model was never run. Weights fit on that one-sided
+ * evidence can only ever ratchet toward more expensive routing.
+ */
+export interface ExplorationConfig {
+	/** Off by default: this deliberately degrades a slice of real turns. */
+	enabled: boolean;
+	/** Fraction of eligible turns to explore, 0-1. */
+	rate: number;
+	/** Tiers eligible to be dropped. `trivial` is the floor and cannot drop. */
+	tiers: Tier[];
+}
+
 export interface CacheConfig {
 	/**
 	 * Inject Anthropic-style `cache_control` breakpoints. OpenRouter translates
@@ -229,6 +248,7 @@ export interface RouterConfig {
 	classifier: ClassifierConfig;
 	escalation: EscalationConfig;
 	hysteresis: HysteresisConfig;
+	exploration: ExplorationConfig;
 	cache: CacheConfig;
 	budget: BudgetConfig;
 	profiles: ProfileConfig[];

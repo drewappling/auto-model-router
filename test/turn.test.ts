@@ -65,6 +65,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			...escalation,
 		},
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1 },
+		exploration: { enabled: false, rate: 0, tiers: ["simple", "moderate", "hard"] },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024 },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
@@ -141,6 +142,7 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		considered: [],
 		rejected: [],
 		reasons: ["test decision"],
+		explored: null,
 		budgetDowngraded: false,
 	};
 }
@@ -495,5 +497,46 @@ describe("runTurn", () => {
 		expect(afterSecond.currentTier).toBe("hard");
 		expect(afterSecond.stickyUntilTurn).toBe(3); // unchanged, not 4
 		expect(errors).toHaveLength(0);
+	});
+});
+
+describe("exploration reaches the ledger", () => {
+	test("an explored turn records the tier it was dropped from", async () => {
+		const explored = { ...mkDecision("simple", "cheap/model"), explored: { from: "moderate" as Tier, to: "simple" as Tier } };
+		const { router } = mkRouter([explored]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "chunks",
+				chunks: [startChunk("cheap/model"), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: 10, completionTokens: 2 }, 0.0001)],
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+
+		expect(entries).toHaveLength(1);
+		// The counterfactual pair: what the classifier wanted, and what actually ran.
+		expect(entries[0]?.exploredFrom).toBe("moderate");
+		expect(entries[0]?.tier).toBe("simple");
+	});
+
+	test("a normally routed turn leaves it null", async () => {
+		const { router } = mkRouter([mkDecision("simple", "cheap/model")]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "chunks",
+				chunks: [startChunk("cheap/model"), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: 10, completionTokens: 2 }, 0.0001)],
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.exploredFrom).toBeNull();
 	});
 });

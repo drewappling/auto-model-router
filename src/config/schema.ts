@@ -88,6 +88,11 @@ const hysteresis = z.strictObject({
 	maxDowngradePerTurn: z.number().int().nonnegative().optional(),
 });
 
+const exploration = z.strictObject({
+	enabled: z.boolean().optional(),
+	rate: z.number().min(0).max(1).optional(),
+	tiers: z.array(z.enum(["trivial", "simple", "moderate", "hard"])).optional(),
+});
 const cache = z.strictObject({
 	injectBreakpoints: z.boolean().optional(),
 	maxBreakpoints: z.number().int().positive().optional(),
@@ -150,6 +155,7 @@ export const configInputSchema = z.strictObject({
 	classifier: classifier.optional(),
 	escalation: escalation.optional(),
 	hysteresis: hysteresis.optional(),
+	exploration: exploration.optional(),
 	cache: cache.optional(),
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),

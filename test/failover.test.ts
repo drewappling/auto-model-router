@@ -65,6 +65,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			...escalation,
 		},
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1 },
+		exploration: { enabled: false, rate: 0, tiers: ["simple", "moderate", "hard"] },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024 },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
@@ -141,6 +142,7 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		considered: [],
 		rejected: [],
 		reasons: ["test decision"],
+		explored: null,
 		budgetDowngraded: false,
 	};
 }

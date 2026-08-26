@@ -10,6 +10,7 @@ import type { CatalogSnapshot } from "../catalog/types.ts";
 import type { ProfileConfig, RouterConfig } from "../config/types.ts";
 import { priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
+import { sha256Hex } from "../util/hash.ts";
 import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
 import { planCacheBreakpoints } from "./cache-control.ts";
 import { buildCandidates } from "./candidates.ts";
@@ -19,6 +20,7 @@ import {
 	type Classification,
 	type ConversationState,
 	type Decision,
+	type Exploration,
 	type Features,
 	type ProbePlan,
 	type Rejection,
@@ -99,6 +101,21 @@ function wideningOrder(tier: Tier, minTier: Tier, maxTier: Tier): Tier[] {
 	return out;
 }
 
+/**
+ * Deterministic uniform draw in [0,1) from the turn's identity.
+ *
+ * Math.random() would make routing unreplayable, and every stage of this
+ * pipeline is a pure function of explicit inputs precisely so `explain` can
+ * re-derive a past decision offline. Hashing the conversation key and turn
+ * gives an unbiased sample that is stable across replays and across the
+ * failover retries of a single turn.
+ */
+function explorationDraw(conversationKey: string, turn: number): number {
+	// 8 hex chars = 32 bits of the digest, divided by 2^32.
+	const bits = Number.parseInt(sha256Hex(`explore:${conversationKey}:${turn}`).slice(0, 8), 16);
+	return bits / 0x1_0000_0000;
+}
+
 export function select(args: SelectArgs): Decision {
 	const { req, features, classification, profile, state, snapshot, ledger, cfg, nowMs } = args;
 	const reasons: string[] = [];
@@ -141,6 +158,35 @@ export function select(args: SelectArgs): Decision {
 		}
 	}
 
+	// 2c. Epsilon-greedy exploration: on a small deterministic fraction of
+	//     turns, route one tier BELOW the classified tier and record it.
+	//
+	//     Escalation is what makes this safe rather than reckless: if the
+	//     cheaper tier flounders, the probe rejects the attempt and the turn
+	//     escalates, so a bad draw costs one wasted cheap attempt, not a
+	//     failed turn.
+	//
+	//     Skipped while hysteresis holds (exploring would cold-start the very
+	//     cache the hold exists to protect), on forced escalations (the probe
+	//     already proved the cheaper tier failed), and on failover retries
+	//     (excludeSlugs non-empty), where a second confound is not wanted.
+	let explored: Exploration | null = null;
+	const ex = cfg.exploration;
+	if (
+		ex.enabled &&
+		ex.rate > 0 &&
+		cls.source !== "sticky" &&
+		classification.source !== "escalation" &&
+		(args.excludeSlugs === undefined || args.excludeSlugs.length === 0) &&
+		ex.tiers.includes(effective)
+	) {
+		const target = tierAt(Math.max(tierIdx(effective) - 1, minI));
+		if (target !== null && target !== effective && explorationDraw(req.conversationKey, state.turn) < ex.rate) {
+			reasons.push(`exploration: deliberately routing ${effective} → ${target} (rate ${ex.rate})`);
+			explored = { from: effective, to: target };
+			effective = target;
+		}
+	}
 	// 3. Candidates for the effective tier; widen one tier upward, then
 	//    downward, and only fail when the whole profile envelope is exhausted.
 	// The task type selects the quality axis and capability filters; the tier
@@ -360,6 +406,7 @@ export function select(args: SelectArgs): Decision {
 		considered: candidates,
 		rejected: resolved.rejected,
 		reasons,
+		explored,
 		budgetDowngraded,
 	};
 }

@@ -152,6 +152,7 @@ export async function runTurn(
 				confidence: decision.classification.confidence,
 				task: decision.classification.task,
 				classifierReasons: decision.classification.reasons,
+				exploredFrom: decision.explored?.from ?? null,
 				predictedUsd: decision.forecast.expectedUsd,
 				reportedUsd,
 				usage,

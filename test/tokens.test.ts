@@ -29,6 +29,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		confidence: null,
 		task: null,
 		classifierReasons: null,
+		exploredFrom: null,
 		predictedUsd: 0.001,
 		reportedUsd: 0.001,
 		usage: EMPTY_USAGE,

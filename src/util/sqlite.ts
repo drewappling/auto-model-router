@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 6;
+const USER_VERSION = 7;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -147,6 +147,18 @@ ALTER TABLE ledger ADD COLUMN task TEXT;
 ALTER TABLE ledger ADD COLUMN classifier_reasons TEXT;
 `;
 
+// v7: records epsilon-greedy exploration. `explored_from` is the tier the
+// classifier actually chose on a turn we deliberately routed one step
+// cheaper; NULL means the turn was routed normally.
+//
+// This is the counterfactual the ledger could never observe before. Natural
+// traffic only reveals UNDER-routing, because a tier that was too low
+// escalates and leaves a trace, while a tier that was too high looks
+// indistinguishable from a tier that was exactly right.
+const MIGRATE_V7 = `
+ALTER TABLE ledger ADD COLUMN explored_from TEXT;
+`;
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -165,6 +177,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "error_kind")) db.exec(MIGRATE_V4);
 		if (!ledgerCols.some((c) => c.name === "omp_session_id")) db.exec(MIGRATE_V5);
 		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
+		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

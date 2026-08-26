@@ -102,6 +102,11 @@ export interface LedgerEntry {
 	task: string | null;
 	/** Per-feature score breakdown, which the decision trail drops. NULL before v6. */
 	classifierReasons: string[] | null;
+	/**
+	 * Tier the classifier chose on a turn that exploration deliberately routed
+	 * one step cheaper. NULL when the turn was routed normally.
+	 */
+	exploredFrom: string | null;
 	predictedUsd: number;
 	reportedUsd: number | null;
 	usage: UsageCounts;

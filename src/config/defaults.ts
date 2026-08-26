@@ -103,6 +103,15 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		cacheWarmTtlMs: 300_000,
 		maxDowngradePerTurn: 1,
 	},
+	exploration: {
+		// Opt-in. Exploration knowingly routes some turns below the classified
+		// tier; escalation bounds the damage, but it is still a real cost.
+		enabled: false,
+		// 3% is enough to accumulate counterfactual labels within days at
+		// ~1k turns/day, without a user noticing the degraded slice.
+		rate: 0.03,
+		tiers: ["simple", "moderate", "hard"],
+	},
 	cache: {
 		injectBreakpoints: true,
 		// Anthropic allows 4 breakpoints; OpenRouter translates for other vendors.
