@@ -168,6 +168,17 @@ export interface ProbePlan {
 }
 
 /** The routing decision for one turn. */
+/**
+ * A turn that was deliberately routed below its classified tier, so the
+ * ledger witnesses whether the cheaper model would have sufficed.
+ */
+export interface Exploration {
+	/** Tier the classifier actually chose. */
+	from: Tier;
+	/** Tier routed instead, exactly one step cheaper. */
+	to: Tier;
+}
+
 export interface Decision {
 	slug: string;
 	/** Same-tier fallbacks for OpenRouter's `models[]` array; transient-error only. */
@@ -191,6 +202,8 @@ export interface Decision {
 	/** Filtered-out models with cause. Retained for `explain`. */
 	rejected: Rejection[];
 	reasons: string[];
+	/** Set when epsilon-greedy exploration deliberately routed below the classified tier. */
+	explored: Exploration | null;
 	/** Budget guard forced a cheaper tier than the classifier asked for. */
 	budgetDowngraded: boolean;
 }

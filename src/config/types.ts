@@ -56,6 +56,42 @@ export interface OpenRouterConfig {
 	catalogRefreshMs: number;
 }
 
+/**
+ * External benchmark feeds that BACKFILL quality scores OpenRouter does not
+ * publish. OpenRouter embeds Artificial Analysis scores for the models it has,
+ * but returns many (GLM, MiniMax, smaller vendors) unscored — which strands
+ * them below every tier floor above `trivial`. These feeds fill only the axes
+ * a model is missing; a score OpenRouter already published is never overwritten.
+ *
+ * Refreshed on their OWN slow cadence (`refreshMs`, ~daily), independent of the
+ * catalog's minute-scale availability refresh, and cached in `benchmark_cache`.
+ * Every fetch is best-effort: a feed failure leaves the catalog on published
+ * scores rather than failing a refresh.
+ */
+export interface BenchmarksConfig {
+	/** Master switch. Off ⇒ the catalog carries only OpenRouter-published scores. */
+	enabled: boolean;
+	/**
+	 * Artificial Analysis API key (v2 data API). Resolved from config, then
+	 * `ARTIFICIAL_ANALYSIS_API_KEY`. Empty ⇒ the AA feed is skipped; BenchLM
+	 * (keyless) still runs.
+	 */
+	artificialAnalysisApiKey: string;
+	/** Pull the keyless BenchLM leaderboard, which covers models AA omits. */
+	benchlm: boolean;
+	/** Feed cache freshness, ms: re-fetch the feeds only when older than this. */
+	refreshMs: number;
+	/** Per-feed HTTP timeout, ms. */
+	timeoutMs: number;
+	/**
+	 * Apply calibrated scores from our own eval harness (`src/eval`, the
+	 * `local_scores` table) as a last-resort source. Off by default: local
+	 * scores change routing, so they stay inert until deliberately enabled —
+	 * e.g. after a data-collection window closes.
+	 */
+	useLocalScores: boolean;
+}
+
 /** Quality/price envelope for one complexity tier. */
 export interface TierConfig {
 	/**
@@ -163,6 +199,65 @@ export interface HysteresisConfig {
 	maxDowngradePerTurn: number;
 }
 
+/**
+ * Epsilon-greedy exploration: deliberately route a small fraction of turns
+ * one tier BELOW the classified tier, to learn whether the cheaper model
+ * would have sufficed.
+ *
+ * Without it the ledger only ever witnesses UNDER-routing: a tier that was
+ * too low escalates and is recorded, while over-routing stays invisible
+ * because the cheaper model was never run. Weights fit on that one-sided
+ * evidence can only ever ratchet toward more expensive routing.
+ */
+export interface ExplorationConfig {
+	/** Off by default: this deliberately degrades a slice of real turns. */
+	enabled: boolean;
+	/**
+	 * Per-tier sampling rate, 0-1. A tier that is absent, or set to 0, is
+	 * never explored. `trivial` is the floor and cannot drop, so a rate for
+	 * it has no effect.
+	 *
+	 * Rates are per-tier because the tiers are wildly unequal as evidence.
+	 * In one observed window 635 explorable turns were `simple` and 1 was
+	 * `hard`, while `hard` carried ~30% of all spend. A single uniform rate
+	 * therefore spends nearly the whole exploration budget on the cheapest
+	 * question in the system.
+	 */
+	rates: Partial<Record<Tier, number>>;
+	/**
+	 * Which hysteresis-held turns exploration may touch.
+	 *
+	 * `never`      the held population is untouchable.
+	 * `cold-cache` explore a hold only after its prompt cache has expired.
+	 * `always`     explore holds regardless, forfeiting a live cache read.
+	 *
+	 * This matters more than it sounds. ~95% of hard-tier spend arrives by
+	 * hold rather than by classification, so `never` confines exploration to
+	 * the cheapest boundary in the system. But held turns are consecutive
+	 * turns of an active loop and are therefore warm BY CONSTRUCTION, so
+	 * `cold-cache` barely reaches them either: on one real window it moved
+	 * explorable hard turns from 1 to 11. Reaching that population in any
+	 * useful volume means `always`, and paying the forfeited cache read --
+	 * a real cost, but a bounded and directly measurable one.
+	 */
+	stickyPolicy: "never" | "cold-cache" | "always";
+	/**
+	 * Randomise the POST-ESCALATION hold length per conversation, to learn
+	 * what it should be.
+	 *
+	 * `holdTurnsAfterEscalation` is a hand-picked constant that nothing has
+	 * ever validated, and it governs most expensive spend: a turn escalates
+	 * once, then the hold bills the next several turns at the escalated
+	 * tier. Assignment is per conversation, so each conversation is one
+	 * clean randomised arm rather than a confounded mixture.
+	 */
+	holdTurns: {
+		enabled: boolean;
+		/** Candidate hold lengths. One is drawn per conversation. */
+		values: number[];
+	};
+}
+
 export interface CacheConfig {
 	/**
 	 * Inject Anthropic-style `cache_control` breakpoints. OpenRouter translates
@@ -223,12 +318,14 @@ export interface LedgerConfig {
 export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
+	benchmarks: BenchmarksConfig;
 	tiers: Record<Tier, TierConfig>;
 	tasks: Record<TaskType, TaskConfig>;
 	filters: FilterConfig;
 	classifier: ClassifierConfig;
 	escalation: EscalationConfig;
 	hysteresis: HysteresisConfig;
+	exploration: ExplorationConfig;
 	cache: CacheConfig;
 	budget: BudgetConfig;
 	profiles: ProfileConfig[];
@@ -240,5 +337,14 @@ export interface RouterConfig {
 	 * `trivial` permanently empty and the router is stuck on the cheapest model.
 	 */
 	adaptiveTierFloors: boolean;
+	/**
+	 * Derive each tier's input-price ceiling from the price spread of the models
+	 * actually available at every catalog refresh (quantile bands), instead of
+	 * fixed `tiers.*.maxInputPerMtok` dollars. Lets the same config self-tune to
+	 * whatever models a key admits — a hard cap becomes "drop this catalog's
+	 * priciest outliers", not a magic dollar value. An explicit ceiling still
+	 * tightens further. Off by default (fixed ceilings).
+	 */
+	adaptivePriceCeilings: boolean;
 	logLevel: "silent" | "error" | "warn" | "info" | "debug";
 }

@@ -87,6 +87,8 @@ export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterCon
 	};
 	const envApiKey = process.env.OPENROUTER_API_KEY;
 	if (envApiKey !== undefined && envApiKey !== "") putSection("openrouter", "apiKey", envApiKey);
+	const envAaKey = process.env.ARTIFICIAL_ANALYSIS_API_KEY;
+	if (envAaKey !== undefined && envAaKey !== "") putSection("benchmarks", "artificialAnalysisApiKey", envAaKey);
 	const envPort = process.env.AUTO_MODEL_ROUTER_PORT;
 	if (envPort !== undefined && envPort !== "") {
 		const port = Number.parseInt(envPort, 10);

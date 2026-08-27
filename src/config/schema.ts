@@ -32,6 +32,15 @@ const openrouter = z.strictObject({
 	catalogRefreshMs: z.number().nonnegative().optional(),
 });
 
+const benchmarks = z.strictObject({
+	enabled: z.boolean().optional(),
+	artificialAnalysisApiKey: z.string().optional(),
+	benchlm: z.boolean().optional(),
+	refreshMs: z.number().nonnegative().optional(),
+	timeoutMs: z.number().positive().optional(),
+	useLocalScores: z.boolean().optional(),
+});
+
 const tierConfig = z.strictObject({
 	minQuality: z.number().min(0).max(100).optional(),
 	maxInputPerMtok: z.number().nonnegative().optional(),
@@ -88,6 +97,28 @@ const hysteresis = z.strictObject({
 	maxDowngradePerTurn: z.number().int().nonnegative().optional(),
 });
 
+const exploration = z.strictObject({
+	enabled: z.boolean().optional(),
+	// Spelled out per tier rather than z.record so an unknown tier name is a
+	// config error instead of a silently ignored key.
+	rates: z
+		.strictObject({
+			trivial: z.number().min(0).max(1).optional(),
+			simple: z.number().min(0).max(1).optional(),
+			moderate: z.number().min(0).max(1).optional(),
+			hard: z.number().min(0).max(1).optional(),
+		})
+		.optional(),
+	stickyPolicy: z.enum(["never", "cold-cache", "always"]).optional(),
+	holdTurns: z
+		.strictObject({
+			enabled: z.boolean().optional(),
+			// Non-empty and positive: an empty set or a 0 would silently disable
+			// the experiment while reading as enabled.
+			values: z.array(z.number().int().positive()).min(1).optional(),
+		})
+		.optional(),
+});
 const cache = z.strictObject({
 	injectBreakpoints: z.boolean().optional(),
 	maxBreakpoints: z.number().int().positive().optional(),
@@ -129,6 +160,7 @@ const profile = z.strictObject({
 export const configInputSchema = z.strictObject({
 	server: server.optional(),
 	openrouter: openrouter.optional(),
+	benchmarks: benchmarks.optional(),
 	tiers: z
 		.strictObject({
 			trivial: tierConfig.optional(),
@@ -150,11 +182,13 @@ export const configInputSchema = z.strictObject({
 	classifier: classifier.optional(),
 	escalation: escalation.optional(),
 	hysteresis: hysteresis.optional(),
+	exploration: exploration.optional(),
 	cache: cache.optional(),
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	ledger: ledger.optional(),
 	adaptiveTierFloors: z.boolean().optional(),
+	adaptivePriceCeilings: z.boolean().optional(),
 	logLevel: logLevel.optional(),
 });
 

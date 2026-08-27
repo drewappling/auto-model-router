@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 5;
+const USER_VERSION = 10;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS catalog_cache (
   fetched_at_ms INTEGER NOT NULL,
   etag TEXT,
   key_scoped INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_scores (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -128,6 +140,58 @@ const MIGRATE_V5 = `
 ALTER TABLE ledger ADD COLUMN omp_session_id TEXT NOT NULL DEFAULT '';
 `;
 
+// v6: classifier INPUTS. Before this the ledger recorded only what routing
+// decided (tier, slug, cost, escalation) and never what it decided FROM, so a
+// turn could not be replayed, and no weight could be fit offline. `features`
+// is the verbatim feature vector as JSON; `score` and `confidence` are the
+// classifier's own outputs, kept alongside because they are cheap and make
+// weight drift detectable when the scorer changes under a fixed feature set.
+// `classifier_reasons` is the per-feature breakdown, which `select.ts` drops
+// from the decision trail on every path except a hysteresis hold.
+//
+// All nullable with no backfill: pre-v6 rows genuinely lack these inputs and
+// NULL says so honestly. A DEFAULT would invent data that was never observed.
+const MIGRATE_V6 = `
+ALTER TABLE ledger ADD COLUMN features TEXT;
+ALTER TABLE ledger ADD COLUMN score REAL;
+ALTER TABLE ledger ADD COLUMN confidence REAL;
+ALTER TABLE ledger ADD COLUMN task TEXT;
+ALTER TABLE ledger ADD COLUMN classifier_reasons TEXT;
+`;
+
+// v7: records epsilon-greedy exploration. `explored_from` is the tier the
+// classifier actually chose on a turn we deliberately routed one step
+// cheaper; NULL means the turn was routed normally.
+//
+// This is the counterfactual the ledger could never observe before. Natural
+// traffic only reveals UNDER-routing, because a tier that was too low
+// escalates and leaves a trace, while a tier that was too high looks
+// indistinguishable from a tier that was exactly right.
+const MIGRATE_V7 = `
+ALTER TABLE ledger ADD COLUMN explored_from TEXT;
+`;
+
+// v8: records the hold-length arm a conversation was assigned by hold
+// exploration. NULL means the conversation was not part of the experiment.
+//
+// Recorded on EVERY turn of the conversation, not only the turns a hold
+// actually affects, so arms can be compared on total conversation cost
+// rather than on the subset the treatment happened to touch.
+const MIGRATE_V8 = `
+ALTER TABLE ledger ADD COLUMN hold_arm INTEGER;
+`;
+
+// v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
+// BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
+// whole new table, created idempotently by the MIGRATIONS block above, so there
+// is no ALTER guard here — the version bump alone records that the schema now
+// includes it.
+
+// v10: local_scores holds calibrated scores from our OWN eval harness
+// (src/eval), a `local`-source feed applied only when benchmarks.useLocalScores
+// is on. Another new table via the idempotent MIGRATIONS block; version bump
+// only, no ALTER guard.
+
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -145,6 +209,9 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "harness_id")) db.exec(MIGRATE_V3);
 		if (!ledgerCols.some((c) => c.name === "error_kind")) db.exec(MIGRATE_V4);
 		if (!ledgerCols.some((c) => c.name === "omp_session_id")) db.exec(MIGRATE_V5);
+		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
+		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
+		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

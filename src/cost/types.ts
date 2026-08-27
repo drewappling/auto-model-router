@@ -88,6 +88,30 @@ export interface LedgerEntry {
 	classificationSource: string;
 	/** Human-readable decision trail. */
 	reasons: string[];
+	/**
+	 * Classifier inputs, persisted verbatim as JSON so any score is
+	 * recomputable offline. Opaque here on purpose: the ledger sits below the
+	 * router in the layering and must not import its types. NULL before v6.
+	 */
+	features: object | null;
+	/** Raw heuristic score, 0-1, before tier bucketing. NULL before v6. */
+	score: number | null;
+	/** Classifier confidence, 0-1. Drives adjudication. NULL before v6. */
+	confidence: number | null;
+	/** Task kind (coding, vision, ...), orthogonal to tier. NULL before v6. */
+	task: string | null;
+	/** Per-feature score breakdown, which the decision trail drops. NULL before v6. */
+	classifierReasons: string[] | null;
+	/**
+	 * Tier the classifier chose on a turn that exploration deliberately routed
+	 * one step cheaper. NULL when the turn was routed normally.
+	 */
+	exploredFrom: string | null;
+	/**
+	 * Hold-length arm this conversation was assigned by hold exploration,
+	 * or NULL when it was not part of that experiment.
+	 */
+	holdArm: number | null;
 	predictedUsd: number;
 	reportedUsd: number | null;
 	usage: UsageCounts;

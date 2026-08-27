@@ -24,6 +24,17 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// guardrail changes are picked up without waiting for traffic + TTL.
 		catalogRefreshMs: 5 * 60 * 1000,
 	},
+	benchmarks: {
+		// Keyless BenchLM alone fills real gaps, so this is on by default; the AA
+		// feed only actually fires once a key is present (config or env).
+		enabled: true,
+		artificialAnalysisApiKey: "",
+		benchlm: true,
+		refreshMs: 24 * 60 * 60 * 1000,
+		timeoutMs: 30_000,
+		// Off: our own eval scores change routing, so they never apply until asked.
+		useLocalScores: false,
+	},
 	tiers: {
 		// minQuality 0 ⇒ unscored models are eligible here; the floor does the
 		// quality work on every other tier (qualityExponent 0 ⇒ cheapest above floor).
@@ -103,6 +114,22 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		cacheWarmTtlMs: 300_000,
 		maxDowngradePerTurn: 1,
 	},
+	exploration: {
+		// Opt-in. Exploration knowingly routes some turns below the tier that
+		// would otherwise be used; escalation bounds the damage, but it is
+		// still a real cost paid on real traffic.
+		enabled: false,
+		// Weighted by scarcity and by spend, not uniformly: `simple` turns are
+		// abundant and cheap to be wrong about, `hard` turns are rare and hold
+		// most of the money, so they need a far higher rate to yield any
+		// sample at all within a useful number of days.
+		rates: { simple: 0.03, moderate: 0.15, hard: 0.2 },
+		// Conservative default: never sacrifice a live prompt cache without
+		// the operator choosing to. `always` is what actually reaches the
+		// held population that carries the spend.
+		stickyPolicy: "cold-cache",
+		holdTurns: { enabled: false, values: [2, 3, 4] },
+	},
 	cache: {
 		injectBreakpoints: true,
 		// Anthropic allows 4 breakpoints; OpenRouter translates for other vendors.
@@ -132,5 +159,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	// On by default: an absolute floor that no available model meets is how the
 	// router ends up serving every turn from the cheapest tier.
 	adaptiveTierFloors: true,
+	// Off by default: fixed per-tier ceilings ship as the baseline. Enable to make
+	// price ceilings self-tune to the key's catalog (see RouterConfig doc).
+	adaptivePriceCeilings: false,
 	logLevel: "info",
 };

@@ -29,6 +29,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
 		server: { host: "127.0.0.1", port: 8787 },
 		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000, catalogRefreshMs: 0 },
+		benchmarks: { enabled: false, artificialAnalysisApiKey: "", benchlm: true, refreshMs: 86_400_000, timeoutMs: 30_000, useLocalScores: false },
 		tiers: {
 			trivial: { minQuality: 0, maxInputPerMtok: 0.3, qualityExponent: 0, pin: [] },
 			simple: { minQuality: 40, maxInputPerMtok: 1.5, qualityExponent: 0, pin: [] },
@@ -65,11 +66,13 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			...escalation,
 		},
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1 },
+		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024 },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
 		adaptiveTierFloors: true,
+		adaptivePriceCeilings: false,
 		logLevel: "silent",
 	};
 }
@@ -141,6 +144,7 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		considered: [],
 		rejected: [],
 		reasons: ["test decision"],
+		explored: null,
 		budgetDowngraded: false,
 	};
 }

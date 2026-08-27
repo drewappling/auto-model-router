@@ -22,6 +22,13 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		tier: "simple",
 		classificationSource: "heuristic",
 		reasons: [],
+		features: null,
+		score: null,
+		confidence: null,
+		task: null,
+		classifierReasons: null,
+		exploredFrom: null,
+		holdArm: null,
 		predictedUsd: 0.001,
 		reportedUsd: 0.001,
 		usage: EMPTY_USAGE,
@@ -164,11 +171,11 @@ describe("v4 migration", () => {
 		}
 	});
 
-	test("schema is at user_version 5", () => {
+	test("schema is at user_version 10", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(5);
+			expect(row.user_version).toBe(10);
 		} finally {
 			db.close();
 		}
@@ -182,6 +189,93 @@ describe("v4 migration", () => {
 			ledger.record(entry({ ompSessionId: "" }));
 			const got = ledger.recentEntries(10).map((e) => e.ompSessionId).sort();
 			expect(got).toEqual(["", "sess-a"]);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("v6 classifier instrumentation", () => {
+	const FEATURES = {
+		promptTokens: 1234,
+		isToolResultContinuation: true,
+		toolLoopDepth: 3,
+		complexityKeywords: ["race", "debug"],
+	};
+
+	test("round-trips the feature vector and classifier outputs", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			ledger.record(
+				entry({
+					features: FEATURES,
+					score: 0.42,
+					confidence: 0.75,
+					task: "coding",
+					classifierReasons: ["-0.28 tool-result continuation"],
+				}),
+			);
+
+			const got = ledger.recentEntries(1)[0];
+			expect(got?.features).toEqual(FEATURES);
+			expect(got?.score).toBe(0.42);
+			expect(got?.confidence).toBe(0.75);
+			expect(got?.task).toBe("coding");
+			expect(got?.classifierReasons).toEqual(["-0.28 tool-result continuation"]);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("an uninstrumented row reads back as null, not as invented data", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			ledger.record(entry({}));
+			const got = ledger.recentEntries(1)[0];
+			expect(got?.features).toBeNull();
+			expect(got?.score).toBeNull();
+			expect(got?.confidence).toBeNull();
+			expect(got?.task).toBeNull();
+			expect(got?.classifierReasons).toBeNull();
+		} finally {
+			db.close();
+		}
+	});
+
+	test("records which tier exploration dropped from, and NULL otherwise", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			ledger.record(entry({ tier: "simple", exploredFrom: "moderate" }));
+			ledger.record(entry({ tier: "moderate" }));
+
+			const got = ledger.recentEntries(10);
+			expect(got.map((e) => e.exploredFrom).sort()).toEqual(["moderate", null] as unknown as string[]);
+
+			// The counterfactual query this whole column exists to make possible:
+			// of the turns we deliberately under-routed, how many had to escalate?
+			const counted = db
+				.query("SELECT COUNT(*) n FROM ledger WHERE explored_from IS NOT NULL")
+				.get() as { n: number };
+			expect(counted.n).toBe(1);
+		} finally {
+			db.close();
+		}
+	});
+	test("features land in the column as queryable JSON", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			ledger.record(entry({ features: FEATURES, score: 0.9, confidence: 0.1, task: "vision" }));
+			// SQLite json_extract proves the blob is real JSON, not a stringified object.
+			const row = db
+				.query("SELECT json_extract(features, '$.toolLoopDepth') AS depth, score, task FROM ledger")
+				.get() as { depth: number; score: number; task: string };
+			expect(row.depth).toBe(3);
+			expect(row.score).toBe(0.9);
+			expect(row.task).toBe("vision");
 		} finally {
 			db.close();
 		}

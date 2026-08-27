@@ -5,7 +5,7 @@ import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
-import { computeTierPlan, effectiveQualityFloor, tierPlanFor } from "../src/router/tier-plan.ts";
+import { computeTierPlan, effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "../src/router/tier-plan.ts";
 import { TIER_ORDER } from "../src/router/types.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
@@ -298,5 +298,59 @@ describe("adaptive floors in candidate selection", () => {
 		});
 		expect(candidates.map((c) => c.model.slug)).not.toContain(target);
 		expect(rejected.some((r) => r.slug === target && r.reason === "failed_this_turn")).toBe(true);
+	});
+});
+
+describe("adaptive price ceilings", () => {
+	const priced = models([
+		["a/1", 80, 1],
+		["a/2", 80, 2],
+		["a/3", 80, 3],
+		["a/4", 80, 4],
+	]);
+	const req = parseChatRequest(
+		{
+			model: "auto",
+			tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }],
+			messages: [{ role: "user", content: "refactor the auth module" }],
+		},
+		new Headers(),
+	);
+	const features = extractFeatures(req, 100);
+
+	test("computeTierPlan derives per-tier price bands from the catalog", () => {
+		const plan = computeTierPlan(priced, BASE);
+		expect(plan.priceCeilings).toEqual({ trivial: 1, simple: 2, moderate: 3, hard: 4 });
+	});
+
+	test("effectivePriceCeiling: band when on, tighter of config/band, config when off", () => {
+		const plan = computeTierPlan(priced, BASE);
+		expect(effectivePriceCeiling(undefined, "moderate", plan, true)).toBe(3); // band
+		expect(effectivePriceCeiling(2, "moderate", plan, true)).toBe(2); // config tightens
+		expect(effectivePriceCeiling(10, "moderate", plan, true)).toBe(3); // band tightens
+		expect(effectivePriceCeiling(2, "moderate", plan, false)).toBe(2); // off ⇒ config
+		expect(effectivePriceCeiling(undefined, "hard", plan, false)).toBeUndefined();
+	});
+
+	test("a model above the adaptive band is dropped in candidate selection", () => {
+		const snap = snapshot(priced);
+		const run = (adaptivePriceCeilings: boolean) =>
+			buildCandidates({
+				req,
+				features,
+				tier: "moderate",
+				task: "coding",
+				snapshot: snap,
+				ledger: null,
+				cfg: { ...BASE, adaptivePriceCeilings },
+				expectedCompletionTokens: 512,
+				warmSlug: null,
+			});
+		// Off: the fixed moderate ceiling ($4) admits a/4 at $4.
+		expect(run(false).candidates.map((c) => c.model.slug)).toContain("a/4");
+		// On: the catalog band tightens moderate to $3, so a/4 is over-ceiling.
+		const on = run(true);
+		expect(on.candidates.map((c) => c.model.slug)).not.toContain("a/4");
+		expect(on.rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
 	});
 });

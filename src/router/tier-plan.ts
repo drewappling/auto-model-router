@@ -42,10 +42,12 @@ const AXES: readonly QualityAxis[] = ["coding", "agentic", "intelligence"];
 export type AxisFloors = Record<Tier, number>;
 
 export interface TierPlan {
-	/** Adaptive floor per axis per tier. */
+	/** Adaptive quality floor per axis per tier. */
 	floors: Record<QualityAxis, AxisFloors>;
 	/** How many available models carried a score on each axis. */
 	scoredCount: Record<QualityAxis, number>;
+	/** Adaptive input-price ceiling ($/Mtok) per tier, from the catalog's price spread. */
+	priceCeilings: Record<Tier, number>;
 }
 
 /**
@@ -89,6 +91,32 @@ function bandFloors(ascending: readonly number[]): AxisFloors {
 	return floors as AxisFloors;
 }
 
+/**
+ * Per-tier input-price ceiling ($/Mtok) from an ascending price list: quantile
+ * UPPER bounds, so each higher tier admits a larger, pricier slice. p25/p50/p75
+ * for trivial/simple/moderate, and p90 for `hard` — high enough to keep the
+ * strong models but dropping the priciest outliers. The catalog decides the
+ * dollar values, so this self-tunes to whatever models a key actually admits.
+ */
+const CEILING_QUANTILES: readonly number[] = [0.25, 0.5, 0.75, 0.9];
+
+function bandCeilings(ascending: readonly number[]): Record<Tier, number> {
+	const out: Record<string, number> = {};
+	const len = ascending.length;
+	for (let k = 0; k < TIER_ORDER.length; k++) {
+		const tier = TIER_ORDER[k];
+		if (tier === undefined) continue;
+		if (len === 0) {
+			out[tier] = Number.POSITIVE_INFINITY; // no data ⇒ no cap
+			continue;
+		}
+		const q = CEILING_QUANTILES[k] ?? 1;
+		const index = Math.min(len - 1, Math.max(0, Math.ceil(len * q) - 1));
+		out[tier] = ascending[index] ?? Number.POSITIVE_INFINITY;
+	}
+	return out as Record<Tier, number>;
+}
+
 /** Computes the adaptive plan for a set of available models. */
 export function computeTierPlan(models: readonly CatalogModel[], cfg: RouterConfig): TierPlan {
 	const floors: Record<string, AxisFloors> = {};
@@ -107,10 +135,18 @@ export function computeTierPlan(models: readonly CatalogModel[], cfg: RouterConf
 		floors[axis] = bandFloors(scores);
 		scoredCount[axis] = scores.length;
 	}
+	// Input prices ($/Mtok) of the rankable models, ascending, for the ceilings.
+	const prices: number[] = [];
+	for (const model of models) {
+		if (!isRankable(model, includeFree)) continue;
+		prices.push(model.price.prompt * 1e6);
+	}
+	prices.sort((a, b) => a - b);
 
 	return {
 		floors: floors as Record<QualityAxis, AxisFloors>,
 		scoredCount: scoredCount as Record<QualityAxis, number>,
+		priceCeilings: bandCeilings(prices),
 	};
 }
 
@@ -148,4 +184,24 @@ export function effectiveQualityFloor(
 ): number {
 	const adaptive = plan.floors[axis][tier];
 	return Math.min(configured, adaptive);
+}
+
+/**
+ * The input-price ceiling ($/Mtok) to actually enforce for a tier. When adaptive
+ * ceilings are off, this is just the configured value (possibly unset). When on,
+ * the catalog-derived band applies, and an explicit config can only tighten it
+ * further — never loosen it. Returns undefined for "no ceiling".
+ */
+export function effectivePriceCeiling(
+	configured: number | undefined,
+	tier: Tier,
+	plan: TierPlan,
+	enabled: boolean,
+): number | undefined {
+	if (!enabled) return configured;
+	const adaptive = plan.priceCeilings[tier];
+	const band = Number.isFinite(adaptive) ? adaptive : undefined;
+	if (configured === undefined) return band;
+	if (band === undefined) return configured;
+	return Math.min(configured, band);
 }
