@@ -379,7 +379,7 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 				const local = cfg.benchmarks.useLocalScores ? loadLocalScores(db) : [];
 				const filled = applyFeedScores(raw, [...feeds, ...local]);
 				if (filled.modelsFilled > 0) {
-					log.info("backfilled missing benchmarks from external feeds", {
+					log.debug("backfilled missing benchmarks from external feeds", {
 						models: filled.modelsFilled,
 						coding: filled.axes.coding,
 						intelligence: filled.axes.intelligence,
