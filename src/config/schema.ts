@@ -38,6 +38,7 @@ const benchmarks = z.strictObject({
 	benchlm: z.boolean().optional(),
 	refreshMs: z.number().nonnegative().optional(),
 	timeoutMs: z.number().positive().optional(),
+	useLocalScores: z.boolean().optional(),
 });
 
 const tierConfig = z.strictObject({

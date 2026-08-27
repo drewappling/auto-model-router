@@ -83,6 +83,13 @@ export interface BenchmarksConfig {
 	refreshMs: number;
 	/** Per-feed HTTP timeout, ms. */
 	timeoutMs: number;
+	/**
+	 * Apply calibrated scores from our own eval harness (`src/eval`, the
+	 * `local_scores` table) as a last-resort source. Off by default: local
+	 * scores change routing, so they stay inert until deliberately enabled —
+	 * e.g. after a data-collection window closes.
+	 */
+	useLocalScores: boolean;
 }
 
 /** Quality/price envelope for one complexity tier. */

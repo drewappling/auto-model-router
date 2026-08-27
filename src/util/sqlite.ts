@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 9;
+const USER_VERSION = 10;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS catalog_cache (
 );
 
 CREATE TABLE IF NOT EXISTS benchmark_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS local_scores (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   payload TEXT NOT NULL,
   fetched_at_ms INTEGER NOT NULL
@@ -180,6 +186,11 @@ ALTER TABLE ledger ADD COLUMN hold_arm INTEGER;
 // whole new table, created idempotently by the MIGRATIONS block above, so there
 // is no ALTER guard here — the version bump alone records that the schema now
 // includes it.
+
+// v10: local_scores holds calibrated scores from our OWN eval harness
+// (src/eval), a `local`-source feed applied only when benchmarks.useLocalScores
+// is on. Another new table via the idempotent MIGRATIONS block; version bump
+// only, no ALTER guard.
 
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.

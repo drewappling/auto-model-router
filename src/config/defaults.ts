@@ -32,6 +32,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		benchlm: true,
 		refreshMs: 24 * 60 * 60 * 1000,
 		timeoutMs: 30_000,
+		// Off: our own eval scores change routing, so they never apply until asked.
+		useLocalScores: false,
 	},
 	tiers: {
 		// minQuality 0 ⇒ unscored models are eligible here; the floor does the

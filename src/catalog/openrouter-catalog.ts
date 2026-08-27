@@ -13,7 +13,7 @@ import type { RouterConfig } from "../config/types.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { createLogger } from "../util/log.ts";
 import type { CatalogModel, CatalogSnapshot, CatalogSource, Modality, Price, PriceTier, QualityScores } from "./types.ts";
-import { applyFeedScores, refreshFeedScores } from "./benchmark-feeds.ts";
+import { applyFeedScores, loadLocalScores, refreshFeedScores } from "./benchmark-feeds.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -374,7 +374,10 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		if (cfg.benchmarks.enabled) {
 			try {
 				const feeds = await refreshFeedScores(cfg, db, { log });
-				const filled = applyFeedScores(raw, feeds);
+				// Local eval scores are last-resort and gated: they change routing, so
+				// they apply only when the operator opts in.
+				const local = cfg.benchmarks.useLocalScores ? loadLocalScores(db) : [];
+				const filled = applyFeedScores(raw, [...feeds, ...local]);
 				if (filled.modelsFilled > 0) {
 					log.info("backfilled missing benchmarks from external feeds", {
 						models: filled.modelsFilled,
@@ -383,6 +386,7 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 						agentic: filled.axes.agentic,
 						aa: filled.sources.artificial_analysis,
 						benchlm: filled.sources.benchlm,
+						local: filled.sources.local,
 					});
 				}
 			} catch (err) {

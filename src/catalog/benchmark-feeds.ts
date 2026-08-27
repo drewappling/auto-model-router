@@ -36,7 +36,7 @@ import type { QualityAxis } from "../config/types.ts";
 export const AA_MODELS_URL = "https://artificialanalysis.ai/api/v2/data/llms/models";
 export const BENCHLM_URL = "https://benchlm.ai/api/data/leaderboard";
 
-export type FeedSource = "artificial_analysis" | "benchlm";
+export type FeedSource = "artificial_analysis" | "benchlm" | "local";
 
 /** One model's scores from one feed, on the router's three axes (0-100). */
 export interface FeedScore {
@@ -231,7 +231,7 @@ export function applyFeedScores(rawModels: unknown[], feeds: FeedScore[]): FillR
 	const result: FillResult = {
 		modelsFilled: 0,
 		axes: { coding: 0, intelligence: 0, agentic: 0 },
-		sources: { artificial_analysis: 0, benchlm: 0 },
+		sources: { artificial_analysis: 0, benchlm: 0, local: 0 },
 	};
 	if (feeds.length === 0) return result;
 
@@ -265,6 +265,13 @@ export function applyFeedScores(rawModels: unknown[], feeds: FeedScore[]): FillR
 				const blHit = pick(candidates, "benchlm", author);
 				value = blHit === null ? undefined : axisValue(blHit, axis);
 				source = "benchlm";
+			}
+			if (value === undefined) {
+				// Our own calibrated eval is the weakest source: only where neither
+				// published nor third-party feeds have anything.
+				const localHit = pick(candidates, "local", author);
+				value = localHit === null ? undefined : axisValue(localHit, axis);
+				source = "local";
 			}
 			if (value === undefined) continue;
 			aa[`${axis}_index`] = value;
@@ -310,7 +317,7 @@ export async function refreshFeedScores(cfg: RouterConfig, db: Database, opts: R
 	const bm = cfg.benchmarks;
 
 	const row = db.query("SELECT payload, fetched_at_ms FROM benchmark_cache WHERE id = 1").get() as CacheRow | null;
-	const cached: FeedScore[] | null = row === null ? null : parseCache(row.payload);
+	const cached: FeedScore[] | null = row === null ? null : parseFeedScores(row.payload);
 	if (row !== null && cached !== null && now - row.fetched_at_ms < bm.refreshMs) return cached;
 
 	const feedOpts: FetchOpts = { timeoutMs: bm.timeoutMs };
@@ -340,7 +347,8 @@ export async function refreshFeedScores(cfg: RouterConfig, db: Database, opts: R
 	return merged;
 }
 
-function parseCache(payload: string): FeedScore[] | null {
+/** Validate a persisted `FeedScore[]` blob, skipping any entry that drifted. */
+function parseFeedScores(payload: string): FeedScore[] | null {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(payload);
@@ -348,13 +356,11 @@ function parseCache(payload: string): FeedScore[] | null {
 		return null;
 	}
 	if (!Array.isArray(parsed)) return null;
-	// Our own persisted blob, but validated on the way back in so a truncated or
-	// schema-drifted row degrades to "skip that entry", never a wrong-typed read.
 	const out: FeedScore[] = [];
 	for (const item of parsed) {
 		const rec = asRecord(item);
 		if (rec === null || typeof rec.key !== "string") continue;
-		if (rec.source !== "artificial_analysis" && rec.source !== "benchlm") continue;
+		if (rec.source !== "artificial_analysis" && rec.source !== "benchlm" && rec.source !== "local") continue;
 		const entry: FeedScore = {
 			key: rec.key,
 			creator: typeof rec.creator === "string" ? rec.creator : "",
@@ -369,4 +375,23 @@ function parseCache(payload: string): FeedScore[] | null {
 		out.push(entry);
 	}
 	return out;
+}
+
+/**
+ * Local eval scores from the `local_scores` table (written by the eval runner),
+ * or [] when absent/unreadable. No TTL: these change only when the eval is
+ * re-run, and are gated by `benchmarks.useLocalScores` at the call site.
+ */
+export function loadLocalScores(db: Database): FeedScore[] {
+	const row = db.query("SELECT payload FROM local_scores WHERE id = 1").get() as { payload: string } | null;
+	if (row === null) return [];
+	return parseFeedScores(row.payload) ?? [];
+}
+
+/** Persist local eval scores (source `local`) for `doRefresh` to pick up when enabled. */
+export function saveLocalScores(db: Database, scores: readonly FeedScore[], now = Date.now()): void {
+	db.query(
+		`INSERT INTO local_scores (id, payload, fetched_at_ms) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, fetched_at_ms = excluded.fetched_at_ms`,
+	).run(JSON.stringify(scores), now);
 }
