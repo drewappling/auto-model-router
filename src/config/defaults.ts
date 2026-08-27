@@ -24,6 +24,15 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// guardrail changes are picked up without waiting for traffic + TTL.
 		catalogRefreshMs: 5 * 60 * 1000,
 	},
+	benchmarks: {
+		// Keyless BenchLM alone fills real gaps, so this is on by default; the AA
+		// feed only actually fires once a key is present (config or env).
+		enabled: true,
+		artificialAnalysisApiKey: "",
+		benchlm: true,
+		refreshMs: 24 * 60 * 60 * 1000,
+		timeoutMs: 30_000,
+	},
 	tiers: {
 		// minQuality 0 ⇒ unscored models are eligible here; the floor does the
 		// quality work on every other tier (qualityExponent 0 ⇒ cheapest above floor).

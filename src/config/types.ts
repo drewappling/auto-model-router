@@ -56,6 +56,35 @@ export interface OpenRouterConfig {
 	catalogRefreshMs: number;
 }
 
+/**
+ * External benchmark feeds that BACKFILL quality scores OpenRouter does not
+ * publish. OpenRouter embeds Artificial Analysis scores for the models it has,
+ * but returns many (GLM, MiniMax, smaller vendors) unscored — which strands
+ * them below every tier floor above `trivial`. These feeds fill only the axes
+ * a model is missing; a score OpenRouter already published is never overwritten.
+ *
+ * Refreshed on their OWN slow cadence (`refreshMs`, ~daily), independent of the
+ * catalog's minute-scale availability refresh, and cached in `benchmark_cache`.
+ * Every fetch is best-effort: a feed failure leaves the catalog on published
+ * scores rather than failing a refresh.
+ */
+export interface BenchmarksConfig {
+	/** Master switch. Off ⇒ the catalog carries only OpenRouter-published scores. */
+	enabled: boolean;
+	/**
+	 * Artificial Analysis API key (v2 data API). Resolved from config, then
+	 * `ARTIFICIAL_ANALYSIS_API_KEY`. Empty ⇒ the AA feed is skipped; BenchLM
+	 * (keyless) still runs.
+	 */
+	artificialAnalysisApiKey: string;
+	/** Pull the keyless BenchLM leaderboard, which covers models AA omits. */
+	benchlm: boolean;
+	/** Feed cache freshness, ms: re-fetch the feeds only when older than this. */
+	refreshMs: number;
+	/** Per-feed HTTP timeout, ms. */
+	timeoutMs: number;
+}
+
 /** Quality/price envelope for one complexity tier. */
 export interface TierConfig {
 	/**
@@ -282,6 +311,7 @@ export interface LedgerConfig {
 export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
+	benchmarks: BenchmarksConfig;
 	tiers: Record<Tier, TierConfig>;
 	tasks: Record<TaskType, TaskConfig>;
 	filters: FilterConfig;

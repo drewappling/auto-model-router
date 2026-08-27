@@ -13,6 +13,7 @@ import type { RouterConfig } from "../config/types.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { createLogger } from "../util/log.ts";
 import type { CatalogModel, CatalogSnapshot, CatalogSource, Modality, Price, PriceTier, QualityScores } from "./types.ts";
+import { applyFeedScores, refreshFeedScores } from "./benchmark-feeds.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -361,6 +362,31 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 				}
 			} catch (err) {
 				log.warn("public benchmark fetch failed; catalog stays unscored", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		// Backfill quality scores OpenRouter never published (GLM, MiniMax, and
+		// smaller vendors), from the external benchmark feeds. Best-effort: a feed
+		// failure leaves the catalog on published scores. The feeds are cached on
+		// their own slow cadence, so this is cheap on the minute-scale refresh.
+		if (cfg.benchmarks.enabled) {
+			try {
+				const feeds = await refreshFeedScores(cfg, db, { log });
+				const filled = applyFeedScores(raw, feeds);
+				if (filled.modelsFilled > 0) {
+					log.info("backfilled missing benchmarks from external feeds", {
+						models: filled.modelsFilled,
+						coding: filled.axes.coding,
+						intelligence: filled.axes.intelligence,
+						agentic: filled.axes.agentic,
+						aa: filled.sources.artificial_analysis,
+						benchlm: filled.sources.benchlm,
+					});
+				}
+			} catch (err) {
+				log.warn("benchmark backfill failed; catalog keeps published scores", {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			}

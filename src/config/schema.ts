@@ -32,6 +32,14 @@ const openrouter = z.strictObject({
 	catalogRefreshMs: z.number().nonnegative().optional(),
 });
 
+const benchmarks = z.strictObject({
+	enabled: z.boolean().optional(),
+	artificialAnalysisApiKey: z.string().optional(),
+	benchlm: z.boolean().optional(),
+	refreshMs: z.number().nonnegative().optional(),
+	timeoutMs: z.number().positive().optional(),
+});
+
 const tierConfig = z.strictObject({
 	minQuality: z.number().min(0).max(100).optional(),
 	maxInputPerMtok: z.number().nonnegative().optional(),
@@ -151,6 +159,7 @@ const profile = z.strictObject({
 export const configInputSchema = z.strictObject({
 	server: server.optional(),
 	openrouter: openrouter.optional(),
+	benchmarks: benchmarks.optional(),
 	tiers: z
 		.strictObject({
 			trivial: tierConfig.optional(),

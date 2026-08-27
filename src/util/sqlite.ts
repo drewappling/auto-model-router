@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 8;
+const USER_VERSION = 9;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS catalog_cache (
   fetched_at_ms INTEGER NOT NULL,
   etag TEXT,
   key_scoped INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS ledger (
@@ -168,6 +174,12 @@ ALTER TABLE ledger ADD COLUMN explored_from TEXT;
 const MIGRATE_V8 = `
 ALTER TABLE ledger ADD COLUMN hold_arm INTEGER;
 `;
+
+// v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
+// BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
+// whole new table, created idempotently by the MIGRATIONS block above, so there
+// is no ALTER guard here — the version bump alone records that the schema now
+// includes it.
 
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.

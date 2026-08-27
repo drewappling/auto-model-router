@@ -160,6 +160,8 @@ cfg.ledger.path = join(home, "router.db");
 cfg.logLevel = "warn";
 // The adjudicator would call the mock and obscure which tier the heuristic chose.
 cfg.classifier.ambiguityThreshold = 0;
+// External benchmark feeds hit the real internet; keep the smoke test hermetic.
+cfg.benchmarks.enabled = false;
 
 const app = startServer(cfg);
 const base = `http://127.0.0.1:${app.server.port}`;
