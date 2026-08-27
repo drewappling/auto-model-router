@@ -37,6 +37,32 @@ function featuresFor(messages: unknown[], tools?: unknown[] | undefined): Featur
 	return extractFeatures(r, 5000);
 }
 
+/** A tool-result continuation at a given autonomous-loop depth, no other signals. */
+function contFeatures(toolLoopDepth: number, over: Partial<Features> = {}): Features {
+	return {
+		promptTokens: 30000,
+		newContentTokens: 200,
+		turnDepth: toolLoopDepth,
+		toolCount: 12,
+		toolSchemaBytes: 9783,
+		isToolResultContinuation: true,
+		toolLoopDepth,
+		distinctToolsUsed: 3,
+		lastToolFailed: false,
+		repeatedToolCall: false,
+		hasImages: false,
+		codeBlocks: 0,
+		codeBytes: 0,
+		looksLikeDiff: false,
+		complexityKeywords: [],
+		trivialityKeywords: [],
+		requestedReasoning: undefined,
+		questionCount: 0,
+		isTerseInstruction: false,
+		...over,
+	};
+}
+
 const SYSTEM = { role: "system", content: "You are a coding agent." };
 
 /** Upstream double that fails loudly if the adjudicator is consulted. */
@@ -159,6 +185,39 @@ describe("scoreHeuristic", () => {
 		expect(c.reasons.length).toBeGreaterThan(0);
 		expect(c.confidence).toBeGreaterThanOrEqual(0);
 		expect(c.confidence).toBeLessThanOrEqual(1);
+	});
+
+	test("a shallow tool-result continuation stays trivial", () => {
+		const shallow = scoreHeuristic(contFeatures(2), BASE);
+		expect(shallow.tier).toBe("trivial");
+	});
+
+	test("a sustained autonomous loop climbs out of trivial", () => {
+		// The failure mode this fixes: a long coding loop pinned to the cheapest
+		// tier for dozens of turns because agentic complexity never accumulated.
+		const shallow = scoreHeuristic(contFeatures(2), BASE);
+		const deep = scoreHeuristic(contFeatures(20), BASE);
+		expect(tierIdx(deep.tier)).toBeGreaterThan(tierIdx(shallow.tier));
+		expect(deep.tier).not.toBe("trivial");
+	});
+
+	test("score increases monotonically with loop depth past the agentic threshold", () => {
+		const depths = [4, 6, 8, 10, 15, 20, 30];
+		let prev = -1;
+		for (const d of depths) {
+			const s = scoreHeuristic(contFeatures(d), BASE).score;
+			expect(s).toBeGreaterThanOrEqual(prev);
+			prev = s;
+		}
+	});
+
+	test("pure loop depth tops out at simple; complexity signals stack to moderate", () => {
+		// Depth alone means competent-but-cheap (simple), not a frontier model.
+		const veryDeep = scoreHeuristic(contFeatures(90), BASE);
+		expect(tierIdx(veryDeep.tier)).toBeLessThanOrEqual(tierIdx("simple"));
+		// A failing tool result on top of a deep loop is genuinely hard.
+		const deepAndFailing = scoreHeuristic(contFeatures(20, { lastToolFailed: true }), BASE);
+		expect(tierIdx(deepAndFailing.tier)).toBeGreaterThanOrEqual(tierIdx("moderate"));
 	});
 });
 

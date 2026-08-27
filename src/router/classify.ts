@@ -43,9 +43,18 @@ const W_LARGE_CONTENT = 0.05;
 const W_HUGE_CONTENT = 0.1;
 const W_TURN_DEPTH = 0.004; // long conversations accumulate entangled context
 const CAP_TURN_DEPTH = 0.08;
-const W_LOOP_DEPTH = -0.008; // deep loops are mechanical
+const W_LOOP_DEPTH = -0.008; // a single deep step is mechanical
 const CAP_LOOP_DEPTH = -0.06;
-const W_AUTONOMOUS_LOOP = 0.06; // but a loop this long implies a substantial underlying task
+// A sustained autonomous loop is the signal the underlying task is substantial:
+// the agent keeps grinding without human input. Unlike the mechanical-step
+// penalty above, this term ACCUMULATES with depth past the agentic threshold so
+// long/hard loops climb out of trivial instead of scoring like a one-line edit.
+// Capped so pure depth tops out in `simple` (a competent-but-cheap model);
+// reaching `moderate`/`hard` still requires real complexity signals (tool
+// failure, repeated call, keywords) to stack on top.
+const W_AUTONOMOUS_LOOP = 0.06; // base bonus at the threshold
+const W_AUTONOMOUS_LOOP_PER_DEPTH = 0.018; // added per loop step beyond the threshold
+const CAP_AUTONOMOUS_LOOP = 0.34;
 const W_IMAGES = 0.04;
 const W_TOOLS_OFFERED = 0.03;
 
@@ -100,7 +109,11 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 	add(Math.min(f.turnDepth * W_TURN_DEPTH, CAP_TURN_DEPTH), `conversation depth ${f.turnDepth}`);
 	add(Math.max(f.toolLoopDepth * W_LOOP_DEPTH, CAP_LOOP_DEPTH), `tool loop depth ${f.toolLoopDepth}`);
 	if (f.toolLoopDepth >= cfg.classifier.agenticLoopDepth && f.toolLoopDepth > 0) {
-		add(W_AUTONOMOUS_LOOP, "long autonomous loop implies a substantial task");
+		const excessDepth = f.toolLoopDepth - cfg.classifier.agenticLoopDepth;
+		add(
+			Math.min(W_AUTONOMOUS_LOOP + excessDepth * W_AUTONOMOUS_LOOP_PER_DEPTH, CAP_AUTONOMOUS_LOOP),
+			`autonomous loop depth ${f.toolLoopDepth} (sustained task)`,
+		);
 	}
 	if (f.hasImages) add(W_IMAGES, "image input");
 	if (f.toolCount > 0) add(W_TOOLS_OFFERED, `${f.toolCount} tools offered`);
