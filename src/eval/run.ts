@@ -26,6 +26,8 @@ export interface AxisScore {
 export interface EvalResult {
 	slug: string;
 	axes: Record<QualityAxis, AxisScore>;
+	/** Tasks whose completion threw (dispatch failure). Excluded from `axes`. */
+	errors: number;
 }
 
 function messagesFor(task: EvalTask): ChatMessage[] {
@@ -52,22 +54,30 @@ export async function runEval(args: RunEvalArgs): Promise<EvalResult[]> {
 		};
 		// Tasks for one model run concurrently; models stay sequential to be gentle
 		// on the upstream and to keep per-model cost legible.
+		// A THROW means the turn never ran (auth gate, 404, network) — that is "no
+		// observation", not a score of 0. Folding it in as 0 would poison an
+		// anchor whose model is simply unavailable to this key. Only graded output
+		// counts toward the axis mean; errors are tallied separately.
+		let errors = 0;
 		const graded = await Promise.all(
 			tasks.map(async (task) => {
-				let text = "";
 				try {
-					text = await args.complete(slug, messagesFor(task));
+					const text = await args.complete(slug, messagesFor(task));
+					return { axis: task.axis, grade: task.grade(text), ok: true as const };
 				} catch {
-					text = "";
+					return { axis: task.axis, grade: 0, ok: false as const };
 				}
-				return { axis: task.axis, grade: task.grade(text) };
 			}),
 		);
 		for (const g of graded) {
+			if (!g.ok) {
+				errors += 1;
+				continue;
+			}
 			axes[g.axis].sum += g.grade;
 			axes[g.axis].n += 1;
 		}
-		results.push({ slug, axes });
+		results.push({ slug, axes, errors });
 	}
 	return results;
 }

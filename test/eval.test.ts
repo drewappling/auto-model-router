@@ -56,9 +56,9 @@ describe("calibration", () => {
 	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {
 		expect(MIN_ANCHORS).toBe(3);
 		const anchors: EvalResult[] = [
-			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
-			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
-			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
+			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
+			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
+			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
 		];
 		const aaOf: Record<string, number> = { "a/one": 40, "a/two": 60, "a/three": 80 };
 		const cal = fitCalibration(anchors, (slug, axis) => (axis === "coding" ? aaOf[slug] : undefined));
@@ -66,7 +66,7 @@ describe("calibration", () => {
 		expect(cal.intelligence).toBeUndefined(); // no anchor data on that axis
 
 		const targets: EvalResult[] = [
-			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } } },
+			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
 		];
 		const local = toLocalFeedScores(targets, cal, (s) => s.slice(0, s.indexOf("/")));
 		expect(local).toHaveLength(1);
@@ -93,8 +93,8 @@ describe("runEval", () => {
 		expect(bad.axes.agentic.sum).toBe(0);
 	});
 
-	test("a throwing completion is folded in as an empty reply", async () => {
-		const tasks: EvalTask[] = [{ id: "a", axis: "coding", user: "x", grade: (o) => (o === "" ? 0 : 1) }];
+	test("a throwing completion is excluded, not scored 0", async () => {
+		const tasks: EvalTask[] = [{ id: "a", axis: "coding", user: "x", grade: () => 1 }];
 		const results = await runEval({
 			slugs: ["m"],
 			tasks,
@@ -102,8 +102,8 @@ describe("runEval", () => {
 				throw new Error("boom");
 			},
 		});
-		expect(results[0]!.axes.coding.sum).toBe(0);
-		expect(results[0]!.axes.coding.n).toBe(1);
+		expect(results[0]!.axes.coding.n).toBe(0); // no observation
+		expect(results[0]!.errors).toBe(1);
 	});
 });
 

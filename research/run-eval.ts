@@ -88,7 +88,7 @@ for (const m of anchors) {
 		const aa = m.quality[a];
 		return `${a[0]}: raw ${raw === null ? "-" : raw.toFixed(2)} / aa ${aa ?? "-"}`;
 	}).join("   ");
-	console.log(`  ${m.slug.padEnd(34)} ${cells}`);
+	console.log(`  ${m.slug.padEnd(34)} ${cells}${r !== undefined && r.errors > 0 ? `   (errors: ${r.errors})` : ""}`);
 }
 
 console.log("\n=== calibration fit (raw 0-1 -> AA 0-100) ===");

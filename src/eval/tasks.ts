@@ -10,7 +10,7 @@
  */
 
 import type { QualityAxis } from "../config/types.ts";
-import { answerScore, extractJson, jsonField, tokenCoverage } from "./grade.ts";
+import { answerScore, extractJson, jsonField, multiAnswerCoverage, tokenCoverage } from "./grade.ts";
 
 export interface EvalTask {
 	id: string;
@@ -132,5 +132,93 @@ export const EVAL_TASKS: readonly EvalTask[] = [
 		system: JSON_ONLY,
 		user: "Reply with EXACTLY the word ACK and nothing else.",
 		grade: (o) => answerScore(o, "ack"),
+	},
+
+	// ---- harder / partial-credit: spread models by HOW MANY parts they get right ----
+	{
+		id: "coding/trace-multi",
+		axis: "coding",
+		system: JSON_ONLY,
+		user: "Give the result of each expression, one per line, in order:\n(1) [1,2,3,4].reduce((a,b)=>a+b,0)\n(2) 'hello'.length\n(3) [5,3,8].sort()[0]\n(4) Object.keys({a:1,b:2}).length\n(5) parseInt('0x1F',16)",
+		grade: (o) => multiAnswerCoverage(o, ["10", "5", "3", "2", "31"]),
+	},
+	{
+		id: "coding/float-eq",
+		axis: "coding",
+		system: JSON_ONLY,
+		user: "In JavaScript, what does `0.1 + 0.2 === 0.3` evaluate to? Reply true or false.",
+		grade: (o) => answerScore(o, "false"),
+	},
+	{
+		id: "coding/regex-exec",
+		axis: "coding",
+		system: JSON_ONLY,
+		user: "What does `/\\d+/.exec('ab12cd34')[0]` return? Reply with only the value.",
+		grade: (o) => answerScore(o, "12"),
+	},
+	{
+		id: "intel/multi-arith",
+		axis: "intelligence",
+		system: JSON_ONLY,
+		user: "Answer each, one per line, in order:\n(1) 17 * 23\n(2) 100 - 37\n(3) 2^10\n(4) the 13th prime number\n(5) GCD(48, 36)",
+		grade: (o) => multiAnswerCoverage(o, ["391", "63", "1024", "41", "12"]),
+	},
+	{
+		id: "intel/units",
+		axis: "intelligence",
+		system: JSON_ONLY,
+		user: "How many minutes are in 3.5 hours? Reply with just the number.",
+		grade: (o) => answerScore(o, "210"),
+	},
+	{
+		id: "intel/order",
+		axis: "intelligence",
+		system: JSON_ONLY,
+		user: "Tom is older than Jane. Jane is older than Sue. Who is the youngest? Reply with just the name.",
+		grade: (o) => answerScore(o, "sue"),
+	},
+	{
+		id: "agentic/arg-synth",
+		axis: "agentic",
+		system: JSON_ONLY,
+		user: 'Tool: search(query, limit). Emit only the JSON call to search for "router config" limited to 5 results: {"tool": <name>, "args": {"query": <q>, "limit": <n>}}.',
+		grade: (o) => {
+			const j = extractJson(o);
+			const args = jsonField(j, "args");
+			const q = jsonField(args, "query");
+			return jsonField(j, "tool") === "search" && typeof q === "string" && q.toLowerCase().includes("router config") && jsonField(args, "limit") === 5 ? 1 : 0;
+		},
+	},
+	{
+		id: "agentic/conditional",
+		axis: "agentic",
+		system: JSON_ONLY,
+		user: 'Tools: read_file(path), create_file(path). If a file "x" exists, read it; otherwise create it. Assume it does NOT exist. Emit only the JSON call {"tool": <name>, "args": {"path": <path>}}.',
+		grade: (o) => {
+			const j = extractJson(o);
+			return jsonField(j, "tool") === "create_file" && jsonField(jsonField(j, "args"), "path") === "x" ? 1 : 0;
+		},
+	},
+	{
+		id: "agentic/three-step",
+		axis: "agentic",
+		system: JSON_ONLY,
+		user: 'Tools: list_dir(path), read_file(path), write_file(path, content). Emit only a JSON array of three calls, in order: (1) list "src", (2) read "src/config.ts", (3) write "note.txt" with content "done". Each element is {"tool": <name>, "args": {...}}.',
+		grade: (o) => {
+			const j = extractJson(o);
+			if (!Array.isArray(j)) return 0;
+			const want = [
+				{ tool: "list_dir", key: "path", val: "src" },
+				{ tool: "read_file", key: "path", val: "src/config.ts" },
+				{ tool: "write_file", key: "path", val: "note.txt" },
+			];
+			let hit = 0;
+			for (let i = 0; i < want.length; i++) {
+				const step = j[i];
+				const w = want[i]!;
+				if (jsonField(step, "tool") === w.tool && jsonField(jsonField(step, "args"), w.key) === w.val) hit += 1;
+			}
+			return hit / want.length;
+		},
 	},
 ];

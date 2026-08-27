@@ -97,3 +97,19 @@ export function jsonField(value: unknown, key: string): unknown {
 	const rec = value as Record<string, unknown>;
 	return rec[key];
 }
+
+/**
+ * Fraction of expected answers present as standalone tokens anywhere in the
+ * reply. Partial credit — the point of these is to SPREAD models by how many
+ * parts they get right, where an all-or-nothing grade would pin everyone at 1.
+ */
+export function multiAnswerCoverage(output: string, expected: readonly string[]): number {
+	if (isRefusalOrEmpty(output) || expected.length === 0) return 0;
+	const hay = normalizeText(output);
+	let hit = 0;
+	for (const e of expected) {
+		const re = new RegExp(`(?:^|[^\\w.])${escapeRegex(normalizeText(e))}(?:$|[^\\w.])`);
+		if (re.test(hay)) hit += 1;
+	}
+	return hit / expected.length;
+}
