@@ -65,6 +65,9 @@ const filters = z.strictObject({
 	minTrustSamples: z.number().int().nonnegative().optional(),
 	trustScopedByHarness: z.boolean().optional(),
 	contextHeadroom: z.number().positive().optional(),
+	latencyWeight: z.number().nonnegative().optional(),
+	latencyReferenceMs: z.number().positive().optional(),
+	latencyMinSamples: z.number().int().nonnegative().optional(),
 });
 
 const classifier = z.strictObject({

@@ -257,6 +257,7 @@ describe("budget guard", () => {
 			conversationSpend: () => 0,
 			spendSince: (_sinceMs, harnessId) => (harnessId === undefined ? 1.0 : spendByHarness[harnessId] ?? 0),
 			blendedRate: () => null,
+		latency: () => null,
 			trust: () => null,
 			allTrust: () => [],
 			tokenRatio: () => null,
@@ -283,6 +284,7 @@ describe("per-harness trust scoping", () => {
 		conversationSpend: () => 0,
 		spendSince: () => 0,
 		blendedRate: () => null,
+		latency: () => null,
 		trust: (_slug, harnessId) => {
 			// Harness A has burned the model; harness B has never tried it.
 			if (harnessId === "harness-a") {
@@ -418,6 +420,7 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 			conversationSpend: () => 0,
 			spendSince: () => 0,
 			blendedRate: () => null,
+		latency: () => null,
 			trust: (slug) => ({
 				slug,
 				attempts: 40,
@@ -534,5 +537,48 @@ describe("task-type routing", () => {
 			const q = c.model.quality.coding ?? c.model.quality.intelligence ?? 0;
 			expect(q).toBeGreaterThanOrEqual(60);
 		}
+	});
+});
+
+describe("latency scoring", () => {
+	function ledgerWithLatency(ttftBySlug: Record<string, { ttftMs: number; samples: number }>): Ledger {
+		return {
+			record: () => {},
+			conversationSpend: () => 0,
+			spendSince: () => 0,
+			blendedRate: () => null,
+			trust: () => null,
+			allTrust: () => [],
+			latency: (slug) => {
+				const v = ttftBySlug[slug];
+				return v === undefined ? null : { slug, samples: v.samples, ttftMs: v.ttftMs };
+			},
+			tokenRatio: () => null,
+			recentEntries: () => [],
+		};
+	}
+
+	const withWeight = (latencyWeight: number): RouterConfig => ({
+		...BASE,
+		filters: { ...BASE.filters, latencyWeight, latencyReferenceMs: 5000, latencyMinSamples: 20 },
+	});
+
+	test("penalises a chronically slow model out of the top slot", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
+		const d = run({ tier: "simple", cfg: withWeight(2), ledger });
+		expect(d.slug).not.toBe(slow);
+	});
+
+	test("latencyWeight 0 disables the penalty", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
+		expect(run({ tier: "simple", cfg: withWeight(0), ledger }).slug).toBe(slow);
+	});
+
+	test("a model with too few samples is not penalised", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 5 } });
+		expect(run({ tier: "simple", cfg: withWeight(2), ledger }).slug).toBe(slow);
 	});
 });

@@ -145,6 +145,39 @@ describe("trust attribution", () => {
 	});
 });
 
+describe("latency signal", () => {
+	function latencyOf(rows: Array<Partial<LedgerEntry>>): { samples: number; ttftMs: number } | null {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			for (const r of rows) ledger.record(entry(r));
+			const l = ledger.latency("vendor/model");
+			return l === null ? null : { samples: l.samples, ttftMs: l.ttftMs };
+		} finally {
+			db.close();
+		}
+	}
+
+	test("averages TTFT over streamed, non-errored turns", () => {
+		expect(latencyOf([{ ttftMs: 50 }, { ttftMs: 100 }, { ttftMs: 150 }])).toEqual({ samples: 3, ttftMs: 100 });
+	});
+
+	test("excludes errored, aborted, and non-streamed (null TTFT) rows", () => {
+		expect(
+			latencyOf([
+				{ ttftMs: 100 },
+				{ ttftMs: 9999, error: "upstream_error: boom" },
+				{ ttftMs: 9999, error: "request aborted" },
+				{ ttftMs: null },
+			]),
+		).toEqual({ samples: 1, ttftMs: 100 });
+	});
+
+	test("null when no streamed sample exists", () => {
+		expect(latencyOf([{ ttftMs: null }, { ttftMs: 0 }])).toBeNull();
+	});
+});
+
 describe("v4 migration", () => {
 	test("backfills error_kind from stored error text", () => {
 		const db = openDb(":memory:");

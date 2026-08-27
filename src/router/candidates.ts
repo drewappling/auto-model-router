@@ -5,9 +5,9 @@
  */
 
 import type { CatalogModel, CatalogSnapshot } from "../catalog/types.ts";
-import type { QualityAxis, RouterConfig } from "../config/types.ts";
+import type { FilterConfig, QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
-import type { Ledger } from "../cost/types.ts";
+import type { Ledger, ModelLatency } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
 import { effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
 import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
@@ -67,6 +67,22 @@ function resolveQuality(model: CatalogModel, axis: QualityAxis): { score: number
 
 /** Neutral trust prior for models our ledger has never observed. */
 const UNMEASURED_TRUST = 0.9;
+
+/** Excess-ratio cap so one very slow model cannot be penalised into oblivion. */
+const LATENCY_EXCESS_CAP = 3;
+
+/**
+ * Latency penalty as a multiplier on effective cost (>= 1; 1 = no penalty).
+ * Mean TTFT above `latencyReferenceMs` inflates the model's effective cost, the
+ * same lever trust uses for flakiness, so a faster model of equal quality and
+ * price outranks a sluggish one. Inert when the weight is 0 or the model has
+ * too few streamed samples to judge.
+ */
+function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig): number {
+	if (latency === null || filters.latencyWeight <= 0 || latency.samples < filters.latencyMinSamples) return 1;
+	const excess = Math.max(0, (latency.ttftMs - filters.latencyReferenceMs) / filters.latencyReferenceMs);
+	return 1 + filters.latencyWeight * Math.min(excess, LATENCY_EXCESS_CAP);
+}
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
 	const { req, features, tier, task, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
@@ -215,9 +231,15 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		const trustScore = trust !== null && trust.attempts > 0 ? trust.successRate : UNMEASURED_TRUST;
 		const qualityScore = quality?.score ?? 0;
 		// Shared scoring: trust converts flakiness into money — a model failing
-		// 20% of the time really costs ~25% more in retries. qualityExponent 0
-		// makes this "cheapest above the floor"; the floor does the quality work.
-		const effectiveUsd = fc.expectedUsd / Math.max(trustScore, 0.5);
+		// 20% of the time really costs ~25% more in retries. Latency does the same
+		// for slowness (TTFT over the reference). qualityExponent 0 makes this
+		// "cheapest above the floor"; the floor does the quality work.
+		const latency =
+			filters.latencyWeight > 0
+				? (ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null)
+				: null;
+		const latencyMult = latencyMultiplier(latency, filters);
+		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5)) * latencyMult;
 		const score = Math.pow(qualityScore / 100, tierCfg.qualityExponent) / Math.max(effectiveUsd, 1e-9);
 
 		const reasons: string[] = [
@@ -229,6 +251,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 				: `trust ${trustScore.toFixed(2)} over ${trust.attempts} attempts`,
 			`expected $${fc.expectedUsd.toFixed(6)}`,
 		];
+		if (latencyMult > 1 && latency !== null) {
+			reasons.push(`latency penalty ×${latencyMult.toFixed(2)} (ttft ${Math.round(latency.ttftMs)}ms over ${latency.samples} samples)`);
+		}
 		if (pinned) reasons.push("pinned into tier");
 		candidates.push({ model, forecast: fc, qualityScore, trustScore, score, reasons });
 	}

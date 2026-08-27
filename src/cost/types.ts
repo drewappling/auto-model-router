@@ -159,6 +159,14 @@ export interface ModelTrust {
 	meanCostError: number;
 }
 
+/** Per-model responsiveness learned from our own traffic. Feeds candidate scoring. */
+export interface ModelLatency {
+	slug: string;
+	samples: number;
+	/** Mean time-to-first-token, ms, over streamed non-errored turns. */
+	ttftMs: number;
+}
+
 export interface Ledger {
 	record(entry: LedgerEntry): void;
 	/** Total reported (or predicted, when reported is null) spend for a conversation. */
@@ -172,6 +180,13 @@ export interface Ledger {
 	/** Per-model reliability over the ledger, optionally scoped to a harness. */
 	trust(slug: string, harnessId?: string): ModelTrust | null;
 	allTrust(): ModelTrust[];
+	/**
+	 * Per-model mean time-to-first-token (ms), optionally scoped to a harness.
+	 * Null until `filters.latencyMinSamples` streamed samples exist. TTFT, not
+	 * total latency: it measures model+provider responsiveness independent of
+	 * how many tokens the answer happened to need.
+	 */
+	latency(slug: string, harnessId?: string): ModelLatency | null;
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];

@@ -138,6 +138,17 @@ export interface FilterConfig {
 	 * model's context window, absorbing token-estimate error and the response.
 	 */
 	contextHeadroom: number;
+	/**
+	 * How hard to penalise slow models in candidate scoring. A model's mean
+	 * time-to-first-token above `latencyReferenceMs` inflates its effective
+	 * cost — the same lever trust uses for flakiness — so a faster model of
+	 * equal quality and price wins. 0 disables latency scoring entirely.
+	 */
+	latencyWeight: number;
+	/** TTFT (ms) below which a model is considered fully responsive (no penalty). */
+	latencyReferenceMs: number;
+	/** Streamed samples required before latency is scored against a model. */
+	latencyMinSamples: number;
 }
 
 export interface ClassifierConfig {

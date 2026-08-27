@@ -9,3 +9,4 @@ node_modules/
 dist/
 *.log
 .DS_Store
+.session-memory.md

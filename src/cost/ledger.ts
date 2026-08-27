@@ -18,7 +18,7 @@ import type { RouterConfig } from "../config/types.ts";
 import { consumePendingEstimate } from "../tokens/estimate.ts";
 import { computeBlendedRate } from "./blended.ts";
 import { computeCost } from "./forecast.ts";
-import type { BlendedRate, Ledger, LedgerEntry, ModelTrust, UsageCounts } from "./types.ts";
+import type { BlendedRate, Ledger, LedgerEntry, ModelLatency, ModelTrust, UsageCounts } from "./types.ts";
 
 /** Estimates below this many samples are noise; the default ratio is better. */
 const MIN_CALIBRATION_SAMPLES = 20;
@@ -67,6 +67,11 @@ interface TrustRow {
 	mean_cost_error: number | null;
 }
 
+interface LatencyRow {
+	samples: number;
+	ttft_ms: number | null;
+}
+
 interface CalibrationRow {
 	est_bytes: number;
 	actual_tokens: number;
@@ -99,6 +104,16 @@ const TRUST_SELECT = `COUNT(*) AS attempts,
 			THEN ABS(reported_usd - predicted_usd) / reported_usd END) AS mean_cost_error`;
 
 /**
+ * Time-to-first-token, averaged over streamed, non-errored turns. TTFT (not
+ * total latency) isolates model+provider responsiveness from answer length: a
+ * model is "slow" when it takes a long time to START, not when it was asked for
+ * a long answer. Errored/aborted rows and non-streaming rows (null ttft) are
+ * excluded — they carry no responsiveness signal.
+ */
+const LATENCY_SELECT = `COUNT(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN 1 END) AS samples,
+		AVG(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN ttft_ms END) AS ttft_ms`;
+
+/**
  * Recovers the `UpstreamErrorKind` from the text turn.ts stored.
  *
  * Errors are written as `"<kind>: <message>"`, except the abort path which
@@ -125,6 +140,11 @@ function toTrust(slug: string, row: TrustRow): ModelTrust {
 		successRate: (row.attempts - row.failures + 1) / (row.attempts + 2),
 		meanCostError: row.mean_cost_error ?? 0,
 	};
+}
+
+function toLatency(slug: string, row: LatencyRow): ModelLatency | null {
+	if (row.samples <= 0 || row.ttft_ms === null) return null;
+	return { slug, samples: row.samples, ttftMs: row.ttft_ms };
 }
 
 function toEntry(row: LedgerRow): LedgerEntry {
@@ -192,6 +212,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ?`);
 	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
 	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger GROUP BY slug`);
+	const latencyStmt = db.query(`SELECT ${LATENCY_SELECT} FROM ledger WHERE slug = ?`);
+	const latencyHarnessStmt = db.query(`SELECT ${LATENCY_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
 	const cacheMetaStmt = db.query("SELECT fetched_at_ms FROM catalog_cache WHERE id = 1");
@@ -299,6 +321,15 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		allTrust(): ModelTrust[] {
 			const rows = allTrustStmt.all() as (TrustRow & { slug: string })[];
 			return rows.map((row) => toTrust(row.slug, row));
+		},
+
+		latency(slug: string, harnessId?: string): ModelLatency | null {
+			const row =
+				harnessId !== undefined && harnessId !== ""
+					? (latencyHarnessStmt.get(slug, harnessId) as LatencyRow | null)
+					: (latencyStmt.get(slug) as LatencyRow | null);
+			if (row === null) return null;
+			return toLatency(slug, row);
 		},
 
 		tokenRatio(tokenizer: string): number | null {

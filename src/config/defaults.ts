@@ -68,6 +68,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// even with a tiny guardrail-narrowed catalog.
 		trustScopedByHarness: false,
 		contextHeadroom: 1.25,
+		// Latency scoring is off by default (weight 0): opt in after establishing a
+		// baseline. TTFT above the reference inflates a model's effective cost.
+		latencyWeight: 0,
+		latencyReferenceMs: 5000,
+		latencyMinSamples: 20,
 	},
 	classifier: {
 		ambiguityThreshold: 0.6,
