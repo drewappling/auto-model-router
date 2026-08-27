@@ -5,7 +5,8 @@ import { applyFeedScores, loadLocalScores, saveLocalScores, type FeedScore } fro
 import { answerScore, extractJson, isRefusalOrEmpty, jsonField, tokenCoverage } from "../src/eval/grade.ts";
 import { applyFit, fitAxis, fitCalibration, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
 import { runEval, type EvalResult } from "../src/eval/run.ts";
-import type { EvalTask } from "../src/eval/tasks.ts";
+import { makeJudge, parseScore } from "../src/eval/judge.ts";
+import type { EvalTask, JudgedTask } from "../src/eval/tasks.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
 describe("grade helpers", () => {
@@ -141,5 +142,43 @@ describe("local source integration", () => {
 		saveLocalScores(db, scores, 123);
 		expect(loadLocalScores(db)).toEqual(scores);
 		db.close();
+	});
+});
+
+describe("llm judge", () => {
+	test("parseScore takes the last standalone 0-10 and scales to 0-1", () => {
+		expect(parseScore("8")).toBeCloseTo(0.8, 5);
+		expect(parseScore("Score: 10/10")).toBeCloseTo(1, 5);
+		expect(parseScore("I count 3 issues, so 7")).toBeCloseTo(0.7, 5); // last wins
+		expect(parseScore("no number here")).toBeNull();
+	});
+
+	test("makeJudge parses a score, and returns null on a thrown completion", async () => {
+		const task: JudgedTask = { id: "j", axis: "coding", user: "do a thing" };
+		const good = makeJudge(async () => "the answer earns 8", "judge/model");
+		expect(await good(task, "some answer")).toBeCloseTo(0.8, 5);
+		const bad = makeJudge(async () => {
+			throw new Error("judge down");
+		}, "judge/model");
+		expect(await bad(task, "some answer")).toBeNull();
+	});
+
+	test("runEval folds judged scores into the axis mean, and drops unscorable ones", async () => {
+		const judged: JudgedTask[] = [
+			{ id: "j1", axis: "coding", user: "a" },
+			{ id: "j2", axis: "coding", user: "b" },
+		];
+		// j1 scores 0.6; j2 is unscorable (null) → excluded as an error.
+		const judge = async (t: JudgedTask) => (t.id === "j1" ? 0.6 : null);
+		const results = await runEval({ slugs: ["m"], tasks: [], judged, judge, complete: async () => "ans" });
+		expect(results[0]!.axes.coding).toEqual({ sum: 0.6, n: 1 });
+		expect(results[0]!.errors).toBe(1);
+	});
+
+	test("judged tasks are skipped entirely when no judge is supplied", async () => {
+		const judged: JudgedTask[] = [{ id: "j1", axis: "coding", user: "a" }];
+		const results = await runEval({ slugs: ["m"], tasks: [], judged, complete: async () => "ans" });
+		expect(results[0]!.axes.coding).toEqual({ sum: 0, n: 0 });
+		expect(results[0]!.errors).toBe(0);
 	});
 });

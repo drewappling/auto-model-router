@@ -21,6 +21,16 @@ export interface EvalTask {
 	grade: (output: string) => number;
 }
 
+/** An open-ended task with no deterministic grader; scored 0-1 by an LLM judge. */
+export interface JudgedTask {
+	id: string;
+	axis: QualityAxis;
+	system?: string;
+	user: string;
+	/** Optional strong answer given to the judge as a reference. */
+	reference?: string;
+}
+
 const JSON_ONLY = "Reply with ONLY the requested content and no prose, code fences, or explanation.";
 
 export const EVAL_TASKS: readonly EvalTask[] = [
@@ -220,5 +230,43 @@ export const EVAL_TASKS: readonly EvalTask[] = [
 			}
 			return hit / want.length;
 		},
+	},
+];
+
+/**
+ * Open-ended tasks graded by an LLM judge. Deliberately harder and answer-free,
+ * so quality (not just pass/fail) varies and the judge can separate models the
+ * objective proxies pin at the ceiling.
+ */
+export const JUDGED_TASKS: readonly JudgedTask[] = [
+	{
+		id: "coding/debounce",
+		axis: "coding",
+		user: "Implement `debounce(fn, ms)` in TypeScript that delays calls, so only the last call within a quiet window runs. Preserve `this` and the latest arguments, and type it generically. Explain any edge case you handle.",
+	},
+	{
+		id: "coding/bugfix-explain",
+		axis: "coding",
+		user: "This function is wrong:\n\nfunction median(xs) {\n  xs.sort();\n  const m = xs.length / 2;\n  return xs[m];\n}\n\nRewrite it correctly for an array of numbers and explain every bug you fixed.",
+	},
+	{
+		id: "intel/concurrency-tradeoff",
+		axis: "intelligence",
+		user: "Explain the tradeoff between optimistic and pessimistic concurrency control. Give a concrete workload where each is the right choice, and say why.",
+	},
+	{
+		id: "intel/latency-diagnosis",
+		axis: "intelligence",
+		user: "A web service's p99 latency spiked 10x while p50 stayed flat. List the three most likely causes and, for each, one concrete measurement that would confirm or rule it out.",
+	},
+	{
+		id: "agentic/debug-plan",
+		axis: "agentic",
+		user: "You must fix a failing test in a repo you have never seen, with tools read_file, search, edit_file, run. Describe the exact sequence of tool actions you would take BEFORE editing anything, and why each step precedes the next.",
+	},
+	{
+		id: "agentic/locate-error",
+		axis: "agentic",
+		user: "Given only list_dir, read_file, and run, plan the concrete steps to locate the source of a runtime error 'TypeError: undefined is not a function' in an unfamiliar JS project. Be specific about what you run and what you look for at each step.",
 	},
 ];

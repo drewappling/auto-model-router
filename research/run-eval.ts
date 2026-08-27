@@ -25,7 +25,8 @@ import { saveLocalScores, normalizeModelKey } from "../src/catalog/benchmark-fee
 import { loadConfig } from "../src/config/load.ts";
 import { fitCalibration, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
 import { runEval, type ChatMessage, type EvalResult } from "../src/eval/run.ts";
-import { EVAL_TASKS } from "../src/eval/tasks.ts";
+import { makeJudge } from "../src/eval/judge.ts";
+import { EVAL_TASKS, JUDGED_TASKS } from "../src/eval/tasks.ts";
 import { createOpenRouterClient } from "../src/upstream/openrouter.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
@@ -58,15 +59,29 @@ if (anchors.length < MIN_ANCHORS) {
 }
 
 const client = createOpenRouterClient(cfg);
+// Open-ended (judged) answers are long and slow reasoning models need room, or
+// they time out / truncate and get spuriously excluded — which would make raw
+// scores incomparable across models. Generous ceiling; objective tasks ignore it.
 const complete = async (slug: string, messages: ChatMessage[]): Promise<string> => {
-	const body = { model: slug, messages, temperature: 0, max_tokens: 512 };
-	const { text } = await client.complete(body, AbortSignal.timeout(cfg.benchmarks.timeoutMs));
+	const body = { model: slug, messages, temperature: 0, max_tokens: 2048 };
+	const { text } = await client.complete(body, AbortSignal.timeout(120_000));
 	return text;
 };
 
+// The judge is the highest-intelligence anchor: the strongest grader available.
+// It also gets scored here (minor self-preference bias, called out in the report).
+const judgeModel = anchors.reduce((best, m) => ((m.quality.intelligence ?? 0) > (best.quality.intelligence ?? 0) ? m : best));
+const judge = makeJudge(complete, judgeModel.slug);
 const allSlugs = [...anchors, ...targets].map((m) => m.slug);
-console.log(`running ${EVAL_TASKS.length} tasks against ${allSlugs.length} models...`);
-const results = await runEval({ slugs: allSlugs, complete });
+console.log(`judge: ${judgeModel.slug} (intelligence ${judgeModel.quality.intelligence ?? "-"})`);
+console.log(`running ${EVAL_TASKS.length} objective + ${JUDGED_TASKS.length} judged tasks against ${allSlugs.length} models...`);
+const results = await runEval({
+	slugs: allSlugs,
+	complete,
+	judge,
+	concurrency: 4,
+	onProgress: (r, done, total) => console.log(`  [${done}/${total}] ${r.slug}${r.errors > 0 ? ` (errors: ${r.errors})` : ""}`),
+});
 const bySlug = new Map<string, EvalResult>(results.map((r) => [r.slug, r]));
 
 const qualityOf = new Map<string, CatalogModel["quality"]>(models.map((m) => [m.slug, m.quality]));
