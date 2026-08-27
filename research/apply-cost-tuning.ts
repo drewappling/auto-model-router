@@ -44,6 +44,12 @@ if (full) {
 		contextWindow: 200_000,
 		maxTokens: p.maxTokens,
 	}));
+	// (4) Cap the input-dominated hard cost. Now SAFE: the key admits ~13 hard
+	// candidates, so a $3/Mtok ceiling still leaves gpt-5.6-sol (77.4), grok-4.6,
+	// gpt-5.6-terra, glm-5.3, qwen3.8, kimi-k3 with failover; it drops only the
+	// $5-10 models (opus-5, gpt-5.5, fable). Raise to ~$5 if you want opus-5
+	// available for the very hardest turns. Merges into hard, preserving its floor.
+	patch.tiers = { hard: { maxInputPerMtok: 3 } };
 }
 
 const target = routerConfigPath();

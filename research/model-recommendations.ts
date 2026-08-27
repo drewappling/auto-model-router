@@ -14,7 +14,6 @@ import { join } from "node:path";
 
 process.env.AUTO_MODEL_ROUTER_HOME = join(homedir(), ".auto-model-router");
 
-import { Database } from "bun:sqlite";
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { loadConfig } from "../src/config/load.ts";
@@ -27,25 +26,20 @@ import { parseChatRequest } from "../src/wire/openai/request.ts";
 
 const cfg = loadConfig({});
 
-// Current key-scoped availability.
-const db = new Database(cfg.ledger.path, { readonly: true });
-const row = db.query("SELECT payload FROM catalog_cache WHERE id = 1").get() as { payload: string } | null;
-db.close();
+const client = createOpenRouterClient(cfg);
+
+// Current key-scoped availability, fetched LIVE (/models/user) so it reflects
+// account changes immediately — the cached snapshot lags until a router refresh.
+const userRaw = await client.fetchModelsForUser(AbortSignal.timeout(30_000));
 const keyScoped = new Set<string>(
-	row === null
-		? []
-		: (JSON.parse(row.payload) as unknown[])
-				.map(normalizeCatalogModel)
-				.filter((m): m is CatalogModel => m !== null)
-				.map((m) => m.slug),
+	userRaw.map(normalizeCatalogModel).filter((m): m is CatalogModel => m !== null).map((m) => m.slug),
 );
 
 // Full public catalog (carries AA benchmarks).
-const client = createOpenRouterClient(cfg);
 const raw = await client.fetchModels(AbortSignal.timeout(30_000));
 const models = raw.map(normalizeCatalogModel).filter((m): m is CatalogModel => m !== null);
 const snapshot: CatalogSnapshot = { models, fetchedAtMs: Date.now() };
-console.log(`public catalog: ${models.length} models; key-scoped now: ${keyScoped.size}\n`);
+console.log(`public catalog: ${models.length} models; key-scoped now (live): ${keyScoped.size}\n`);
 
 // A representative hard coding turn, so task=coding (axis=coding).
 const req = parseChatRequest(
