@@ -9,7 +9,7 @@ import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
-import { effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
+import { effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
 import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
 
 export interface BuildCandidatesArgs {
@@ -92,10 +92,17 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	//  - the TASK floor is a capability requirement (vision needs a model that
 	//    can actually see), so adaptive relaxation must never lower it.
 	const taskFloor = taskCfg.minQuality ?? 0;
-	const adaptiveTierFloor = cfg.adaptiveTierFloors
-		? effectiveQualityFloor(tierCfg.minQuality, tier, effectiveAxis, tierPlanFor(snapshot, cfg))
-		: tierCfg.minQuality;
+	const plan = cfg.adaptiveTierFloors || cfg.adaptivePriceCeilings ? tierPlanFor(snapshot, cfg) : null;
+	const adaptiveTierFloor =
+		cfg.adaptiveTierFloors && plan !== null
+			? effectiveQualityFloor(tierCfg.minQuality, tier, effectiveAxis, plan)
+			: tierCfg.minQuality;
 	const qualityFloor = Math.max(taskFloor, adaptiveTierFloor);
+	// Input-price ceiling: catalog-derived band when adaptive, else the fixed config.
+	const priceCeiling =
+		cfg.adaptivePriceCeilings && plan !== null
+			? effectivePriceCeiling(tierCfg.maxInputPerMtok, tier, plan, true)
+			: tierCfg.maxInputPerMtok;
 	const taskPins = taskCfg.prefer ?? [];
 	let images = 0;
 	if (req.hasImages) for (const m of req.messages) images += m.images;
@@ -171,11 +178,11 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// push a model over the ceiling exactly when conversations get long.
 		// Catalog prices are per-token; ceilings are per million tokens.
 		const price = priceAt(model, Math.max(1, features.promptTokens));
-		if (!relaxPrice && tierCfg.maxInputPerMtok !== undefined && price.prompt * 1e6 > tierCfg.maxInputPerMtok) {
+		if (!relaxPrice && priceCeiling !== undefined && price.prompt * 1e6 > priceCeiling) {
 			rejected.push({
 				slug,
 				reason: "over_price_ceiling",
-				detail: `input $${(price.prompt * 1e6).toFixed(2)}/Mtok > ceiling $${tierCfg.maxInputPerMtok}`,
+				detail: `input $${(price.prompt * 1e6).toFixed(2)}/Mtok > ceiling $${priceCeiling.toFixed(2)}`,
 			});
 			continue;
 		}

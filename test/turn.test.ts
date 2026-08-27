@@ -72,6 +72,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
 		adaptiveTierFloors: true,
+		adaptivePriceCeilings: false,
 		logLevel: "silent",
 	};
 }

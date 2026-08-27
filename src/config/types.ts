@@ -337,5 +337,14 @@ export interface RouterConfig {
 	 * `trivial` permanently empty and the router is stuck on the cheapest model.
 	 */
 	adaptiveTierFloors: boolean;
+	/**
+	 * Derive each tier's input-price ceiling from the price spread of the models
+	 * actually available at every catalog refresh (quantile bands), instead of
+	 * fixed `tiers.*.maxInputPerMtok` dollars. Lets the same config self-tune to
+	 * whatever models a key admits — a hard cap becomes "drop this catalog's
+	 * priciest outliers", not a magic dollar value. An explicit ceiling still
+	 * tightens further. Off by default (fixed ceilings).
+	 */
+	adaptivePriceCeilings: boolean;
 	logLevel: "silent" | "error" | "warn" | "info" | "debug";
 }

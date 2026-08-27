@@ -188,6 +188,7 @@ export const configInputSchema = z.strictObject({
 	profiles: z.array(profile).optional(),
 	ledger: ledger.optional(),
 	adaptiveTierFloors: z.boolean().optional(),
+	adaptivePriceCeilings: z.boolean().optional(),
 	logLevel: logLevel.optional(),
 });
 

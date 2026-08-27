@@ -159,5 +159,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	// On by default: an absolute floor that no available model meets is how the
 	// router ends up serving every turn from the cheapest tier.
 	adaptiveTierFloors: true,
+	// Off by default: fixed per-tier ceilings ship as the baseline. Enable to make
+	// price ceilings self-tune to the key's catalog (see RouterConfig doc).
+	adaptivePriceCeilings: false,
 	logLevel: "info",
 };
