@@ -144,6 +144,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Anthropic allows 4 breakpoints; OpenRouter translates for other vendors.
 		maxBreakpoints: 4,
 		minPromptTokens: 2_048,
+		// One slot for the system prefix, one for the tail, leaving two milestones
+		// live at 4 breakpoints. 20k spacing keeps them coarse enough that a
+		// milestone survives many turns of appended tool output.
+		milestoneTokens: 20_000,
 	},
 	context: {
 		// Off until an agentdox URL + token are configured. Enabling this changes

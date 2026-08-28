@@ -55,10 +55,12 @@ These are hard; the design is shaped by them.
   result without its call, nor an assistant tool_call without its result, nor
   reorder the pair.
 - **Never touch:** system/developer messages (they carry the system prompt and the
-  agentdox-injected block), the **volatile tail** (newest user-authored run, or the
-  trailing tool-result run of the current loop — the same window
-  `features.ts`/`cache-control.ts` treat as fresh), and image parts (they are
-  capability-relevant; see Edge cases).
+  agentdox-injected block), the **protected tail** (newest user-authored run, or the
+  trailing tool-result run of the current loop — the same window `features.ts`
+  treats as fresh), and image parts (they are capability-relevant; see Edge cases).
+  Note that `cache-control.ts` deliberately does **not** treat that tail as fresh:
+  a conversation is append-only, so the tail is exactly what the *next* turn will
+  read back out of the cache, and it gets a breakpoint (see Prompt cache below).
 - **Determinism.** `auto-model-router explain` replays a past decision offline.
   Phase 1 is a pure function of `(messages, target budget, model window)` →
   replayable. Phase 2 breaks this unless the summary is **pinned and persisted**
@@ -67,10 +69,19 @@ These are hard; the design is shaped by them.
   The governing law is already stated for the agentdox bridge
   (`src/context/bridge.ts`): *the same bytes are re-injected verbatim and the cache
   survives; a refresh rides on a cache miss that was happening anyway.* Compaction
-  obeys it — Phase 1 rules are **stable** (identical input → identical elision each
-  turn), so a message elided last turn is elided byte-identically this turn and the
-  prefix does not churn; Phase 2 summaries are pinned per conversation and refreshed
-  only when the cache is already cold.
+  obeys it in two ways: rules are **stable** (identical input → identical elision
+  each turn) *and* the truncation set is **monotone** (rule 3 below: oldest-first,
+  so it only extends forward and never rewrites an already-cached prefix). Phase 2
+  summaries are pinned per conversation and refreshed only when the cache is
+  already cold.
+- **Breakpoints must be reproducible.** A `cache_control` breakpoint only pays off
+  when a later turn asks to read the exact same byte prefix, so
+  `planCacheBreakpoints` places them where the next turn will place them again:
+  the system prefix, byte **milestones** at fixed multiples of
+  `cache.milestoneTokens` (default 20k) measured over *post-compaction* sizes, and
+  the **tail**. A boundary at "roughly 75% of history" — the pre-v0.2.9 behaviour —
+  drifts by one index per appended message, so every turn wrote a fresh cache entry
+  and read none of them.
 
 ## Precedent to reuse
 
@@ -184,8 +195,19 @@ A pure function `compact(messages, target, protectFrom) → { messages, saved, n
    fetch is authoritative.
 3. **Truncate large stale results** (`maxToolResultBytes`): remaining tool results
    outside the protected window whose content exceeds `maxToolResultBytes` are
-   reduced to `keepHeadBytes` + breadcrumb + `keepTailBytes`. Applied to the
-   **largest/oldest first** until under `target` or exhausted.
+   reduced to `keepHeadBytes` + breadcrumb + `keepTailBytes`. Applied **oldest
+   first** until under `target` or exhausted.
+
+   Oldest-first is a **prompt-cache requirement**, not an aesthetic. The selected
+   set is then always an index-ordered prefix of the eligible results, so across
+   turns it only ever extends forward: an existing edit keeps its index and keep
+   bytes, and new edits land after every previous one — leaving the cached prefix
+   byte-identical. Selecting largest-first instead inserts new edits at arbitrary
+   early indices on later turns, rewriting history the upstream had already
+   cached. Measured under largest-first: 61% cache read (bimodal 44%/90%, with
+   `cachedTokens` pinned at the system prefix on half the requests) against
+   76–82% on comparable pre-compaction sessions. `test/compaction.test.ts`
+   ("the edit set only ever extends forward") pins the property.
 4. **Age-drop assistant reasoning:** reasoning fields on assistant messages outside
    the protected window are dropped. (Largely redundant with the model-driven
    `stripAssistantReasoning`; matters only for reasoning-replay authors.)

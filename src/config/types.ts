@@ -286,6 +286,13 @@ export interface CacheConfig {
 	maxBreakpoints: number;
 	/** Skip injection below this prompt-token estimate; small prompts cannot cache. */
 	minPromptTokens: number;
+	/**
+	 * Spacing of the stable mid-history breakpoints, in prompt tokens. Boundaries
+	 * land at fixed multiples of this size, so the same prefix recurs turn after
+	 * turn and each turn reads what the last one wrote. Smaller = finer recovery
+	 * after a history rewrite, at the cost of more breakpoint slots.
+	 */
+	milestoneTokens: number;
 }
 
 export interface BudgetConfig {

@@ -99,6 +99,43 @@ describe("planCompaction", () => {
 		const b = planCompaction(msgs, CFG, 1, 10_000);
 		expect(a).toEqual(b);
 	});
+
+	// The prompt-cache contract: an edit, once made, keeps its index and its keep
+	// bytes for the rest of the conversation, and every later edit lands AFTER
+	// it. Anything else rewrites already-cached history and forces a full
+	// re-read of the prefix on the next turn.
+	test("the edit set only ever extends forward as the conversation grows", () => {
+		// Sizes GROW with age-descending order (newest results are the biggest), so
+		// a size-ordered planner selects newest-first and its later additions move
+		// BACKWARD into already-cached history. Equal-sized results would make
+		// every ordering identical and the assertions vacuous.
+		const loop = (pairs: number): NormMessage[] => {
+			const msgs: NormMessage[] = [user("go")];
+			for (let i = 0; i < pairs; i++) {
+				const content = `R${i}:${"x".repeat(200 + i * 40)}`;
+				msgs.push(asst(`c${i}`, "read", `{"path":"f${i}.ts"}`), toolMsg(`c${i}`, "read", content));
+			}
+			return msgs;
+		};
+		let previous: number[] = [];
+		for (let pairs = 4; pairs <= 24; pairs++) {
+			const msgs = loop(pairs);
+			const promptBytes = msgs.reduce((n, m) => n + m.textBytes, 0);
+			// A target the plan can hit with a handful of edits: this is where the
+			// selection ORDER decides which results get truncated. A saturating
+			// target would truncate everything and hide the difference.
+			const indices = planCompaction(msgs, CFG, Math.floor(promptBytes * 0.8), promptBytes).edits.map((e) => e.index);
+			// Nothing already compacted may be dropped...
+			expect(indices).toEqual(expect.arrayContaining(previous));
+			// ...and anything new lands after every existing edit.
+			const added = indices.filter((i) => !previous.includes(i));
+			if (previous.length > 0 && added.length > 0) {
+				expect(Math.min(...added)).toBeGreaterThan(Math.max(...previous));
+			}
+			previous = indices;
+		}
+		expect(previous.length).toBeGreaterThan(4);
+	});
 });
 
 describe("renderUpstreamBody applies compaction", () => {

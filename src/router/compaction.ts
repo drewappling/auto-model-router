@@ -27,6 +27,17 @@ const EMPTY: CompactionResult = { edits: [], savedBytes: 0 };
 const BREADCRUMB_BYTES = 120;
 
 /**
+ * Byte size a message ends up with once `edit` is applied — the size that
+ * actually reaches the upstream. Cache-breakpoint placement walks these rather
+ * than the raw `textBytes`, so its boundaries match the dispatched bytes.
+ */
+export function compactedBytes(originalBytes: number, edit: CompactionEdit | undefined): number {
+	if (edit === undefined) return originalBytes;
+	const kept = edit.mode === "stub" ? BREADCRUMB_BYTES : edit.keepHead + edit.keepTail + BREADCRUMB_BYTES;
+	return Math.min(originalBytes, kept);
+}
+
+/**
  * First string value in a tool call's argument JSON — a schema-agnostic proxy
  * for the resource a call operates on (a `path`, `id`, `query`, ...). Used to
  * detect when a later call supersedes an earlier read of the same resource.
@@ -73,9 +84,18 @@ interface ToolResult {
 /**
  * Plans compaction for a turn's messages toward `targetBytes` of total prompt.
  * Duplicate and superseded elisions (pure stale-data wins) are always applied;
- * large-result truncation (more lossy) runs largest-first only until the target
+ * large-result truncation (more lossy) runs OLDEST-first only until the target
  * is met. `promptBytes` is the whole prompt (messages + system + tool schemas),
  * so the target is compared against the real dispatched size.
+ *
+ * Oldest-first is a prompt-cache requirement, not a preference. The truncated
+ * set is then always an index-ordered PREFIX of the eligible results, so as a
+ * conversation grows and the target tightens the set only ever EXTENDS FORWARD:
+ * an edit already made keeps the same index and the same keep bytes, and a new
+ * edit lands after every previous one. Selecting largest-first instead inserts
+ * fresh edits at arbitrarily early indices on later turns, rewriting history
+ * the upstream had already cached and collapsing cache reads to the system
+ * prefix (measured: 61% cache read, bimodal, vs 76-82% before compaction).
  */
 export function planCompaction(
 	messages: readonly NormMessage[],
@@ -145,11 +165,11 @@ export function planCompaction(
 		}
 	}
 
-	// Rule 3: truncate large stale results, largest first, until under target.
+	// Rule 3: truncate large stale results, OLDEST first, until under target.
+	// `tools` is already in message order, so the filter alone yields that order
+	// and the selected set stays an extend-forward prefix across turns.
 	const keepBudget = cfg.keepHeadBytes + cfg.keepTailBytes + BREADCRUMB_BYTES;
-	const truncatable = tools
-		.filter((t) => !done.has(t.index) && t.bytes > cfg.maxToolResultBytes && t.bytes > keepBudget)
-		.sort((a, b) => b.bytes - a.bytes || a.index - b.index);
+	const truncatable = tools.filter((t) => !done.has(t.index) && t.bytes > cfg.maxToolResultBytes && t.bytes > keepBudget);
 	for (const t of truncatable) {
 		if (promptBytes - saved <= targetBytes) break;
 		edits.push({ index: t.index, mode: "truncate", keepHead: cfg.keepHeadBytes, keepTail: cfg.keepTailBytes, note: `large ${t.name || "tool"} result` });

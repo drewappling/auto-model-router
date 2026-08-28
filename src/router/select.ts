@@ -390,8 +390,9 @@ export function select(args: SelectArgs): Decision {
 		if (fallbacks.length >= 2) break;
 	}
 
-	// 7. Cache breakpoints.
-	const cacheBreakpointMessageIndices = planCacheBreakpoints(req, chosen.model, cfg);
+	// 7. Cache breakpoints, measured over post-compaction sizes so the
+	//    boundaries match the bytes that actually get dispatched.
+	const cacheBreakpointMessageIndices = planCacheBreakpoints(req, chosen.model, cfg, compactionPlan);
 
 	// 8. Guarded probe: only tiers configured for probing, and only when a
 	//    strictly higher tier exists inside the profile envelope to escalate into.

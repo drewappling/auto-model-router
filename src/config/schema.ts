@@ -127,6 +127,7 @@ const cache = z.strictObject({
 	injectBreakpoints: z.boolean().optional(),
 	maxBreakpoints: z.number().int().positive().optional(),
 	minPromptTokens: z.number().int().nonnegative().optional(),
+	milestoneTokens: z.number().int().positive().optional(),
 });
 
 const context = z.strictObject({
