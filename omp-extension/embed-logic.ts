@@ -65,8 +65,9 @@ export interface EmbedConfig {
  *
  * The workspace basename is the one identifier that is already stable, already
  * per-project, and requires no configuration — the same convention agentdox's
- * own `project_ensure` slugs follow. An explicitly configured
- * `context.defaultScope` always wins over this.
+ * own `project_ensure` slugs follow. It WINS over `context.defaultScope`,
+ * which is a fallback for workspaces it cannot resolve; see
+ * `buildProviderConfig`.
  */
 export function deriveAgentdoxScope(cwd: string): string {
 	// Both separators: omp reports a Windows cwd with backslashes.
@@ -165,7 +166,16 @@ export function buildProviderConfig(
 		out.harnessId = cfg.server.harnessId;
 	}
 	if (cfg.context?.enabled === true) {
-		const scope = cfg.context.defaultScope !== "" ? cfg.context.defaultScope : deriveAgentdoxScope(cwd ?? "");
+		// The WORKSPACE wins. `defaultScope` is a scope-agnostic global — one
+		// router install serves every project on the machine — so letting it
+		// override the per-workspace derivation sends one project's slug for all
+		// of them: an ashlands session shipped `X-Agentdox-Scope: omp-router`,
+		// which both injected the wrong project's context and filed its turns
+		// under the wrong scope. The server treats this field as a fallback too
+		// ("the configured default covers harnesses that send none"), so the two
+		// sides now agree: most specific signal first.
+		const derived = deriveAgentdoxScope(cwd ?? "");
+		const scope = derived !== "" ? derived : cfg.context.defaultScope;
 		if (scope !== "") out.agentdoxScope = scope;
 	}
 	return out;

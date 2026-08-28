@@ -556,6 +556,9 @@ describe("exploration reaches the ledger", () => {
 });
 
 describe("agentdox write-back sees the shape of the turn", () => {
+	/** An agent ships its tool schemas; a harness utility call does not. */
+	const AGENT_TOOL = { name: "read", description: "read a file", schemaBytes: 128 };
+
 	function mkRecordingBridge(): { bridge: ContextBridge; records: TurnRecord[] } {
 		const records: TurnRecord[] = [];
 		return {
@@ -589,8 +592,9 @@ describe("agentdox write-back sees the shape of the turn", () => {
 		const { store } = mkConversations();
 		const { sink, errors } = mkSink();
 		const { bridge, records } = mkRecordingBridge();
-		// doxActive needs a scope; the request header supplies it.
-		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj" };
+		// doxActive needs a scope; the request header supplies it. The tool
+		// schemas mark this as the agent's working conversation.
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj", tools: [AGENT_TOOL] };
 		const deps = { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge };
 
 		await runTurn(req, sink, deps, new AbortController().signal);
@@ -602,5 +606,28 @@ describe("agentdox write-back sees the shape of the turn", () => {
 		expect(records[0]?.assistantText).toBe("let me look");
 		expect(records[1]?.turnEnded).toBe(true);
 		expect(records[1]?.assistantText).toBe("all done");
+	});
+
+	test("a harness utility call is never transcribed", async () => {
+		// omp drives title generation and complexity rating through this same
+		// provider with `model: auto`. They answer ABOUT the conversation
+		// ("high", "<title>…</title>") and carry NO tool schemas. Recording them
+		// created junk agentdox sessions that then fed back into every later
+		// context block.
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: null })]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("high"), finishChunk("stop"), usageChunk({}, 0.0001)] },
+		]);
+		const { ledger } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+		const { bridge, records } = mkRecordingBridge();
+		// Same scope, same provider — only the absent tool array differs.
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj", tools: [] };
+
+		await runTurn(req, sink, { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(records).toHaveLength(0);
 	});
 });

@@ -451,7 +451,17 @@ export async function runTurn(
 		// artifact of the turn, not a precondition for finishing it. A
 		// `tool_calls` finish means the assistant is still working, so the bridge
 		// buffers the fragment rather than writing a near-empty turn.
-		if (doxActive) {
+		//
+		// Only the agent's WORKING conversation is transcribed. A harness also
+		// drives utility calls through this same provider with `model: auto` —
+		// omp asks for a conversation title and a complexity rating — and those
+		// answer ABOUT a conversation instead of participating in one, which is
+		// where the junk records (`high`, `<title>…</title>`) came from. They are
+		// single-shot and carry NO tool schemas, while an agent always ships its
+		// tools, so the tool array is the discriminator. A deliberately
+		// tool-less session is therefore not transcribed: silence beats garbage,
+		// because every junk record is re-injected into every later turn.
+		if (doxActive && req.tools.length > 0) {
 			const userText = lastUserText(req);
 			const turnEnded = finishReason !== "tool_calls";
 			log.debug("agentdox record turn", {

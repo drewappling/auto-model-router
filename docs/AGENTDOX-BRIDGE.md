@@ -1,7 +1,7 @@
 # agentdox bridge — handoff
 
-**Status:** implemented, typechecks clean, 438 tests pass, injection verified end-to-end
-through omp. The write-back bug in §5 is **fixed**; `context.recordTurns` is safe to enable.
+**Status:** implemented, typechecks clean, 439 tests pass, injection verified end-to-end
+through omp. The write-back faults in §5 and §6 are **fixed**; `context.recordTurns` is on.
 
 Design rationale (why it is built this way):
 `E:/projects/agentdox/docs/architecture/router-context-bridge.md`.
@@ -110,8 +110,8 @@ Each tool round-trip is its own dispatch, finishing with `tool_calls` and emitti
 record of a fragment rather than a truncated answer. Only the final `stop` dispatch carries
 the synthesis. `recordTurn` fired on all ~13, and the last writer won.
 
-The same root cause explains the §6 pollution: `lastUserText` walks back to the last `user`
-message, which does **not** move while a tool loop runs, so the identical user text was
+The same root cause explains half the duplication in §7: `lastUserText` walks back to the last
+`user` message, which does **not** move while a tool loop runs, so the identical user text was
 appended once per round-trip too.
 
 **Fix.** `TurnRecord` gained `turnEnded` (`finishReason !== "tool_calls"`, set in
@@ -128,13 +128,53 @@ nothing; interleaved conversations buffer independently) and `test/turn.test.ts`
 behavior. `tools/agentdox-e2e.ts` step 6 proves it against a live server: four dispatches →
 exactly one user and one assistant message.
 
-## 6. Also worth doing
+## 6. FIXED — harness utility calls, and the scope that leaked across projects
 
-- **Context pollution.** `context_assemble` includes recent session messages, so recorded
-  test turns feed back into the next block (observed: a block containing `assistant:: high`
-  from a prior run). The §5 fix removes the ~13×-per-turn duplication that made this acute,
-  but noisy *test* turns still compound — `tools/agentdox-e2e.ts` writes real sessions into
-  the scope every run. Consider a `sessionLimit` override for the bridge, or excluding
+Two further faults surfaced the moment `recordTurns` was first switched on, both found by
+reading what actually landed in agentdox.
+
+**Utility calls were recorded as turns.** omp drives more than the agent through this
+provider: it asks for a conversation title and a complexity rating, with `model: auto`, over
+the same embedded router. Those answer *about* a conversation rather than participating in
+one, and they finish with `stop`, so `turnEnded` alone does not exclude them. Three junk
+sessions appeared immediately:
+
+| recorded assistant text | what it really was |
+| --- | --- |
+| `high` | omp's complexity rating — **this is the original `" high"`** |
+| `<title>Read memory and resume work</title>` | omp's title generation |
+| `<title>Resume settlement 2D slice 3 streaming</title>` | omp's title generation |
+
+The discriminator is the tool array: an agent always ships its tool schemas (`toolCount` 12,
+prompts of 60k–90k), while utility calls ship none (`toolCount` 0, prompts of 222–841,
+`task=chat`). `src/server/turn.ts` therefore records only when `req.tools.length > 0`. A
+deliberately tool-less session is not transcribed — silence beats garbage, because every junk
+record is re-injected into every later turn.
+
+**`defaultScope` leaked one project's slug to all of them.** `omp-extension/embed-logic.ts`
+resolved the header as `defaultScope !== "" ? defaultScope : derive(cwd)`, so a *scope-agnostic
+global* overrode the *per-workspace* derivation. One router install serves every workspace, so
+with `defaultScope: omp-router` set, an **ashlands** session shipped
+`X-Agentdox-Scope: omp-router`: it injected omp-router's context into ashlands work and filed
+ashlands turns under omp-router. The server always treated the field as a fallback ("the
+configured default covers harnesses that send none"), so the two sides disagreed about the same
+field. Now the workspace derivation wins and `defaultScope` is its fallback, matching the name
+and the server. Same failure class as the `.mcp.json` lesson: a scope-specific value must never
+live in a scope-agnostic file.
+
+One consequence worth knowing: `context.token` is a single PAT, but a machine-wide router
+serves N scopes. The omp-router PAT gets `403 no read access to scope "ashlands"`, so with the
+scope now correct the bridge degrades to **inert** for other projects. Correct and safe, but it
+means the bridge only helps projects the configured token actually grants. A multi-scope token
+would fix that, at the cost of one credential reaching every project.
+
+## 7. Also worth doing
+
+- **Context pollution from test turns.** `context_assemble` includes recent session messages,
+  so router test turns feed back into the next block. The omp-router scope had accumulated 19
+  sessions of which 18 were noise (`hi`, `say hello`, `Reply with exactly the word: PONG`,
+  injection probes, `bridge e2e …`); they were deleted, and `tools/agentdox-e2e.ts` writes two
+  more every run. Consider a `sessionLimit` override for the bridge, or excluding
   router-authored sessions.
 - **`context.timeoutMs` is 3000ms** and failures degrade silently at `debug` level by design.
   If agentdox is cold this can no-op invisibly. Consider logging the first failure at `warn`.

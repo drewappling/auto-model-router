@@ -115,7 +115,11 @@ describe("agentdox scope", () => {
 		expect(deriveAgentdoxScope("")).toBe("");
 	});
 
-	test("an explicit defaultScope wins over the derived one", () => {
+	test("the workspace derivation wins over the scope-agnostic defaultScope", () => {
+		// Regression: one router install serves every project on the machine, so a
+		// global `defaultScope` overriding the derivation made an ashlands session
+		// ship `X-Agentdox-Scope: omp-router` — wrong context injected, turns
+		// filed under the wrong project.
 		const base = {
 			server: { host: "127.0.0.1" },
 			profiles: [],
@@ -123,8 +127,11 @@ describe("agentdox scope", () => {
 		};
 		const derived = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "" } }, "/x/ashlands");
 		expect(derived.agentdoxScope).toBe("ashlands");
-		const explicit = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "pinned" } }, "/x/ashlands");
-		expect(explicit.agentdoxScope).toBe("pinned");
+		const both = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "omp-router" } }, "/x/ashlands");
+		expect(both.agentdoxScope).toBe("ashlands");
+		// The default only applies when the workspace yields nothing.
+		const fallback = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "pinned" } }, "");
+		expect(fallback.agentdoxScope).toBe("pinned");
 	});
 
 	test("no scope header when the bridge is off", () => {
