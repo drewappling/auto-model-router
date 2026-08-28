@@ -117,6 +117,13 @@ const TRUST_SELECT = `COUNT(*) AS attempts,
  * body streams once it starts. Errored/aborted and non-streaming rows (null
  * ttft) are excluded; throughput additionally requires a positive completion
  * count and elapsed time.
+ *
+ * Aggregated over a RECENT WINDOW (LATENCY_WINDOW_ROWS newest rows per slug),
+ * NOT all history: a model that degrades — e.g. deepseek-v4-flash collapsing
+ * from ~18 tok/s to ~7 — must move its score fast, or the penalty is drowned by
+ * hundreds of historical good rows and never demotes it (observed live: it kept
+ * 100% of coding at ~53s/turn despite latencyWeight=0.75). Trust (reliability)
+ * stays all-time; latency (volatile) is recency-weighted.
  */
 const LATENCY_SELECT = `COUNT(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN 1 END) AS samples,
 		AVG(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN ttft_ms END) AS ttft_ms,
@@ -126,6 +133,14 @@ const LATENCY_SELECT = `COUNT(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND 
 		SUM(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL AND latency_ms > ttft_ms
 			AND json_extract(usage, '$.completionTokens') > 0
 			THEN latency_ms - ttft_ms END) AS elapsed_ms_sum`;
+
+/**
+ * Recent-rows window for latency stats: recent enough to react to a degrading
+ * model, wide enough to stay stable for a busy one. Rows are taken newest-first
+ * and then filtered by LATENCY_SELECT, so recent aborts naturally shrink the
+ * qualifying sample count (and can drop a model below latencyMinSamples).
+ */
+export const LATENCY_WINDOW_ROWS = 100;
 
 /**
  * Recovers the `UpstreamErrorKind` from the text turn.ts stored.
@@ -231,8 +246,12 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ?`);
 	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
 	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger GROUP BY slug`);
-	const latencyStmt = db.query(`SELECT ${LATENCY_SELECT} FROM ledger WHERE slug = ?`);
-	const latencyHarnessStmt = db.query(`SELECT ${LATENCY_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
+	const latencyStmt = db.query(
+		`SELECT ${LATENCY_SELECT} FROM (SELECT * FROM ledger WHERE slug = ? ORDER BY created_at_ms DESC LIMIT ${LATENCY_WINDOW_ROWS})`,
+	);
+	const latencyHarnessStmt = db.query(
+		`SELECT ${LATENCY_SELECT} FROM (SELECT * FROM ledger WHERE slug = ? AND harness_id = ? ORDER BY created_at_ms DESC LIMIT ${LATENCY_WINDOW_ROWS})`,
+	);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
 	const cacheMetaStmt = db.query("SELECT fetched_at_ms FROM catalog_cache WHERE id = 1");

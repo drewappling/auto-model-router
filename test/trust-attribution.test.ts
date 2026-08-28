@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { loadConfig } from "../src/config/load.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createLedger, LATENCY_WINDOW_ROWS } from "../src/cost/ledger.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
@@ -197,6 +197,22 @@ describe("latency signal", () => {
 		// 400 completion tokens over 4000ms of post-TTFT time = 100 tok/s.
 		expect(l?.tokensPerSec).toBeCloseTo(100, 5);
 		expect(l?.samples).toBe(2);
+	});
+
+	test("throughput and ttft track a recent window, not the lifetime average", () => {
+		// Old rows are fast; the recent window is slow. Latency must reflect the
+		// recent (slow) behaviour so a degraded model is penalised, not masked by
+		// its history. Lifetime blend here would be ~57 tok/s; the window is 10.
+		const rows: Array<Partial<LedgerEntry>> = [];
+		let t = 1;
+		for (let i = 0; i < 50; i++)
+			rows.push({ createdAtMs: t++, ttftMs: 200, latencyMs: 1200, usage: { ...EMPTY_USAGE, completionTokens: 1000 } });
+		for (let i = 0; i < LATENCY_WINDOW_ROWS; i++)
+			rows.push({ createdAtMs: t++, ttftMs: 4000, latencyMs: 14000, usage: { ...EMPTY_USAGE, completionTokens: 100 } });
+		const l = latencyOf(rows);
+		expect(l?.samples).toBe(LATENCY_WINDOW_ROWS);
+		expect(l?.tokensPerSec).toBeCloseTo(10, 0);
+		expect(l?.ttftMs).toBeCloseTo(4000, 5);
 	});
 });
 
