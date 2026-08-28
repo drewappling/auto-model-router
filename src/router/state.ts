@@ -26,6 +26,8 @@ interface Row {
 	last_prompt_tokens: number;
 	cache_warm_slug: string | null;
 	cache_warm_at_ms: number;
+	context_version: string | null;
+	context_fetched_at_ms: number;
 	updated_at_ms: number;
 }
 
@@ -43,6 +45,8 @@ function toState(row: Row): ConversationState {
 		lastPromptTokens: row.last_prompt_tokens,
 		cacheWarmSlug: row.cache_warm_slug,
 		cacheWarmAtMs: row.cache_warm_at_ms,
+		contextVersion: row.context_version,
+		contextFetchedAtMs: row.context_fetched_at_ms,
 		updatedAtMs: row.updated_at_ms,
 	};
 }
@@ -56,9 +60,11 @@ export function createConversationStore(db: Database): ConversationStore {
 	const upsert = db.query(`
 		INSERT INTO conversations (
 			key, session_id, turn, current_slug, current_tier, sticky_until_turn,
-			escalations, spent_usd, last_prompt_tokens, cache_warm_slug, cache_warm_at_ms, updated_at_ms
+			escalations, spent_usd, last_prompt_tokens, cache_warm_slug, cache_warm_at_ms,
+			context_version, context_fetched_at_ms, updated_at_ms
 		) VALUES ($key, $sessionId, $turn, $currentSlug, $currentTier, $stickyUntilTurn,
-			$escalations, $spentUsd, $lastPromptTokens, $cacheWarmSlug, $cacheWarmAtMs, $updatedAtMs)
+			$escalations, $spentUsd, $lastPromptTokens, $cacheWarmSlug, $cacheWarmAtMs,
+			$contextVersion, $contextFetchedAtMs, $updatedAtMs)
 		ON CONFLICT(key) DO UPDATE SET
 			session_id = excluded.session_id,
 			turn = excluded.turn,
@@ -70,6 +76,8 @@ export function createConversationStore(db: Database): ConversationStore {
 			last_prompt_tokens = excluded.last_prompt_tokens,
 			cache_warm_slug = excluded.cache_warm_slug,
 			cache_warm_at_ms = excluded.cache_warm_at_ms,
+			context_version = excluded.context_version,
+			context_fetched_at_ms = excluded.context_fetched_at_ms,
 			updated_at_ms = excluded.updated_at_ms
 	`);
 	const deleteStale: Statement<unknown, [number]> = db.query("DELETE FROM conversations WHERE updated_at_ms < ?");
@@ -107,6 +115,8 @@ export function createConversationStore(db: Database): ConversationStore {
 				$lastPromptTokens: state.lastPromptTokens,
 				$cacheWarmSlug: state.cacheWarmSlug,
 				$cacheWarmAtMs: state.cacheWarmAtMs,
+				$contextVersion: state.contextVersion,
+				$contextFetchedAtMs: state.contextFetchedAtMs,
 				$updatedAtMs: Date.now(),
 			});
 		},

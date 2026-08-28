@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createDisabledBridge } from "../src/context/bridge.ts";
 import type { CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
 import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
@@ -43,7 +44,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyMinSamples: 20 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",
@@ -68,6 +69,8 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024 },
+		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, recordTurns: false, maxQueue: 64 },
+		compaction: { enabled: false, budgetTokens: 40_000, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
@@ -83,6 +86,7 @@ function mkReq(): NormRequest {
 		conversationKey: "conv-test",
 		harnessId: "",
 		ompSessionId: "",
+		agentdoxScope: "",
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],
 		tools: [],
@@ -107,7 +111,9 @@ const FEATURES: Features = {
 	distinctToolsUsed: 0,
 	lastToolFailed: false,
 	repeatedToolCall: false,
+	circularToolCall: false,
 	hasImages: false,
+	hasNewImage: false,
 	codeBlocks: 0,
 	codeBytes: 0,
 	looksLikeDiff: false,
@@ -137,6 +143,8 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		sessionId: "omp-conv-test",
 		sticky: false,
 		cacheBreakpointMessageIndices: [],
+		compactionPlan: [],
+		promptTokensSaved: 0,
 		reasoning: undefined,
 		maxTokens: undefined,
 		stripAssistantReasoning: false,
@@ -251,6 +259,8 @@ function mkConversations(): { store: ConversationStore; map: Map<string, Convers
 				lastPromptTokens: 0,
 				cacheWarmSlug: null,
 				cacheWarmAtMs: 0,
+				contextVersion: null,
+				contextFetchedAtMs: 0,
 				updatedAtMs: 0,
 			};
 			map.set(k, fresh);
@@ -317,7 +327,7 @@ describe("runTurn", () => {
 		const { store, map } = mkConversations();
 		const { sink, chunks, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(finishes).toHaveLength(1);
@@ -366,7 +376,7 @@ describe("runTurn", () => {
 		const { store } = mkConversations();
 		const { sink, chunks, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(entries).toHaveLength(2);
@@ -404,7 +414,7 @@ describe("runTurn", () => {
 		const { store } = mkConversations();
 		const { sink, chunks, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		// Bytes reached the client, so the 429 mid-stream is surfaced, not retried.
 		expect(calls).toHaveLength(1);
@@ -424,7 +434,7 @@ describe("runTurn", () => {
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(calls).toHaveLength(1); // no retry, no escalation on auth
 		expect(finishes).toHaveLength(0);
@@ -448,7 +458,7 @@ describe("runTurn", () => {
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(finishes).toHaveLength(1);
@@ -488,14 +498,14 @@ describe("runTurn", () => {
 		const { sink, errors } = mkSink();
 
 		// Turn 1: first turn, no prior tier → re-arms (tierChanged true).
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 		const afterFirst = map.get("conv-test")!;
 		expect(afterFirst.currentTier).toBe("hard");
 		expect(afterFirst.stickyUntilTurn).toBe(1 + 2); // holdTurns=2
 
 		// Turn 2: same tier served again → must NOT re-arm. The window should
 		// stay at its previous expiry (turn 3), not extend to turn 4.
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 		const afterSecond = map.get("conv-test")!;
 		expect(afterSecond.currentTier).toBe("hard");
 		expect(afterSecond.stickyUntilTurn).toBe(3); // unchanged, not 4
@@ -517,7 +527,7 @@ describe("exploration reaches the ledger", () => {
 		const { store } = mkConversations();
 		const { sink } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(entries).toHaveLength(1);
 		// The counterfactual pair: what the classifier wanted, and what actually ran.
@@ -537,7 +547,7 @@ describe("exploration reaches the ledger", () => {
 		const { store } = mkConversations();
 		const { sink } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(entries).toHaveLength(1);
 		expect(entries[0]?.exploredFrom).toBeNull();

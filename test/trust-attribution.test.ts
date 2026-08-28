@@ -40,6 +40,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		wasted: false,
 		upstreamGenerationId: null,
 		error: null,
+		promptTokensSaved: 0,
 		...over,
 	};
 }
@@ -75,8 +76,19 @@ describe("trust attribution", () => {
 			trustAfter([
 				null,
 				null,
-				"auth: Request blocked: prompt injection patterns detected",
-				"auth: This model requires 18+ age confirmation",
+				"auth: No auth credentials found",
+				"auth: Insufficient credits",
+			]),
+		).toBe(CLEAN);
+	});
+
+	test("provider moderation/policy blocks do not count against the model", () => {
+		expect(
+			trustAfter([
+				null,
+				null,
+				"moderation: Request blocked: prompt injection patterns detected",
+				"moderation: This model requires 18+ age confirmation",
 			]),
 		).toBe(CLEAN);
 	});
@@ -146,20 +158,20 @@ describe("trust attribution", () => {
 });
 
 describe("latency signal", () => {
-	function latencyOf(rows: Array<Partial<LedgerEntry>>): { samples: number; ttftMs: number } | null {
+	function latencyOf(rows: Array<Partial<LedgerEntry>>): { samples: number; ttftMs: number; tokensPerSec: number } | null {
 		const db = openDb(":memory:");
 		try {
 			const ledger = createLedger(db, cfg);
 			for (const r of rows) ledger.record(entry(r));
 			const l = ledger.latency("vendor/model");
-			return l === null ? null : { samples: l.samples, ttftMs: l.ttftMs };
+			return l === null ? null : { samples: l.samples, ttftMs: l.ttftMs, tokensPerSec: l.tokensPerSec };
 		} finally {
 			db.close();
 		}
 	}
 
 	test("averages TTFT over streamed, non-errored turns", () => {
-		expect(latencyOf([{ ttftMs: 50 }, { ttftMs: 100 }, { ttftMs: 150 }])).toEqual({ samples: 3, ttftMs: 100 });
+		expect(latencyOf([{ ttftMs: 50 }, { ttftMs: 100 }, { ttftMs: 150 }])).toEqual({ samples: 3, ttftMs: 100, tokensPerSec: 0 });
 	});
 
 	test("excludes errored, aborted, and non-streamed (null TTFT) rows", () => {
@@ -170,11 +182,21 @@ describe("latency signal", () => {
 				{ ttftMs: 9999, error: "request aborted" },
 				{ ttftMs: null },
 			]),
-		).toEqual({ samples: 1, ttftMs: 100 });
+		).toEqual({ samples: 1, ttftMs: 100, tokensPerSec: 0 });
 	});
 
 	test("null when no streamed sample exists", () => {
 		expect(latencyOf([{ ttftMs: null }, { ttftMs: 0 }])).toBeNull();
+	});
+
+	test("throughput is aggregate completion tokens per post-TTFT second", () => {
+		const l = latencyOf([
+			{ ttftMs: 1000, latencyMs: 3000, usage: { ...EMPTY_USAGE, completionTokens: 200 } },
+			{ ttftMs: 1000, latencyMs: 3000, usage: { ...EMPTY_USAGE, completionTokens: 200 } },
+		]);
+		// 400 completion tokens over 4000ms of post-TTFT time = 100 tok/s.
+		expect(l?.tokensPerSec).toBeCloseTo(100, 5);
+		expect(l?.samples).toBe(2);
 	});
 });
 
@@ -185,6 +207,7 @@ describe("v4 migration", () => {
 			const ledger = createLedger(db, cfg);
 			ledger.record(entry({ error: "request aborted" }));
 			ledger.record(entry({ error: "auth: nope" }));
+			ledger.record(entry({ error: "moderation: Request blocked: prompt injection" }));
 			ledger.record(entry({ error: "model_unavailable: guardrail" }));
 			ledger.record(entry({ error: "upstream_error: boom" }));
 			ledger.record(entry({ error: null }));
@@ -195,6 +218,7 @@ describe("v4 migration", () => {
 			expect(rows.map((r) => r.error_kind)).toEqual([
 				"aborted",
 				"auth",
+				"moderation",
 				"model_unavailable",
 				"upstream_error",
 				null,
@@ -204,11 +228,11 @@ describe("v4 migration", () => {
 		}
 	});
 
-	test("schema is at user_version 10", () => {
+	test("schema is at user_version 12", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(10);
+			expect(row.user_version).toBe(12);
 		} finally {
 			db.close();
 		}

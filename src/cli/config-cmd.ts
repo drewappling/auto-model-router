@@ -57,6 +57,22 @@ export interface SpliceResult {
  * `cost` is in omp's units: USD per MILLION tokens. The catalog works in
  * per-token rates, so everything is scaled by 1e6 exactly once, here.
  */
+/**
+ * Headers omp attaches to every request through this provider. Both are
+ * optional: absent harness id ⇒ single-harness defaults, absent agentdox scope
+ * ⇒ the router falls back to its own `context.defaultScope`.
+ */
+function providerHeaders(cfg: RouterConfig): Record<string, string> {
+	const headers: Record<string, string> = {};
+	if (cfg.server.harnessId !== undefined && cfg.server.harnessId !== "") {
+		headers["X-Omp-Harness"] = cfg.server.harnessId;
+	}
+	if (cfg.context.enabled && cfg.context.defaultScope !== "") {
+		headers["X-Agentdox-Scope"] = cfg.context.defaultScope;
+	}
+	return headers;
+}
+
 export function renderProviderBlock(cfg: RouterConfig, blend: BlendedRate | null): string {
 	const input = blend?.inputPerMtok ?? cfg.ledger.fallbackBlend.inputPerMtok;
 	const output = blend?.outputPerMtok ?? cfg.ledger.fallbackBlend.outputPerMtok;
@@ -71,11 +87,10 @@ export function renderProviderBlock(cfg: RouterConfig, blend: BlendedRate | null
 			baseUrl: `http://${host}:${cfg.server.port}/v1`,
 			api: "openai-completions",
 			auth: "none",
-			// When a harness id is configured, tag every request so the router can
-			// scope daily budgets and toasts per harness.
-			...(cfg.server.harnessId !== undefined && cfg.server.harnessId !== ""
-				? { headers: { "X-Omp-Harness": cfg.server.harnessId } }
-				: {}),
+			// Per-request tags. Harness id scopes daily budgets and toasts;
+			// agentdox scope selects which project's shared context is injected
+			// and which project's sessions the turns are recorded into.
+			...(Object.keys(providerHeaders(cfg)).length > 0 ? { headers: providerHeaders(cfg) } : {}),
 			models: cfg.profiles.map((p) => ({
 				id: p.id,
 				name: p.name,

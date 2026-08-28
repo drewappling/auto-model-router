@@ -64,6 +64,8 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 		lastPromptTokens: 0,
 		cacheWarmSlug: null,
 		cacheWarmAtMs: 0,
+		contextVersion: null,
+		contextFetchedAtMs: 0,
 		updatedAtMs: Date.now(),
 		...over,
 	};
@@ -541,7 +543,7 @@ describe("task-type routing", () => {
 });
 
 describe("latency scoring", () => {
-	function ledgerWithLatency(ttftBySlug: Record<string, { ttftMs: number; samples: number }>): Ledger {
+	function ledgerWithLatency(bySlug: Record<string, { ttftMs: number; samples: number; tokensPerSec?: number }>): Ledger {
 		return {
 			record: () => {},
 			conversationSpend: () => 0,
@@ -550,8 +552,10 @@ describe("latency scoring", () => {
 			trust: () => null,
 			allTrust: () => [],
 			latency: (slug) => {
-				const v = ttftBySlug[slug];
-				return v === undefined ? null : { slug, samples: v.samples, ttftMs: v.ttftMs };
+				const v = bySlug[slug];
+				// Default throughput is fast, so these cases isolate the TTFT axis
+				// unless a test sets tokensPerSec explicitly.
+				return v === undefined ? null : { slug, samples: v.samples, ttftMs: v.ttftMs, tokensPerSec: v.tokensPerSec ?? 1000 };
 			},
 			tokenRatio: () => null,
 			recentEntries: () => [],
@@ -580,5 +584,84 @@ describe("latency scoring", () => {
 		const slow = run({ tier: "simple" }).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 5 } });
 		expect(run({ tier: "simple", cfg: withWeight(2), ledger }).slug).toBe(slow);
+	});
+
+	test("penalises a model that starts fast but streams slowly", () => {
+		// The case TTFT-only scoring misses: quick first token, slow body.
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 1500, samples: 50, tokensPerSec: 12 } });
+		const d = run({ tier: "simple", cfg: withWeight(2), ledger });
+		expect(d.slug).not.toBe(slow);
+	});
+});
+
+describe("context compaction", () => {
+	const COMPACT_CFG: RouterConfig = {
+		...BASE,
+		compaction: {
+			enabled: true,
+			budgetTokens: 1_000,
+			fitToWindow: false,
+			protectRecentTurns: 1,
+			maxToolResultBytes: 100,
+			keepHeadBytes: 20,
+			keepTailBytes: 20,
+			elideSupersededReads: true,
+			collapseDuplicateResults: true,
+		},
+	};
+
+	function loopReq(): NormRequest {
+		return parseChatRequest(
+			{
+				model: "auto",
+				tools: TOOLS,
+				messages: [
+					{ role: "system", content: "You are a coding agent." },
+					{ role: "user", content: "read the file" },
+					{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: '{"path":"big.ts"}' } }] },
+					{ role: "tool", tool_call_id: "c1", content: "x".repeat(4000) },
+					{ role: "user", content: "continue" },
+				],
+			},
+			new Headers(),
+		);
+	}
+
+	test("an over-budget turn produces a compaction plan and records savings", () => {
+		const req = loopReq();
+		const features = extractFeatures(req, 5_000); // over budgetTokens=1000
+		const d = select({
+			req,
+			features,
+			classification: scoreHeuristic(features, COMPACT_CFG),
+			profile: PROFILE,
+			state: state(),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: COMPACT_CFG,
+			nowMs: Date.now(),
+		});
+		expect(d.compactionPlan.length).toBeGreaterThan(0);
+		expect(d.promptTokensSaved).toBeGreaterThan(0);
+		expect(d.reasons.some((r) => r.startsWith("compaction:"))).toBe(true);
+	});
+
+	test("a small turn is left untouched", () => {
+		const req = loopReq();
+		const features = extractFeatures(req, 500); // under budgetTokens=1000
+		const d = select({
+			req,
+			features,
+			classification: scoreHeuristic(features, COMPACT_CFG),
+			profile: PROFILE,
+			state: state(),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: COMPACT_CFG,
+			nowMs: Date.now(),
+		});
+		expect(d.compactionPlan).toEqual([]);
+		expect(d.promptTokensSaved).toBe(0);
 	});
 });

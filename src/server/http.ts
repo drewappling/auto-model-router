@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "bun";
 import { createCatalog } from "../catalog/openrouter-catalog.ts";
+import { createBridgeFromConfig } from "../context/index.ts";
 import { createLedger } from "../cost/ledger.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
@@ -173,7 +174,16 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const catalog = createCatalog(cfg, upstream, db);
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
-	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog };
+	const context = createBridgeFromConfig(cfg, db);
+	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context };
+
+	if (context.enabled) {
+		log.info("agentdox context bridge enabled", {
+			url: cfg.context.baseUrl,
+			defaultScope: cfg.context.defaultScope === "" ? "(per-request header only)" : cfg.context.defaultScope,
+			recordTurns: cfg.context.recordTurns,
+		});
+	}
 
 	if (cfg.openrouter.apiKey === "") {
 		log.warn("OPENROUTER_API_KEY is not set; /v1/chat/completions will fail at dispatch time");
@@ -313,6 +323,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
 						// Provenance only; never the key itself.
 						apiKeySource: apiKeySource(cfg).source,
+						// Provenance only; never the agentdox token itself.
+						agentdox: context.enabled
+							? { url: cfg.context.baseUrl, defaultScope: cfg.context.defaultScope, recordTurns: cfg.context.recordTurns }
+							: null,
 						catalog: snap === null
 							? null
 							: {
@@ -337,6 +351,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			clearInterval(pruneTimer);
 			clearInterval(catalogRefreshTimer);
 			await server.stop(true);
+			// Drain queued agentdox write-backs before the DB closes under them.
+			context.close();
+			await context.flush();
 			db.close();
 		},
 	};

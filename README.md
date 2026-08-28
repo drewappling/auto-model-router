@@ -566,6 +566,70 @@ harness's reliability from only its own ledger rows.
 
 ---
 
+## Shared project context across model switches (agentdox)
+
+Switching models mid-conversation loses more than a prompt cache: the new model
+has none of the project knowledge the last one built up. Because every harness
+routes through this one provider, the router is the single place that can fix
+that for all of them at once.
+
+Point it at an [agentdox](https://github.com/…/agentdox) server and every turn —
+whatever model wins the routing decision — carries the same project memory, docs,
+and brief:
+
+```bash
+export AGENTDOX_URL=http://localhost:3003
+export AGENTDOX_TOKEN=<pat with read+write on the scope>
+export AGENTDOX_SCOPE=ashlands        # optional; the omp extension derives it from the workspace
+```
+
+Setting a URL and a token is enough to turn it on.
+
+### It does not cost you a cache miss per turn
+
+The context block sits at the front of the prompt, so re-fetching it every turn
+would invalidate the cached prefix every turn — costing far more than routing
+saves. Instead a block is **pinned per conversation** and refreshed only when the
+prefix is already cold:
+
+| Trigger | Cache cost |
+| --- | --- |
+| First turn of a conversation | none — nothing is warm yet |
+| The router switches model | none — already forfeited by the switch |
+| Escalation or failover retry | none — a new dispatch is cold anyway |
+| Staleness TTL (`context.maxStalenessMs`, default 900s) | paid once |
+
+Between those moments the identical bytes are re-injected and the cache holds.
+The refresh rides on a cache miss that was happening regardless — which is why
+"context follows the model switch" is nearly free.
+
+A block is versioned by **content hash**, not by agentdox's `assembledAt`.
+agentdox re-assembles on a timer, so a timestamp would change on every tick and
+break a warm cache for nothing; an unchanged re-assembly hashes identically and
+costs nothing.
+
+The block is appended to the **last system message** rather than inserted as a
+new one, so the cache-breakpoint indices the core computed stay valid and the
+block lands inside the prefix `planCacheBreakpoints` already marks.
+
+### Turns are recorded back, attributed to the model that served them
+
+With `context.recordTurns` (default on), each settled turn is written to an
+agentdox session tagged `model:<slug>` and `tier:<tier>` — a transcript that
+shows which model produced which turn. Those messages feed back into the next
+`context_assemble`, so the model you switch *to* inherits what the model you
+switched *from* actually did.
+
+Write-backs are queued, bounded, and never awaited: agentdox is an enrichment,
+not a dependency. If it is unreachable the turn routes and dispatches normally,
+and a pinned block keeps being served.
+
+`GET /health` reports the bridge's URL, default scope, and `recordTurns` — never
+the token. Design notes: `docs/architecture/router-context-bridge.md` in the
+agentdox repo. Live check: `bun tools/agentdox-e2e.ts`.
+
+---
+
 ## Toast notifications for the chosen model
 
 auto-model-router is headless and cannot draw into omp's TUI, so chosen-model toasts

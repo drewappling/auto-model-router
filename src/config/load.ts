@@ -108,6 +108,19 @@ export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterCon
 	}
 	const envDb = process.env.AUTO_MODEL_ROUTER_DB;
 	if (envDb !== undefined && envDb !== "") putSection("ledger", "path", envDb);
+
+	// agentdox bridge. A URL + token are enough to turn it on: requiring
+	// `context.enabled` in a config file as well would make the common case
+	// (export two vars, restart) silently do nothing.
+	const envDoxUrl = process.env.AGENTDOX_URL;
+	const envDoxToken = process.env.AGENTDOX_TOKEN;
+	const envDoxScope = process.env.AGENTDOX_SCOPE;
+	if (envDoxUrl !== undefined && envDoxUrl !== "") putSection("context", "baseUrl", envDoxUrl);
+	if (envDoxToken !== undefined && envDoxToken !== "") putSection("context", "token", envDoxToken);
+	if (envDoxScope !== undefined && envDoxScope !== "") putSection("context", "defaultScope", envDoxScope);
+	if (envDoxUrl !== undefined && envDoxUrl !== "" && envDoxToken !== undefined && envDoxToken !== "") {
+		putSection("context", "enabled", true);
+	}
 	cfg = deepMerge(cfg, envInput);
 
 	// Explicit programmatic overrides win last.

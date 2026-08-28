@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
-import { loadConfig } from "../src/config/load.ts";
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { ExplorationConfig, ProfileConfig, RouterConfig } from "../src/config/types.ts";
 import { scoreHeuristic } from "../src/router/classify.ts";
 import { extractFeatures } from "../src/router/features.ts";
@@ -15,7 +15,9 @@ const FIXTURE = (await Bun.file("test/fixtures/openrouter-models.json").json()) 
 const MODELS: CatalogModel[] = FIXTURE.data.map(normalizeCatalogModel).filter((m): m is CatalogModel => m !== null);
 const SNAPSHOT: CatalogSnapshot = { models: MODELS, fetchedAtMs: Date.now() };
 
-const BASE = loadConfig({});
+// Shipped defaults, not loadConfig({}) — the latter merges the live home
+// config.yml and makes this suite depend on the developer's local settings.
+const BASE = DEFAULT_CONFIG;
 const PROFILE: ProfileConfig = {
 	id: "auto",
 	name: "Auto",
@@ -52,6 +54,8 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 		lastPromptTokens: 0,
 		cacheWarmSlug: null,
 		cacheWarmAtMs: 0,
+		contextVersion: null,
+		contextFetchedAtMs: 0,
 		updatedAtMs: NOW,
 		...over,
 	};

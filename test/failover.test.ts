@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createDisabledBridge } from "../src/context/bridge.ts";
 import type { CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
 import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
@@ -43,7 +44,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyMinSamples: 20 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",
@@ -68,6 +69,8 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024 },
+		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, recordTurns: false, maxQueue: 64 },
+		compaction: { enabled: false, budgetTokens: 40_000, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
@@ -83,6 +86,7 @@ function mkReq(): NormRequest {
 		conversationKey: "conv-test",
 		harnessId: "",
 		ompSessionId: "",
+		agentdoxScope: "",
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],
 		tools: [],
@@ -107,7 +111,9 @@ const FEATURES: Features = {
 	distinctToolsUsed: 0,
 	lastToolFailed: false,
 	repeatedToolCall: false,
+	circularToolCall: false,
 	hasImages: false,
+	hasNewImage: false,
 	codeBlocks: 0,
 	codeBytes: 0,
 	looksLikeDiff: false,
@@ -137,6 +143,8 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		sessionId: "omp-conv-test",
 		sticky: false,
 		cacheBreakpointMessageIndices: [],
+		compactionPlan: [],
+		promptTokensSaved: 0,
 		reasoning: undefined,
 		maxTokens: undefined,
 		stripAssistantReasoning: false,
@@ -257,6 +265,8 @@ function mkConversations(): { store: ConversationStore; map: Map<string, Convers
 				lastPromptTokens: 0,
 				cacheWarmSlug: null,
 				cacheWarmAtMs: 0,
+				contextVersion: null,
+				contextFetchedAtMs: 0,
 				updatedAtMs: 0,
 			};
 			map.set(k, fresh);
@@ -320,7 +330,7 @@ describe("same-tier failover", () => {
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(finishes).toHaveLength(1);
@@ -350,6 +360,41 @@ describe("same-tier failover", () => {
 		expect(finishes[0]!.attempts).toBe(2);
 	});
 
+	test("a 403 moderation block fails over to a different model in the same tier", async () => {
+		const { router, calls } = mkRouter([mkDecision("trivial", "a/model"), mkDecision("trivial", "b/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("moderation", 403, "Request blocked: prompt injection", true) },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(finishes).toHaveLength(1);
+
+		// A per-model policy block indicts the slug, not the tier: the retry
+		// re-routes with the blocked slug excluded and serves a sibling.
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+
+		expect(entries).toHaveLength(2);
+		expect(entries[0]!.slug).toBe("a/model");
+		expect(entries[0]!.wasted).toBe(true);
+		expect(entries[0]!.escalationSignal).toBeNull(); // failover, not escalation
+		expect(entries[0]!.error).toContain("moderation");
+		expect(entries[1]!.slug).toBe("b/model");
+		expect(entries[1]!.tier).toBe("trivial");
+		expect(entries[1]!.wasted).toBe(false);
+		expect(entries[1]!.reasons).toContain("failover: a/model returned moderation; retrying b/model in trivial");
+
+		expect(finishes[0]!.servedSlug).toBe("b/model");
+		expect(finishes[0]!.escalated).toBe(false);
+	});
+
 	test("a tier with no other eligible model falls back to tier escalation", async () => {
 		// The router widens to "simple" when "trivial" excludes a/model: the
 		// failover probe's decision is discarded and the normal escalation path
@@ -367,7 +412,7 @@ describe("same-tier failover", () => {
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(finishes).toHaveLength(1);
@@ -401,7 +446,7 @@ describe("same-tier failover", () => {
 		const { store } = mkConversations();
 		const { sink, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toEqual({ attempt: 0 }); // never re-routed, never given excludeSlugs
@@ -434,7 +479,7 @@ describe("same-tier failover", () => {
 		await runTurn(
 			mkReq(),
 			sink,
-			{ config: mkConfig({ maxAttempts: 5 }), router, upstream, ledger, conversations: store, catalog },
+			{ config: mkConfig({ maxAttempts: 5 }), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() },
 			new AbortController().signal,
 		);
 
@@ -480,7 +525,7 @@ describe("same-tier failover", () => {
 		const { store } = mkConversations();
 		const { sink, chunks, errors, finishes } = mkSink();
 
-		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog }, new AbortController().signal);
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
 
 		expect(errors).toHaveLength(0);
 		expect(calls).toHaveLength(2);

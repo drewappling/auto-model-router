@@ -44,7 +44,9 @@ import {
  * registry at a specific bound port.
  */
 function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig, sessionId: string): void {
-	const providerConfig = buildProviderConfig(port, cfg);
+	// cwd is omp's workspace, which is what the agentdox scope is derived from
+	// when none is configured explicitly.
+	const providerConfig = buildProviderConfig(port, cfg, process.cwd());
 	const headers: Record<string, string> = {};
 	if (providerConfig.harnessId !== undefined && providerConfig.harnessId !== "") {
 		headers["X-Omp-Harness"] = providerConfig.harnessId;
@@ -52,6 +54,10 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 	// Per-session scoping: lets the toast surface only this session's decisions
 	// even when several omp sessions share one embedded router's ledger.
 	if (sessionId !== "") headers["X-Omp-Session"] = sessionId;
+	// Which agentdox project's shared context this workspace's turns draw on.
+	if (providerConfig.agentdoxScope !== undefined && providerConfig.agentdoxScope !== "") {
+		headers["X-Agentdox-Scope"] = providerConfig.agentdoxScope;
+	}
 	pi.registerProvider(EMBED_PROVIDER_ID, {
 		baseUrl: providerConfig.baseUrl,
 		api: "openai-completions",

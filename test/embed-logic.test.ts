@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
 	buildProviderConfig,
+	deriveAgentdoxScope,
 	EMBED_PORT_FILE,
 	EMBED_PROVIDER_ID,
 	embedPortPath,
@@ -103,5 +104,36 @@ describe("embed constants", () => {
 	});
 	test("port file name is stable", () => {
 		expect(EMBED_PORT_FILE).toBe("embed.port");
+	});
+});
+
+describe("agentdox scope", () => {
+	test("derives a slug from the workspace basename", () => {
+		expect(deriveAgentdoxScope("E:/projects/Ashlands/Ashlands")).toBe("ashlands");
+		expect(deriveAgentdoxScope("/home/drew/omp-router")).toBe("omp-router");
+		expect(deriveAgentdoxScope("E:\\projects\\My Game\\")).toBe("my-game");
+		expect(deriveAgentdoxScope("")).toBe("");
+	});
+
+	test("an explicit defaultScope wins over the derived one", () => {
+		const base = {
+			server: { host: "127.0.0.1" },
+			profiles: [],
+			ledger: { fallbackBlend: { inputPerMtok: 1, outputPerMtok: 1 } },
+		};
+		const derived = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "" } }, "/x/ashlands");
+		expect(derived.agentdoxScope).toBe("ashlands");
+		const explicit = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "pinned" } }, "/x/ashlands");
+		expect(explicit.agentdoxScope).toBe("pinned");
+	});
+
+	test("no scope header when the bridge is off", () => {
+		const cfg = {
+			server: { host: "127.0.0.1" },
+			profiles: [],
+			ledger: { fallbackBlend: { inputPerMtok: 1, outputPerMtok: 1 } },
+			context: { enabled: false, defaultScope: "ashlands" },
+		};
+		expect(buildProviderConfig(1234, cfg, "/x/ashlands").agentdoxScope).toBeUndefined();
 	});
 });

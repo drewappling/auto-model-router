@@ -52,6 +52,30 @@ export interface EmbedConfig {
 	baseUrl: string;
 	models: EmbedModelSpec[];
 	harnessId?: string;
+	/**
+	 * agentdox project scope sent as `X-Agentdox-Scope`. Selects which
+	 * project's shared context is injected into every turn, so switching
+	 * models never loses the project's memory/docs/brief.
+	 */
+	agentdoxScope?: string;
+}
+
+/**
+ * Derives an agentdox project slug from the omp workspace directory.
+ *
+ * The workspace basename is the one identifier that is already stable, already
+ * per-project, and requires no configuration — the same convention agentdox's
+ * own `project_ensure` slugs follow. An explicitly configured
+ * `context.defaultScope` always wins over this.
+ */
+export function deriveAgentdoxScope(cwd: string): string {
+	// Both separators: omp reports a Windows cwd with backslashes.
+	const cleaned = cwd.replace(/[\\/]+$/, "");
+	const base = cleaned.split(/[\\/]/).pop() ?? "";
+	return base
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
 }
 
 /**
@@ -113,7 +137,10 @@ export function buildProviderConfig(
 		server: { host: string; harnessId?: string };
 		profiles: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }>;
 		ledger: { fallbackBlend: { inputPerMtok: number; outputPerMtok: number } };
+		context?: { enabled: boolean; defaultScope: string };
 	},
+	/** omp's workspace directory, used to derive a scope when none is configured. */
+	cwd?: string,
 ): EmbedConfig {
 	const host = cfg.server.host === "0.0.0.0" || cfg.server.host === "::" ? "127.0.0.1" : cfg.server.host;
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
@@ -136,6 +163,10 @@ export function buildProviderConfig(
 	};
 	if (cfg.server.harnessId !== undefined && cfg.server.harnessId !== "") {
 		out.harnessId = cfg.server.harnessId;
+	}
+	if (cfg.context?.enabled === true) {
+		const scope = cfg.context.defaultScope !== "" ? cfg.context.defaultScope : deriveAgentdoxScope(cwd ?? "");
+		if (scope !== "") out.agentdoxScope = scope;
 	}
 	return out;
 }
