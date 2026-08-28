@@ -620,6 +620,13 @@ shows which model produced which turn. Those messages feed back into the next
 `context_assemble`, so the model you switch *to* inherits what the model you
 switched *from* actually did.
 
+A recorded turn is the whole **user-visible** turn, not one record per upstream
+request. An agentic turn is a loop of dispatches — each tool round-trip finishes
+with `tool_calls` and emits almost no text, and the last user message does not
+move while the loop runs. So the router buffers the assistant's narration across
+the loop and writes it once, together with the closing synthesis, when the
+assistant actually yields back to the user.
+
 Write-backs are queued, bounded, and never awaited: agentdox is an enrichment,
 not a dependency. If it is unreachable the turn routes and dispatches normally,
 and a pinned block keeps being served.

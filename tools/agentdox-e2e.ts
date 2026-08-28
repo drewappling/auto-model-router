@@ -93,6 +93,7 @@ bridge.recordTurn({
 	assistantText: "yes - refs carry model: and tier:.",
 	slug: "anthropic/claude-haiku-4.5",
 	tier: "simple",
+	turnEnded: true,
 });
 await bridge.flush();
 
@@ -115,6 +116,52 @@ if (mine !== undefined) {
 		"assistant turn is model-attributed",
 		assistant?.refs?.includes("model:anthropic/claude-haiku-4.5") === true,
 		JSON.stringify(assistant?.refs ?? []),
+	);
+}
+
+// 6. A tool loop must record ONE turn, not one record per dispatch. This is the
+//    regression that made transcripts useless: every tool round-trip is its own
+//    dispatch, finishing with `tool_calls` and carrying an UNCHANGED last user
+//    message, so recording per dispatch wrote a near-empty assistant message
+//    and a duplicate user message per round-trip.
+const loopKey = `${conversationKey}-loop`;
+const loopTitle = `bridge e2e loop ${loopKey}`;
+function loopDispatch(assistantText: string, turnEnded: boolean): void {
+	bridge.recordTurn({
+		scope,
+		conversationKey: loopKey,
+		title: loopTitle,
+		userText: "why did cache read fall?",
+		assistantText,
+		slug: "z-ai/glm-5.3-flash",
+		tier: "simple",
+		turnEnded,
+	});
+}
+for (const fragment of ["reading the ledger", "", "checking the cache column"]) loopDispatch(fragment, false);
+loopDispatch("the breakpoint index drifted every turn.", true);
+await bridge.flush();
+
+const loopRes = await fetch(`${baseUrl}/sessions?scope=${encodeURIComponent(scope)}`, {
+	headers: { authorization: `Bearer ${token}` },
+});
+const loopSessions = (await loopRes.json()) as { id: string; title: string }[];
+const loopSession = loopSessions.find((s) => s.title === loopTitle);
+check("tool loop created a session", loopSession !== undefined, loopSession?.id ?? "not found");
+
+if (loopSession !== undefined) {
+	const full = await fetch(`${baseUrl}/sessions/${loopSession.id}`, {
+		headers: { authorization: `Bearer ${token}` },
+	});
+	const session = (await full.json()) as { messages: { role: string; content: string }[] };
+	const users = session.messages.filter((m) => m.role === "user");
+	const assistants = session.messages.filter((m) => m.role === "assistant");
+	check("four dispatches wrote exactly one user message", users.length === 1, `${users.length} user messages`);
+	check("four dispatches wrote exactly one assistant message", assistants.length === 1, `${assistants.length} assistant messages`);
+	check(
+		"the loop's narration and the closing synthesis both survive",
+		assistants[0]?.content === "reading the ledger\n\nchecking the cache column\n\nthe breakpoint index drifted every turn.",
+		JSON.stringify(assistants[0]?.content ?? ""),
 	);
 }
 

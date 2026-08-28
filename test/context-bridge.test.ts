@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentDoxClient } from "../src/context/agentdox.ts";
 import { createContextBridge } from "../src/context/bridge.ts";
 import { createContextStore } from "../src/context/store.ts";
-import type { ContextResolveInput } from "../src/context/types.ts";
+import type { ContextResolveInput, TurnRecord } from "../src/context/types.ts";
 import { createLogger } from "../src/util/log.ts";
 import { openDb } from "../src/util/sqlite.ts";
 import { injectForTest } from "./helpers/inject.ts";
@@ -246,6 +246,7 @@ describe("context bridge write-back", () => {
 				assistantText: "done",
 				slug: "anthropic/claude-haiku-4.5",
 				tier: "simple",
+				turnEnded: true,
 			});
 			bridge.recordTurn({
 				scope: "ashlands",
@@ -255,6 +256,7 @@ describe("context bridge write-back", () => {
 				assistantText: "ok",
 				slug: "anthropic/claude-opus-4.5",
 				tier: "hard",
+				turnEnded: true,
 			});
 			await bridge.flush();
 
@@ -280,9 +282,100 @@ describe("context bridge write-back", () => {
 				assistantText: "a",
 				slug: "x",
 				tier: "simple",
+				turnEnded: true,
 			});
 			await bridge.flush();
 			expect(client.appended).toHaveLength(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	/** One dispatch of a turn; `turnEnded` marks the one that yields to the user. */
+	function mkRecord(over: Partial<TurnRecord> & { turnEnded: boolean }): TurnRecord {
+		return {
+			scope: "ashlands",
+			conversationKey: "k1",
+			title: "movement fix",
+			userText: "fix movement",
+			assistantText: "",
+			slug: "z-ai/glm-5.3-flash",
+			tier: "simple",
+			...over,
+		};
+	}
+
+	test("a tool loop records one turn, not one record per dispatch", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			// One user-visible turn: five tool round-trips, then the synthesis.
+			// Every dispatch carries the SAME unchanged user text — recording per
+			// dispatch appended it once per round-trip and buried the real answer
+			// under near-empty assistant messages.
+			for (const assistantText of ["let me look", "", "checking the ledger", "", "almost there"]) {
+				bridge.recordTurn(mkRecord({ assistantText, turnEnded: false }));
+			}
+			bridge.recordTurn(mkRecord({ assistantText: "fixed: the damping was inverted.", turnEnded: true }));
+			await bridge.flush();
+
+			expect(client.sessionsCreated).toBe(1);
+			const users = client.appended.filter((m) => m.role === "user");
+			const assistants = client.appended.filter((m) => m.role === "assistant");
+			expect(users).toHaveLength(1);
+			expect(assistants).toHaveLength(1);
+			// The loop's narration AND the closing synthesis survive, in order.
+			expect(assistants[0]?.content).toBe(
+				"let me look\n\nchecking the ledger\n\nalmost there\n\nfixed: the damping was inverted.",
+			);
+			expect(assistants[0]?.refs).toEqual(["model:z-ai/glm-5.3-flash", "tier:simple"]);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("a tool loop still running writes nothing", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			bridge.recordTurn(mkRecord({ assistantText: "let me look", turnEnded: false }));
+			await bridge.flush();
+			// The assistant has not answered yet. Writing here is what produced the
+			// 4-char transcripts, so mid-loop must stay silent.
+			expect(client.appended).toHaveLength(0);
+			expect(client.sessionsCreated).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("interleaved conversations buffer independently", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			bridge.recordTurn(mkRecord({ conversationKey: "k1", assistantText: "k1 narration", turnEnded: false }));
+			bridge.recordTurn(mkRecord({ conversationKey: "k2", assistantText: "k2 narration", turnEnded: false }));
+			bridge.recordTurn(mkRecord({ conversationKey: "k2", assistantText: "k2 answer", turnEnded: true }));
+			bridge.recordTurn(mkRecord({ conversationKey: "k1", assistantText: "k1 answer", turnEnded: true }));
+			await bridge.flush();
+
+			const assistants = client.appended.filter((m) => m.role === "assistant");
+			expect(assistants).toHaveLength(2);
+			expect(assistants[0]?.content).toBe("k2 narration\n\nk2 answer");
+			expect(assistants[1]?.content).toBe("k1 narration\n\nk1 answer");
+		} finally {
+			db.close();
+		}
+	});
+
+	test("a silent turn still records the user message", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			bridge.recordTurn(mkRecord({ assistantText: "", turnEnded: true }));
+			await bridge.flush();
+			expect(client.appended.filter((m) => m.role === "user")).toHaveLength(1);
+			expect(client.appended.filter((m) => m.role === "assistant")).toHaveLength(0);
 		} finally {
 			db.close();
 		}

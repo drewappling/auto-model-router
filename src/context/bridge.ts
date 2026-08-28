@@ -49,6 +49,29 @@ function renderBlock(raw: string, maxChars: number): string {
 	].join("\n");
 }
 
+/**
+ * Cap on assistant text buffered for one in-flight turn, chars. A memory guard
+ * only, not a quality knob: a 200-round-trip loop must not buffer without
+ * limit. The dispatch that ENDS the turn is appended past this cap, so the
+ * model's actual answer is never the thing that gets dropped.
+ */
+const MAX_PENDING_CHARS = 64_000;
+
+/**
+ * Cap on conversations buffering fragments at once. A turn that dies without a
+ * terminal dispatch (client disconnect, upstream error) leaves its buffer
+ * behind, so this map is bounded rather than trusted to drain.
+ */
+const MAX_PENDING_CONVERSATIONS = 64;
+
+/** Appends a mid-loop fragment, bounded. Blank-line joined: separate thoughts. */
+function appendFragment(prior: string, next: string): string {
+	if (next === "") return prior;
+	if (prior === "") return next.slice(0, MAX_PENDING_CHARS);
+	if (prior.length >= MAX_PENDING_CHARS) return prior;
+	return `${prior}\n\n${next}`.slice(0, MAX_PENDING_CHARS);
+}
+
 export function createContextBridge(opts: BridgeOptions): ContextBridge {
 	const { client, store, log, maxStalenessMs, maxBlockChars, recordTurns, maxQueue } = opts;
 
@@ -57,6 +80,10 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 	let queue: Promise<void> = Promise.resolve();
 	let queued = 0;
 	let closed = false;
+	// Assistant text buffered across an in-flight tool loop, keyed by
+	// conversation. Process-local by design: a turn never spans a restart, and
+	// losing a buffer whose turn already died costs nothing.
+	const pending = new Map<string, string>();
 
 	const shouldRefresh = (input: ContextResolveInput, pin: ContextPin | null): boolean => {
 		if (pin === null) return true;
@@ -115,7 +142,34 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 
 		recordTurn(rec: TurnRecord) {
 			if (!recordTurns || closed || rec.scope === "") return;
-			if (rec.userText === "" && rec.assistantText === "") return;
+
+			// Mid-loop dispatch: keep the fragment and wait for the turn to end.
+			// Writing here is what produced ~13 near-empty assistant messages per
+			// turn plus ~13 copies of an unchanged user message, which both lost
+			// the real answer and poisoned later context assembly.
+			if (!rec.turnEnded) {
+				if (rec.assistantText === "") return;
+				const prior = pending.get(rec.conversationKey);
+				if (prior === undefined && pending.size >= MAX_PENDING_CONVERSATIONS) {
+					log.debug("agentdox pending transcript budget full; dropping fragment", { conversations: pending.size });
+					return;
+				}
+				pending.set(rec.conversationKey, appendFragment(prior ?? "", rec.assistantText));
+				return;
+			}
+
+			// Turn over. Flush the whole loop's narration plus this dispatch's
+			// synthesis as ONE assistant message, attributed to the served model.
+			const buffered = pending.get(rec.conversationKey) ?? "";
+			pending.delete(rec.conversationKey);
+			const assistantText =
+				buffered === ""
+					? rec.assistantText
+					: rec.assistantText === ""
+						? buffered
+						: `${buffered}\n\n${rec.assistantText}`;
+
+			if (rec.userText === "" && assistantText === "") return;
 			if (queued >= maxQueue) {
 				log.debug("agentdox write-back queue full; dropping turn record", { queued });
 				return;
@@ -134,7 +188,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 					// every turn shows WHICH model produced it.
 					const refs = [`model:${rec.slug}`, `tier:${rec.tier}`];
 					if (rec.userText !== "") await client.append(sessionId, "user", rec.userText, []);
-					if (rec.assistantText !== "") await client.append(sessionId, "assistant", rec.assistantText, refs);
+					if (assistantText !== "") await client.append(sessionId, "assistant", assistantText, refs);
 				})
 				.catch((err: unknown) => {
 					log.debug("agentdox write-back failed", { error: err instanceof Error ? err.message : String(err) });
@@ -150,6 +204,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 
 		close() {
 			closed = true;
+			pending.clear();
 		},
 	};
 }

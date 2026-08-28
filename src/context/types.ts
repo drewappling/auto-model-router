@@ -49,10 +49,23 @@ export interface TurnRecord {
 	/** Title used if this is the first turn and a session must be created. */
 	title: string;
 	userText: string;
+	/** Text THIS dispatch produced. Fragments are joined across a tool loop. */
 	assistantText: string;
 	/** The slug that actually served the turn — the model attribution. */
 	slug: string;
 	tier: string;
+	/**
+	 * Whether the assistant yielded control back to the user — i.e. the upstream
+	 * finish reason was NOT `tool_calls`.
+	 *
+	 * A user-visible turn is many dispatches: every tool round-trip is its own
+	 * request, and only the last carries the model's synthesis. The intermediate
+	 * ones are almost pure tool calls with a few stray words of text, and the
+	 * last *user* message does not move while the loop runs. False therefore
+	 * means "buffer this fragment, the turn is still running" — recording it as
+	 * a turn would write a near-empty answer and re-append the same user text.
+	 */
+	turnEnded: boolean;
 }
 
 export interface ContextBridge {

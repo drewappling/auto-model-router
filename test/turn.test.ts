@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createDisabledBridge } from "../src/context/bridge.ts";
+import type { ContextBridge, TurnRecord } from "../src/context/types.ts";
 import type { CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
 import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
@@ -551,5 +552,55 @@ describe("exploration reaches the ledger", () => {
 
 		expect(entries).toHaveLength(1);
 		expect(entries[0]?.exploredFrom).toBeNull();
+	});
+});
+
+describe("agentdox write-back sees the shape of the turn", () => {
+	function mkRecordingBridge(): { bridge: ContextBridge; records: TurnRecord[] } {
+		const records: TurnRecord[] = [];
+		return {
+			records,
+			bridge: {
+				enabled: true,
+				resolve: () => Promise.resolve(null),
+				recordTurn: (rec) => {
+					records.push(rec);
+				},
+				flush: () => Promise.resolve(),
+				close: () => {},
+			},
+		};
+	}
+
+	test("a tool_calls finish is a fragment; only a yielding finish ends the turn", async () => {
+		// A user-visible turn is many dispatches. The orchestrator must tell the
+		// bridge which one actually handed control back, or the transcript records
+		// a near-empty answer per tool round-trip and re-appends the same user
+		// text every time.
+		const { router } = mkRouter([
+			mkDecision("simple", "cheap/model", { escalateTo: null }),
+			mkDecision("simple", "cheap/model", { escalateTo: null }),
+		]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("let me look"), finishChunk("tool_calls"), usageChunk({}, 0.0001)] },
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("all done"), finishChunk("stop"), usageChunk({}, 0.0001)] },
+		]);
+		const { ledger } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+		const { bridge, records } = mkRecordingBridge();
+		// doxActive needs a scope; the request header supplies it.
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj" };
+		const deps = { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge };
+
+		await runTurn(req, sink, deps, new AbortController().signal);
+		await runTurn(req, sink, deps, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(records).toHaveLength(2);
+		expect(records[0]?.turnEnded).toBe(false);
+		expect(records[0]?.assistantText).toBe("let me look");
+		expect(records[1]?.turnEnded).toBe(true);
+		expect(records[1]?.assistantText).toBe("all done");
 	});
 });

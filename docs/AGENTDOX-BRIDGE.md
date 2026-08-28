@@ -1,7 +1,7 @@
 # agentdox bridge — handoff
 
-**Status:** implemented, typechecks clean, 409 tests pass, injection verified end-to-end
-through omp. **One open bug** in the write-back path (§5). Pick up there.
+**Status:** implemented, typechecks clean, 438 tests pass, injection verified end-to-end
+through omp. The write-back bug in §5 is **fixed**; `context.recordTurns` is safe to enable.
 
 Design rationale (why it is built this way):
 `E:/projects/agentdox/docs/architecture/router-context-bridge.md`.
@@ -86,44 +86,56 @@ Two more traps hit during this work:
 - Long-running interactive omp sessions hold their own embedded routers from whenever they
   started. Check `Get-Process omp` before trusting a result.
 
-## 5. OPEN BUG — assistant text is under-captured on the omp path
+## 5. FIXED — one record per dispatch, not per turn
 
-**Verified working:** injection reaches the model through omp. The dispatched system message
-was confirmed to contain the block (`containsBlock=true`), and on a direct
-`/v1/chat/completions` dispatch the model answered *from* the injected memory, verbatim:
+**Symptom:** through omp the recorded assistant turn was near-empty —
+`assistantChars=4` (literally `" high"`) while omp displayed several paragraphs. Session and
+model attribution (`refs: ["model:…", "tier:…"]`) were always correct; only the assistant
+*content* was wrong.
 
-> "The router pins one agentdox context block per conversation, refreshing it only on model
-> switches, retries, or TTL."
+**Root cause — none of the three leads originally listed here.** The text was not
+under-captured; the *wrong requests* were being recorded. A user-visible turn is not one
+upstream request, it is a whole tool loop of them. Live ledger proof, one conversation key,
+`wasted=0` and `attempt=0` on every row:
 
-**Broken:** through omp, the recorded assistant turn is near-empty — `assistantChars=4`
-(literally `" high"`) while omp displayed several paragraphs. The session and the model
-attribution (`refs: ["model:…", "tier:…"]`) are written correctly; only the assistant
-*content* is wrong.
+| dispatch | `finish_reason` | `toolLoopDepth` | completion tokens |
+| --- | --- | --- | --- |
+| 1 | `tool_calls` | 0 | 339 |
+| 2–6 | `tool_calls` | 2, 4, 6, 8, 10 | 91, 68, 198, 78, 44 |
+| 7 | **`stop`** | 12 | **596** |
+| 8 | `tool_calls` | 0 *(next turn)* | 167 |
 
-`assistantText` is accumulated in `src/server/turn.ts` from `ev.type === "text"` deltas
-inside the chunk loop. Leads, roughly in order of suspicion:
+Each tool round-trip is its own dispatch, finishing with `tool_calls` and emitting almost no
+`text` — the payload is tool calls. `" high"` was a stray word of preamble, a *complete*
+record of a fragment rather than a truncated answer. Only the final `stop` dispatch carries
+the synthesis. `recordTurn` fired on all ~13, and the last writer won.
 
-1. **omp issues more than one upstream request per visible turn** (e.g. a title/summary call
-   on the `smol` role, which also resolves to `auto` → the router). The 4-char record may be
-   an auxiliary request, with the real answer on a different conversation key. Check by
-   logging `conversationKey` alongside the record line and counting turns per omp invocation.
-2. **Content arrives as `reasoning` deltas, not `text`**, for reasoning-capable models — the
-   accumulator deliberately ignores `reasoning`. If so, decide whether the transcript should
-   capture reasoning (probably not) or whether `text` is arriving under a chunk shape the
-   interpreter is not mapping to a `text` event.
-3. **Escalation resets the buffer.** `assistantText` is declared per attempt; if a turn
-   commits on a later attempt the earlier text is correctly dropped, but verify the committed
-   attempt is the one being recorded.
+The same root cause explains the §6 pollution: `lastUserText` walks back to the last `user`
+message, which does **not** move while a tool loop runs, so the identical user text was
+appended once per round-trip too.
 
-Start by adding `conversationKey` and `attempt` to the `agentdox record turn` debug line and
-running one omp invocation — that distinguishes lead 1 from the others immediately.
+**Fix.** `TurnRecord` gained `turnEnded` (`finishReason !== "tool_calls"`, set in
+`src/server/turn.ts`). The bridge buffers assistant fragments per conversation in a
+process-local map and flushes **once**, when the assistant yields back to the user, writing
+the loop's narration plus the closing synthesis as one message. Bounded by
+`MAX_PENDING_CHARS` / `MAX_PENDING_CONVERSATIONS`, since a turn that dies without a terminal
+dispatch never flushes. The terminal dispatch is appended past the char cap, so the model's
+actual answer is never what gets dropped.
+
+Covered by `test/context-bridge.test.ts` (loop records one turn; a running loop writes
+nothing; interleaved conversations buffer independently) and `test/turn.test.ts` (the
+`tool_calls` → `turnEnded=false` wiring). All four were verified to FAIL against the old
+behavior. `tools/agentdox-e2e.ts` step 6 proves it against a live server: four dispatches →
+exactly one user and one assistant message.
 
 ## 6. Also worth doing
 
 - **Context pollution.** `context_assemble` includes recent session messages, so recorded
-  test turns feed back into the next block (already observed: the block contained
-  `assistant:: high` from a prior run). Real usage is fine, but noisy test turns compound.
-  Consider a `sessionLimit` override for the bridge, or excluding router-authored sessions.
+  test turns feed back into the next block (observed: a block containing `assistant:: high`
+  from a prior run). The §5 fix removes the ~13×-per-turn duplication that made this acute,
+  but noisy *test* turns still compound — `tools/agentdox-e2e.ts` writes real sessions into
+  the scope every run. Consider a `sessionLimit` override for the bridge, or excluding
+  router-authored sessions.
 - **`context.timeoutMs` is 3000ms** and failures degrade silently at `debug` level by design.
   If agentdox is cold this can no-op invisibly. Consider logging the first failure at `warn`.
 - **Four copies of this project exist** on this machine: this repo, the research checkout,

@@ -448,22 +448,28 @@ export async function runTurn(
 
 		// Record the settled turn into agentdox, attributed to the model that
 		// actually served it. Queued and never awaited: the transcript is an
-		// artifact of the turn, not a precondition for finishing it.
+		// artifact of the turn, not a precondition for finishing it. A
+		// `tool_calls` finish means the assistant is still working, so the bridge
+		// buffers the fragment rather than writing a near-empty turn.
 		if (doxActive) {
+			const userText = lastUserText(req);
+			const turnEnded = finishReason !== "tool_calls";
 			log.debug("agentdox record turn", {
-				userChars: lastUserText(req).length,
+				conversationKey: req.conversationKey.slice(0, 8),
+				userChars: userText.length,
 				assistantChars: assistantText.length,
-				messages: req.messages.length,
-				roles: req.messages.map((m) => m.role).join(","),
+				finishReason,
+				turnEnded,
 			});
 			bridge.recordTurn({
 				scope: doxScope,
 				conversationKey: req.conversationKey,
 				title: sessionTitle(req),
-				userText: lastUserText(req),
+				userText,
 				assistantText,
 				slug: servedSlug ?? decision.slug,
 				tier: decision.tier,
+				turnEnded,
 			});
 		}
 
