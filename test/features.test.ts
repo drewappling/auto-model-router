@@ -133,6 +133,7 @@ describe("failure and loop signals", () => {
 			100,
 		);
 		expect(f.repeatedToolCall).toBe(true);
+		expect(f.circularToolCall).toBe(true);
 	});
 
 	test("different arguments to the same tool are not a loop", () => {
@@ -148,6 +149,26 @@ describe("failure and loop signals", () => {
 			100,
 		);
 		expect(f.repeatedToolCall).toBe(false);
+		expect(f.circularToolCall).toBe(false);
+	});
+
+	test("a non-adjacent re-issued call is circular but not an adjacent repeat", () => {
+		const f = extractFeatures(
+			req([
+				SYSTEM,
+				{ role: "user", content: "go" },
+				toolCall("c1", "read", '{"path":"same.ts"}'),
+				{ role: "tool", tool_call_id: "c1", content: "x" },
+				toolCall("c2", "bash", '{"command":"ls"}'),
+				{ role: "tool", tool_call_id: "c2", content: "a.txt" },
+				toolCall("c3", "read", '{"path":"same.ts"}'),
+				{ role: "tool", tool_call_id: "c3", content: "x" },
+			]),
+			100,
+		);
+		// c3 repeats c1 verbatim with c2 in between: not adjacent, but circular.
+		expect(f.repeatedToolCall).toBe(false);
+		expect(f.circularToolCall).toBe(true);
 	});
 });
 
@@ -223,6 +244,30 @@ describe("newest-content scoping", () => {
 			100,
 		);
 		expect(f.hasImages).toBe(true);
+		expect(f.hasNewImage).toBe(true);
 		expect(f.requestedReasoning).toBe("high");
+	});
+
+	test("a stale image in history is not new visual work on a tool continuation", () => {
+		const f = extractFeatures(
+			req([
+				SYSTEM,
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "implement this screen" },
+						{ type: "image_url", image_url: { url: "data:image/png;base64,AA" } },
+					],
+				},
+				toolCall("c1", "read", '{"path":"src/app.tsx"}'),
+				{ role: "tool", tool_call_id: "c1", name: "read", content: "export const App = () => null;" },
+			]),
+			100,
+		);
+		// The image is still in context (capability), but the current turn is a
+		// mechanical continuation, not fresh visual work (task axis).
+		expect(f.hasImages).toBe(true);
+		expect(f.hasNewImage).toBe(false);
+		expect(f.isToolResultContinuation).toBe(true);
 	});
 });

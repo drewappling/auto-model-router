@@ -95,6 +95,9 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 	const isToolResultContinuation = tail?.role === "tool";
 	let newContentBytes = 0;
 	let newestUserText = "";
+	// Images in the volatile tail: an image the human just supplied is visual
+	// work; a tool-result continuation carries none of its own.
+	let newestRunImages = 0;
 	if (isToolResultContinuation) {
 		const start = trailingRunStart(messages, (m) => m.role === "tool");
 		for (let i = start; i < messages.length; i++) newContentBytes += messages[i]?.textBytes ?? 0;
@@ -105,6 +108,7 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 			const m = messages[i];
 			if (m === undefined) continue;
 			newContentBytes += m.textBytes;
+			newestRunImages += m.images;
 			parts.push(m.text);
 		}
 		newestUserText = parts.join("\n");
@@ -136,28 +140,35 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		if (m.toolName !== undefined) toolNames.add(m.toolName);
 	}
 
-	// The last two assistant tool calls, in conversation order.
-	let lastName: string | null = null;
-	let lastArgs = "";
-	let prevName: string | null = null;
-	let prevArgs = "";
+	// The last few assistant tool calls, most-recent first, for stuck-loop
+	// detection. A byte-identical call re-issued within this window means the
+	// agent is going in circles even when the repeat is not adjacent — the case
+	// the strict "last two identical" check misses.
+	const RECENT_CALLS = 4;
+	const recentCalls: { name: string; args: string }[] = [];
 	scanCalls: for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
 		if (m === undefined || m.role !== "assistant") continue;
 		for (let j = m.toolCalls.length - 1; j >= 0; j--) {
 			const tc = m.toolCalls[j];
 			if (tc === undefined) continue;
-			if (lastName === null) {
-				lastName = tc.name;
-				lastArgs = tc.argsJson;
-			} else {
-				prevName = tc.name;
-				prevArgs = tc.argsJson;
-				break scanCalls;
+			recentCalls.push({ name: tc.name, args: tc.argsJson });
+			if (recentCalls.length >= RECENT_CALLS) break scanCalls;
+		}
+	}
+	const repeatedToolCall =
+		recentCalls.length >= 2 &&
+		recentCalls[0]?.name === recentCalls[1]?.name &&
+		recentCalls[0]?.args === recentCalls[1]?.args;
+	let circularToolCall = false;
+	for (let a = 0; a < recentCalls.length && !circularToolCall; a++) {
+		for (let b = a + 1; b < recentCalls.length; b++) {
+			if (recentCalls[a]?.name === recentCalls[b]?.name && recentCalls[a]?.args === recentCalls[b]?.args) {
+				circularToolCall = true;
+				break;
 			}
 		}
 	}
-	const repeatedToolCall = lastName !== null && lastName === prevName && lastArgs === prevArgs;
 
 	let lastToolFailed = false;
 	if (isToolResultContinuation) {
@@ -212,7 +223,9 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		distinctToolsUsed: toolNames.size,
 		lastToolFailed,
 		repeatedToolCall,
+		circularToolCall,
 		hasImages: req.hasImages,
+		hasNewImage: newestRunImages > 0,
 		codeBlocks,
 		codeBytes,
 		looksLikeDiff: DIFF_RE.test(newestUserText),

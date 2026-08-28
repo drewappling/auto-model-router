@@ -1,0 +1,163 @@
+/**
+ * Context compaction (Phase 1): deterministic pruning of stale, low-value bulk
+ * — chiefly old tool output — from a turn's history before dispatch.
+ *
+ * This module only DECIDES (a plan of per-message edits) from cheap NormMessage
+ * metadata; `renderUpstreamBody` APPLIES the edits to the raw message bytes.
+ * Every edit shrinks a single tool-result's CONTENT in place — never removes or
+ * reorders a message — so tool_call↔result pairing, cache-breakpoint indices,
+ * and the agentdox context-block append all stay valid. It is a pure function
+ * of its inputs, so `explain` still replays a past decision offline.
+ *
+ * See docs/context-optimization.md.
+ */
+
+import type { CompactionConfig } from "../config/types.ts";
+import type { CompactionEdit, NormMessage } from "../wire/types.ts";
+
+export interface CompactionResult {
+	edits: CompactionEdit[];
+	/** Estimated prompt bytes removed by the plan. */
+	savedBytes: number;
+}
+
+const EMPTY: CompactionResult = { edits: [], savedBytes: 0 };
+
+/** Approximate byte cost of an elision breadcrumb; savings are net of it. */
+const BREADCRUMB_BYTES = 120;
+
+/**
+ * First string value in a tool call's argument JSON — a schema-agnostic proxy
+ * for the resource a call operates on (a `path`, `id`, `query`, ...). Used to
+ * detect when a later call supersedes an earlier read of the same resource.
+ */
+function primaryArg(argsJson: string): string | null {
+	try {
+		const parsed: unknown = JSON.parse(argsJson);
+		if (parsed !== null && typeof parsed === "object") {
+			for (const value of Object.values(parsed)) if (typeof value === "string" && value.length > 0) return value;
+		}
+	} catch {
+		// Malformed args carry no resource key; fall through.
+	}
+	return null;
+}
+
+/**
+ * Index of the first message in the PROTECTED region: the last
+ * `protectRecentTurns` user/assistant turns and everything after them (the
+ * volatile tail). Messages before it are eligible for compaction. Returns 0
+ * (protect everything) when the conversation is shorter than the window.
+ */
+function protectFromIndex(messages: readonly NormMessage[], protectRecentTurns: number): number {
+	let turns = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const role = messages[i]?.role;
+		if (role === "user" || role === "assistant") {
+			turns++;
+			if (turns >= protectRecentTurns) return i;
+		}
+	}
+	return 0;
+}
+
+interface ToolResult {
+	index: number;
+	name: string;
+	text: string;
+	bytes: number;
+	/** Primary argument of the originating call, for supersede detection. */
+	key: string | null;
+}
+
+/**
+ * Plans compaction for a turn's messages toward `targetBytes` of total prompt.
+ * Duplicate and superseded elisions (pure stale-data wins) are always applied;
+ * large-result truncation (more lossy) runs largest-first only until the target
+ * is met. `promptBytes` is the whole prompt (messages + system + tool schemas),
+ * so the target is compared against the real dispatched size.
+ */
+export function planCompaction(
+	messages: readonly NormMessage[],
+	cfg: CompactionConfig,
+	targetBytes: number,
+	promptBytes: number,
+): CompactionResult {
+	if (!cfg.enabled) return EMPTY;
+
+	const protectStart = protectFromIndex(messages, cfg.protectRecentTurns);
+	if (protectStart <= 0) return EMPTY;
+
+	// Assistant tool_call id → name/args, to key tool results by their call.
+	const callById = new Map<string, { name: string; args: string }>();
+	for (const m of messages) {
+		if (m.role !== "assistant") continue;
+		for (const tc of m.toolCalls) callById.set(tc.id, { name: tc.name, args: tc.argsJson });
+	}
+
+	const tools: ToolResult[] = [];
+	for (let i = 0; i < protectStart; i++) {
+		const m = messages[i];
+		if (m === undefined || m.role !== "tool") continue;
+		const call = m.toolCallId === undefined ? undefined : callById.get(m.toolCallId);
+		tools.push({
+			index: i,
+			name: m.toolName ?? call?.name ?? "",
+			text: m.text,
+			bytes: m.textBytes,
+			key: call === undefined ? null : primaryArg(call.args),
+		});
+	}
+	if (tools.length === 0) return EMPTY;
+
+	const edits: CompactionEdit[] = [];
+	const done = new Set<number>();
+	let saved = 0;
+	const stub = (t: ToolResult, note: string): void => {
+		if (done.has(t.index)) return;
+		const gain = t.bytes - BREADCRUMB_BYTES;
+		if (gain <= 0) return; // already smaller than a breadcrumb
+		edits.push({ index: t.index, mode: "stub", keepHead: 0, keepTail: 0, note });
+		done.add(t.index);
+		saved += gain;
+	};
+
+	// Rule 1: collapse byte-identical duplicate results, keeping the LAST copy
+	// (consistent with supersede below, so a result that is both never loses
+	// every copy).
+	if (cfg.collapseDuplicateResults) {
+		const lastByContent = new Map<string, number>();
+		for (const t of tools) lastByContent.set(`${t.name}\u0000${t.text}`, t.index);
+		for (const t of tools) {
+			if (lastByContent.get(`${t.name}\u0000${t.text}`) !== t.index) stub(t, `identical repeated ${t.name || "tool"} result`);
+		}
+	}
+
+	// Rule 2: elide reads superseded by a newer call to the same resource,
+	// keeping the LAST (authoritative) one.
+	if (cfg.elideSupersededReads) {
+		const lastIndexByResource = new Map<string, number>();
+		for (const t of tools) if (t.key !== null) lastIndexByResource.set(`${t.name}\u0000${t.key}`, t.index);
+		for (const t of tools) {
+			if (t.key === null || done.has(t.index)) continue;
+			const last = lastIndexByResource.get(`${t.name}\u0000${t.key}`);
+			if (last !== undefined && last !== t.index) stub(t, `superseded by a newer ${t.name || "tool"} call`);
+		}
+	}
+
+	// Rule 3: truncate large stale results, largest first, until under target.
+	const keepBudget = cfg.keepHeadBytes + cfg.keepTailBytes + BREADCRUMB_BYTES;
+	const truncatable = tools
+		.filter((t) => !done.has(t.index) && t.bytes > cfg.maxToolResultBytes && t.bytes > keepBudget)
+		.sort((a, b) => b.bytes - a.bytes || a.index - b.index);
+	for (const t of truncatable) {
+		if (promptBytes - saved <= targetBytes) break;
+		edits.push({ index: t.index, mode: "truncate", keepHead: cfg.keepHeadBytes, keepTail: cfg.keepTailBytes, note: `large ${t.name || "tool"} result` });
+		done.add(t.index);
+		saved += t.bytes - keepBudget;
+	}
+
+	if (edits.length === 0) return EMPTY;
+	edits.sort((a, b) => a.index - b.index);
+	return { edits, savedBytes: saved };
+}

@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 10;
+const USER_VERSION = 12;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -92,6 +92,23 @@ CREATE TABLE IF NOT EXISTS conversations (
   cache_warm_slug TEXT,
   cache_warm_at_ms INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL DEFAULT 0
+);
+
+-- agentdox bridge. Blocks are content-addressed so many conversations on one
+-- project share a single copy, and so a restart can re-inject the SAME bytes a
+-- conversation was already using (OpenRouter's prompt cache outlives us).
+CREATE TABLE IF NOT EXISTS context_blocks (
+  version TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  block TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agentdox_sessions (
+  conversation_key TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
 );
 
 -- v2: catalog_cache gains key_scoped provenance. ALTER TABLE ADD COLUMN is
@@ -181,6 +198,19 @@ const MIGRATE_V8 = `
 ALTER TABLE ledger ADD COLUMN hold_arm INTEGER;
 `;
 
+// v11: conversations pin an agentdox context version. Storing the version (not
+// the block) keeps the row small; the block itself lives once in context_blocks.
+const MIGRATE_V11 = `
+ALTER TABLE conversations ADD COLUMN context_version TEXT;
+ALTER TABLE conversations ADD COLUMN context_fetched_at_ms INTEGER NOT NULL DEFAULT 0;
+`;
+
+// v12: ledger records prompt tokens removed by context compaction, so the
+// savings (and any over-aggressive elision) can be measured and tuned.
+const MIGRATE_V12 = `
+ALTER TABLE ledger ADD COLUMN prompt_tokens_saved INTEGER;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -212,6 +242,9 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
 		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
 		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
+		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
+		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
+		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

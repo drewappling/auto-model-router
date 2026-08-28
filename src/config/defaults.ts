@@ -69,9 +69,13 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		trustScopedByHarness: false,
 		contextHeadroom: 1.25,
 		// Latency scoring is off by default (weight 0): opt in after establishing a
-		// baseline. TTFT above the reference inflates a model's effective cost.
+		// baseline. Expected total wait (TTFT + expected completion / throughput)
+		// above the references inflates a model's effective cost.
 		latencyWeight: 0,
 		latencyReferenceMs: 5000,
+		// 30 tok/s: below this a model streams noticeably slowly. Only genuinely
+		// slow models (e.g. deepseek-v4-flash ~20 tok/s) fall under it.
+		latencyReferenceTokensPerSec: 30,
 		latencyMinSamples: 20,
 	},
 	classifier: {
@@ -140,6 +144,34 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Anthropic allows 4 breakpoints; OpenRouter translates for other vendors.
 		maxBreakpoints: 4,
 		minPromptTokens: 2_048,
+	},
+	context: {
+		// Off until an agentdox URL + token are configured. Enabling this changes
+		// what every model sees, so it is never implicit.
+		enabled: false,
+		baseUrl: "",
+		token: "",
+		defaultScope: "",
+		timeoutMs: 3_000,
+		// Matches agentdox's own auto-context job cadence (900s): refreshing
+		// faster than the server reassembles buys nothing but cache misses.
+		maxStalenessMs: 900_000,
+		maxBlockChars: 24_000,
+		recordTurns: true,
+		maxQueue: 64,
+	},
+	compaction: {
+		// Off by default: shrinking context is behavior-changing, never implicit.
+		enabled: false,
+		// ~40k tokens: above this the prompt is dominated by re-sent tool output.
+		budgetTokens: 40_000,
+		fitToWindow: true,
+		protectRecentTurns: 4,
+		maxToolResultBytes: 4_096,
+		keepHeadBytes: 512,
+		keepTailBytes: 512,
+		elideSupersededReads: true,
+		collapseDuplicateResults: true,
 	},
 	budget: {
 		// No caps by default; at a configured ceiling, downgrade rather than fail.

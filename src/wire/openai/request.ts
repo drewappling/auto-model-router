@@ -1,4 +1,5 @@
 import type {
+	CompactionEdit,
 	NormMessage,
 	NormRequest,
 	NormTool,
@@ -136,6 +137,78 @@ function parseReasoning(b: { reasoning?: unknown; reasoning_effort?: unknown }):
 	return undefined;
 }
 
+/**
+ * Folds the agentdox context block into the system prefix.
+ *
+ * Appends to the LAST system/developer message rather than inserting a new
+ * one. Inserting would shift every cache-breakpoint index the core computed
+ * against the client's own array; appending keeps them valid AND lands the
+ * block inside the prefix `planCacheBreakpoints` already marks as cacheable.
+ *
+ * When the request has no system message at all, one is prepended and the
+ * breakpoint indices are shifted by one to compensate.
+ *
+ * Returns the (possibly shifted) breakpoint indices.
+ */
+function injectContextBlock(
+	messages: Record<string, unknown>[],
+	block: string,
+	breakpoints: number[],
+): number[] {
+	let lastSystem = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const role = messages[i]?.role;
+		if (role === "system" || role === "developer") {
+			lastSystem = i;
+			break;
+		}
+	}
+
+	if (lastSystem === -1) {
+		messages.unshift({ role: "system", content: block });
+		return breakpoints.map((i) => i + 1);
+	}
+
+	const msg = messages[lastSystem];
+	if (msg === undefined) return breakpoints;
+	const content = msg.content;
+	if (typeof content === "string") {
+		msg.content = `${content}
+
+${block}`;
+	} else if (Array.isArray(content)) {
+		// Append as a trailing text part. A later cache_control pass marks the
+		// LAST text part, so the block stays inside the cached prefix.
+		content.push({ type: "text", text: block });
+	} else {
+		msg.content = block;
+	}
+	return breakpoints;
+}
+
+/**
+ * Applies compaction edits in place: shrinks each targeted tool-result's string
+ * content, leaving a self-describing breadcrumb so the model can re-run the tool
+ * to restore what was elided. Non-string content (rare for tool results) is left
+ * untouched. Message count and order are preserved, so breakpoint indices and
+ * the context-block append computed against this array stay valid.
+ */
+function applyCompaction(messages: Record<string, unknown>[], edits: readonly CompactionEdit[]): void {
+	for (const edit of edits) {
+		const msg = messages[edit.index];
+		if (msg === undefined) continue;
+		const content = msg.content;
+		if (typeof content !== "string") continue;
+		if (edit.mode === "stub") {
+			msg.content = `[omp-router: ${edit.note} elided to save context; re-run the tool to restore]`;
+			continue;
+		}
+		if (content.length <= edit.keepHead + edit.keepTail) continue;
+		const elided = content.length - edit.keepHead - edit.keepTail;
+		msg.content = `${content.slice(0, edit.keepHead)}\n\n[omp-router: elided ${elided} chars — ${edit.note}; re-run the tool to restore]\n\n${content.slice(content.length - edit.keepTail)}`;
+	}
+}
+
 function renderUpstreamBody(
 	original: Record<string, unknown>,
 	m: UpstreamMutations,
@@ -165,6 +238,7 @@ function renderUpstreamBody(
 
 	// messages was validated to be an array of objects at parse time.
 	const messages = body.messages as Record<string, unknown>[];
+	if (m.compactionPlan !== undefined && m.compactionPlan.length > 0) applyCompaction(messages, m.compactionPlan);
 	if (m.stripAssistantReasoning) {
 		// omp replays reasoning fields for what it believes is a local backend;
 		// most OpenRouter upstreams reject every spelling.
@@ -175,7 +249,13 @@ function renderUpstreamBody(
 			delete msg.reasoning_details;
 		}
 	}
-	for (const idx of m.cacheBreakpointMessageIndices) {
+	// Context injection happens BEFORE breakpoints are applied, so the block is
+	// covered by the system-prefix breakpoint rather than left outside it.
+	let breakpoints = m.cacheBreakpointMessageIndices;
+	if (m.contextBlock !== undefined && m.contextBlock !== "") {
+		breakpoints = injectContextBlock(messages, m.contextBlock, breakpoints);
+	}
+	for (const idx of breakpoints) {
 		const msg = messages[idx];
 		if (!msg) continue;
 		const content = msg.content;
@@ -207,6 +287,10 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	// omp UI session id for per-session toast scoping. The embed extension sets
 	// this header to ctx.sessionManager.getSessionId(); absent ⇒ unknown session.
 	const ompSessionId = (headers.get("x-omp-session") ?? "").trim();
+
+	// agentdox project scope. Selects whose shared context is injected; absent
+	// ⇒ the server falls back to its configured default scope.
+	const agentdoxScope = (headers.get("x-agentdox-scope") ?? "").trim();
 
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
@@ -267,6 +351,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		conversationKey,
 		harnessId,
 		ompSessionId,
+		agentdoxScope,
 		requestedModel,
 		messages,
 		tools,

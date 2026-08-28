@@ -67,6 +67,7 @@ const filters = z.strictObject({
 	contextHeadroom: z.number().positive().optional(),
 	latencyWeight: z.number().nonnegative().optional(),
 	latencyReferenceMs: z.number().positive().optional(),
+	latencyReferenceTokensPerSec: z.number().positive().optional(),
 	latencyMinSamples: z.number().int().nonnegative().optional(),
 });
 
@@ -128,6 +129,30 @@ const cache = z.strictObject({
 	minPromptTokens: z.number().int().nonnegative().optional(),
 });
 
+const context = z.strictObject({
+	enabled: z.boolean().optional(),
+	baseUrl: z.string().optional(),
+	token: z.string().optional(),
+	defaultScope: z.string().optional(),
+	timeoutMs: z.number().int().positive().optional(),
+	maxStalenessMs: z.number().int().nonnegative().optional(),
+	maxBlockChars: z.number().int().positive().optional(),
+	recordTurns: z.boolean().optional(),
+	maxQueue: z.number().int().positive().optional(),
+});
+
+const compaction = z.strictObject({
+	enabled: z.boolean().optional(),
+	budgetTokens: z.number().int().positive().optional(),
+	fitToWindow: z.boolean().optional(),
+	protectRecentTurns: z.number().int().positive().optional(),
+	maxToolResultBytes: z.number().int().positive().optional(),
+	keepHeadBytes: z.number().int().nonnegative().optional(),
+	keepTailBytes: z.number().int().nonnegative().optional(),
+	elideSupersededReads: z.boolean().optional(),
+	collapseDuplicateResults: z.boolean().optional(),
+});
+
 const budget = z.strictObject({
 	perTurnUsd: z.number().nonnegative().optional(),
 	perConversationUsd: z.number().nonnegative().optional(),
@@ -187,6 +212,8 @@ export const configInputSchema = z.strictObject({
 	hysteresis: hysteresis.optional(),
 	exploration: exploration.optional(),
 	cache: cache.optional(),
+	context: context.optional(),
+	compaction: compaction.optional(),
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	ledger: ledger.optional(),

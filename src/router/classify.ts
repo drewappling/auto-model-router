@@ -32,7 +32,7 @@ const CAP_COMPLEXITY = 0.3;
 const W_TRIVIALITY_KEYWORD = -0.09;
 const CAP_TRIVIALITY = -0.27;
 const W_TOOL_FAILED = 0.26; // dominant positive: retry loops are expensive
-const W_REPEATED_CALL = 0.14; // the model is stuck
+const W_CIRCULAR_LOOP = 0.24; // a re-issued (circular) tool call: the model is stuck
 const W_TERSE = -0.1;
 const W_CODE_BLOCK = 0.04;
 const CAP_CODE = 0.08;
@@ -48,13 +48,20 @@ const CAP_LOOP_DEPTH = -0.06;
 // A sustained autonomous loop is the signal the underlying task is substantial:
 // the agent keeps grinding without human input. Unlike the mechanical-step
 // penalty above, this term ACCUMULATES with depth past the agentic threshold so
-// long/hard loops climb out of trivial instead of scoring like a one-line edit.
-// Capped so pure depth tops out in `simple` (a competent-but-cheap model);
-// reaching `moderate`/`hard` still requires real complexity signals (tool
-// failure, repeated call, keywords) to stack on top.
+// long loops climb out of trivial. The ramp slope is calibrated on recorded
+// coding turns; the cap governs the ceiling. `moderate` is NOT enough to break a
+// distinct-read loop: on the coding axis the cheapest model above the moderate
+// floor (deepseek-v4-flash, coding 69.1) also clears it after the latency
+// penalty, so escalating to moderate never swaps the weak model off — live
+// evidence (conv 888e5bddc1) is a loop grinding to depth 27+ on it. Only `hard`
+// (floor 72) excludes that model and forces a materially stronger, faster one.
+// So the cap lets a RUNAWAY loop (~depth 38 of pure continuations, no other
+// signal) reach `hard`; the calibrated mid-range still tops out in `moderate`,
+// and any corroborating stuck signal (circular call, tool failure, keywords)
+// reaches `hard` far sooner.
 const W_AUTONOMOUS_LOOP = 0.06; // base bonus at the threshold
 const W_AUTONOMOUS_LOOP_PER_DEPTH = 0.018; // added per loop step beyond the threshold
-const CAP_AUTONOMOUS_LOOP = 0.34;
+const CAP_AUTONOMOUS_LOOP = 0.7; // pure depth ramps through moderate into hard for a runaway loop
 const W_IMAGES = 0.04;
 const W_TOOLS_OFFERED = 0.03;
 
@@ -97,7 +104,7 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 		`triviality keywords [${f.trivialityKeywords.join(", ")}]`,
 	);
 	if (f.lastToolFailed) add(W_TOOL_FAILED, "last tool result failed");
-	if (f.repeatedToolCall) add(W_REPEATED_CALL, "repeated tool call (model is stuck)");
+	if (f.circularToolCall) add(W_CIRCULAR_LOOP, "circular tool call (re-issued a prior call; stuck)");
 	const rw = reasoningWeight(f.requestedReasoning);
 	if (rw > 0) add(rw, `client requested reasoning=${f.requestedReasoning ?? ""}`);
 	if (f.isTerseInstruction) add(W_TERSE, "terse instruction");
@@ -140,13 +147,20 @@ export function pickQualityAxis(f: Features, cfg: RouterConfig): QualityAxis {
 
 /**
  * Task-type classification: the KIND of work, orthogonal to complexity tier.
- * Cheap and deterministic — no tokenizer, no model call. Vision is the only
- * hard signal (image input); the rest are keyword/structural heuristics over
- * the newest user content. The task selects the quality axis and capability
- * filters; the tier still bounds cost.
+ * Cheap and deterministic — no tokenizer, no model call. A freshly supplied
+ * image is the only hard signal (vision); the rest are keyword/structural
+ * heuristics over the newest user content. The task selects the quality axis
+ * and capability filters; the tier still bounds cost.
  */
 export function classifyTask(f: Features): TaskType {
-	if (f.hasImages) return "vision";
+	// Vision is the KIND of work only when the human just supplied an image. A
+	// stale screenshot lingering in a long agent loop must not pin every
+	// mechanical tool-continuation to the vision (intelligence) axis, which
+	// systematically underscores cheap coding models and, at the moderate/hard
+	// floors, excludes them entirely in favour of frontier models. Capability
+	// (the payload still carries the image) is enforced separately via
+	// req.hasImages in buildCandidates, independent of the task axis.
+	if (f.hasNewImage) return "vision";
 	// Coding: code blocks, diffs, a tool loop, or tools offered — agent tool use
 	// is coding work. Bare chat (no tools, no code) falls through.
 	if (f.codeBlocks > 0 || f.looksLikeDiff || f.toolLoopDepth > 0 || f.toolCount > 0) return "coding";

@@ -7,7 +7,7 @@
 
 import type { CatalogModel } from "../catalog/types.ts";
 import type { CostForecast } from "../cost/types.ts";
-import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
+import type { CompactionEdit, NormRequest, ReasoningLevel } from "../wire/types.ts";
 
 export type Tier = "trivial" | "simple" | "moderate" | "hard";
 
@@ -53,7 +53,27 @@ export interface Features {
 	lastToolFailed: boolean;
 	/** The same tool was called with identical arguments twice in a row. */
 	repeatedToolCall: boolean;
+	/**
+	 * A byte-identical tool call (same name AND args) was re-issued within the
+	 * last few assistant calls, adjacent or not — the agent is going in circles.
+	 * Generalizes `repeatedToolCall`; the classifier scores THIS, so a stuck
+	 * loop escalates even when the repeat is not back-to-back.
+	 */
+	circularToolCall: boolean;
+	/**
+	 * An image appears ANYWHERE in the conversation. Drives the model-capability
+	 * filter: the payload still carries that image every turn, so a served model
+	 * must accept image input even long after the image was introduced.
+	 */
 	hasImages: boolean;
+	/**
+	 * An image appears in the VOLATILE TAIL — the newest user-authored run. This
+	 * is what makes a turn genuinely visual WORK, as opposed to a mechanical
+	 * tool-loop continuation that merely carries a stale screenshot in context.
+	 * Task classification keys on this so an agentic coding loop is scored on the
+	 * coding axis, not pinned to the vision (intelligence) axis by an old image.
+	 */
+	hasNewImage: boolean;
 	/** Fenced code blocks in the newest user content. */
 	codeBlocks: number;
 	/** Bytes inside fenced code blocks in the newest user content. */
@@ -144,6 +164,14 @@ export interface ConversationState {
 	cacheWarmSlug: string | null;
 	/** When that cache was last touched; OpenRouter sticky sessions expire in 5-10 min. */
 	cacheWarmAtMs: number;
+	/**
+	 * agentdox context block pinned to this conversation. Held stable across
+	 * turns so the injected system prefix stays byte-identical and the prompt
+	 * cache survives; refreshed only when the cache is already cold.
+	 */
+	contextVersion: string | null;
+	/** When that block was fetched, for the staleness TTL. */
+	contextFetchedAtMs: number;
 	updatedAtMs: number;
 }
 
@@ -193,6 +221,10 @@ export interface Decision {
 	sticky: boolean;
 	/** Message indices to mark with cache breakpoints. */
 	cacheBreakpointMessageIndices: number[];
+	/** In-place tool-result shrink edits to apply before dispatch. Empty ⇒ none. */
+	compactionPlan: CompactionEdit[];
+	/** Estimated prompt tokens removed by `compactionPlan`, for the ledger. */
+	promptTokensSaved: number;
 	reasoning: ReasoningLevel | undefined;
 	maxTokens: number | undefined;
 	stripAssistantReasoning: boolean;

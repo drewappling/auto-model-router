@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { loadConfig } from "../src/config/load.ts";
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { explorationDraw, resolveHoldTurns } from "../src/router/explore.ts";
 
-const BASE = loadConfig({});
+// Shipped defaults, not loadConfig({}) — the latter merges the live home
+// config.yml and makes this suite depend on the developer's local settings.
+const BASE = DEFAULT_CONFIG;
 
 function withHold(over: { enabled?: boolean; values?: number[] }, enabled = true): RouterConfig {
 	return {

@@ -50,7 +50,9 @@ function contFeatures(toolLoopDepth: number, over: Partial<Features> = {}): Feat
 		distinctToolsUsed: 3,
 		lastToolFailed: false,
 		repeatedToolCall: false,
+		circularToolCall: false,
 		hasImages: false,
+		hasNewImage: false,
 		codeBlocks: 0,
 		codeBytes: 0,
 		looksLikeDiff: false,
@@ -211,11 +213,25 @@ describe("scoreHeuristic", () => {
 		}
 	});
 
-	test("pure loop depth tops out at simple; complexity signals stack to moderate", () => {
-		// Depth alone means competent-but-cheap (simple), not a frontier model.
-		const veryDeep = scoreHeuristic(contFeatures(90), BASE);
-		expect(tierIdx(veryDeep.tier)).toBeLessThanOrEqual(tierIdx("simple"));
-		// A failing tool result on top of a deep loop is genuinely hard.
+	test("pure loop depth ramps to moderate in the mid-range and hard only when runaway", () => {
+		// A sustained-but-not-runaway loop tops out in moderate: the calibrated
+		// ramp ceiling for ordinary deep work.
+		const midRange = scoreHeuristic(contFeatures(30), BASE);
+		expect(midRange.tier).toBe("moderate");
+		// A runaway loop of pure continuations (no other signal) must reach hard.
+		// moderate never swaps the cheapest coding model off — it clears the 60
+		// floor even after the latency penalty — so only hard's 72 floor breaks it.
+		const runaway = scoreHeuristic(contFeatures(90), BASE);
+		expect(runaway.tier).toBe("hard");
+	});
+
+	test("a circular tool call on a deep loop escalates to hard", () => {
+		// The stuck signal raw depth misses: a prior call re-issued verbatim.
+		const deepCircular = scoreHeuristic(contFeatures(90, { circularToolCall: true }), BASE);
+		expect(deepCircular.tier).toBe("hard");
+	});
+
+	test("a failing tool result on a deep loop is at least moderate", () => {
 		const deepAndFailing = scoreHeuristic(contFeatures(20, { lastToolFailed: true }), BASE);
 		expect(tierIdx(deepAndFailing.tier)).toBeGreaterThanOrEqual(tierIdx("moderate"));
 	});
@@ -306,6 +322,48 @@ describe("classify", () => {
 describe("classifyTask", () => {
 	test("image input is a vision task", () => {
 		const f = featuresFor([SYSTEM, { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,xxx" } }] }], []);
+		expect(classifyTask(f)).toBe("vision");
+	});
+
+	test("a stale image on a tool continuation is coding, not vision", () => {
+		const f = featuresFor(
+			[
+				SYSTEM,
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "build this UI" },
+						{ type: "image_url", image_url: { url: "data:image/png;base64,xxx" } },
+					],
+				},
+				{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
+				{ role: "tool", tool_call_id: "c1", name: "read", content: "ok" },
+			],
+			TOOLS,
+		);
+		expect(f.hasImages).toBe(true);
+		expect(f.hasNewImage).toBe(false);
+		expect(classifyTask(f)).toBe("coding");
+	});
+
+	test("a freshly supplied image mid-loop is vision", () => {
+		const f = featuresFor(
+			[
+				SYSTEM,
+				{ role: "user", content: "start" },
+				{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
+				{ role: "tool", tool_call_id: "c1", name: "read", content: "ok" },
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "here is the error" },
+						{ type: "image_url", image_url: { url: "data:image/png;base64,xxx" } },
+					],
+				},
+			],
+			TOOLS,
+		);
+		expect(f.hasNewImage).toBe(true);
 		expect(classifyTask(f)).toBe("vision");
 	});
 

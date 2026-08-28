@@ -42,6 +42,7 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 		wasted: false,
 		upstreamGenerationId: null,
 		error: null,
+		promptTokensSaved: 0,
 		...over,
 	};
 }

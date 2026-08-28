@@ -139,14 +139,21 @@ export interface FilterConfig {
 	 */
 	contextHeadroom: number;
 	/**
-	 * How hard to penalise slow models in candidate scoring. A model's mean
-	 * time-to-first-token above `latencyReferenceMs` inflates its effective
-	 * cost — the same lever trust uses for flakiness — so a faster model of
-	 * equal quality and price wins. 0 disables latency scoring entirely.
+	 * How hard to penalise slow models in candidate scoring. A model's expected
+	 * total wait — TTFT plus streaming the expected completion at its measured
+	 * throughput — above the reference inflates its effective cost, the same lever
+	 * trust uses for flakiness, so a faster model of equal quality and price wins.
+	 * 0 disables latency scoring entirely.
 	 */
 	latencyWeight: number;
-	/** TTFT (ms) below which a model is considered fully responsive (no penalty). */
+	/** Reference TTFT (ms): the start-latency component that accrues no penalty. */
 	latencyReferenceMs: number;
+	/**
+	 * Reference throughput (tokens/second): the streaming speed that accrues no
+	 * penalty. Below it, a slow-streaming model's expected wait exceeds the
+	 * reference and its effective cost is inflated.
+	 */
+	latencyReferenceTokensPerSec: number;
 	/** Streamed samples required before latency is scored against a model. */
 	latencyMinSamples: number;
 }
@@ -326,6 +333,71 @@ export interface LedgerConfig {
 	conversationTtlMs: number;
 }
 
+/**
+ * agentdox bridge: one shared project context that follows a conversation
+ * across model switches, plus a model-attributed transcript written back.
+ *
+ * Off by default. Enabling it injects a project-context block into the system
+ * prefix; the block is PINNED per conversation and refreshed only when the
+ * prompt cache is already cold (see `src/context/bridge.ts`), so sharing
+ * context does not cost a cache miss every turn.
+ */
+export interface ContextConfig {
+	enabled: boolean;
+	/** agentdox REST base URL, e.g. `http://localhost:3003`. */
+	baseUrl: string;
+	/** Bearer token with read+write on the project scope. From `AGENTDOX_TOKEN`. */
+	token: string;
+	/**
+	 * Fallback project scope when a request carries no `X-Agentdox-Scope`
+	 * header. Empty ⇒ the bridge is inert for unlabelled requests rather than
+	 * guessing, so one harness cannot leak context into another's project.
+	 */
+	defaultScope: string;
+	/** Per-request timeout against agentdox, ms. */
+	timeoutMs: number;
+	/**
+	 * Upper bound on how stale a pinned context block may get, ms. Reaching it
+	 * forces a refresh on the next turn even if the model did not change —
+	 * the one case where the bridge knowingly spends a cache miss. 0 disables
+	 * the TTL, refreshing only on turns whose cache is already forfeit.
+	 */
+	maxStalenessMs: number;
+	/** Hard cap on injected block size, characters. */
+	maxBlockChars: number;
+	/** Write settled turns back to agentdox sessions, tagged with the served model. */
+	recordTurns: boolean;
+	/** Bound on queued write-backs; excess turns are dropped, never buffered unbounded. */
+	maxQueue: number;
+}
+
+/**
+ * Context optimization (compaction): before dispatch, shrink stale, low-value
+ * bulk — chiefly old tool output — so long agentic conversations cost less and
+ * keep fitting narrower-window models. Deterministic and reversible-by-reference:
+ * every elision leaves an in-band breadcrumb so the model can re-run the tool.
+ * Off by default. See docs/context-optimization.md.
+ */
+export interface CompactionConfig {
+	enabled: boolean;
+	/** Compact when the estimated prompt exceeds this many tokens. */
+	budgetTokens: number;
+	/** Also compact when the prompt would overflow the profile's context window. */
+	fitToWindow: boolean;
+	/** Never touch the last N user/assistant turns or the volatile tail. */
+	protectRecentTurns: number;
+	/** Tool results larger than this (outside the protected window) are truncated. */
+	maxToolResultBytes: number;
+	/** Bytes of a truncated tool result's head to keep. */
+	keepHeadBytes: number;
+	/** Bytes of a truncated tool result's tail to keep. */
+	keepTailBytes: number;
+	/** Elide an older tool result when a newer call to the same resource supersedes it. */
+	elideSupersededReads: boolean;
+	/** Collapse byte-identical repeated tool results to a single copy. */
+	collapseDuplicateResults: boolean;
+}
+
 export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
@@ -338,6 +410,8 @@ export interface RouterConfig {
 	hysteresis: HysteresisConfig;
 	exploration: ExplorationConfig;
 	cache: CacheConfig;
+	context: ContextConfig;
+	compaction: CompactionConfig;
 	budget: BudgetConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;

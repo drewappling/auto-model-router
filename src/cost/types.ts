@@ -128,6 +128,8 @@ export interface LedgerEntry {
 	wasted: boolean;
 	upstreamGenerationId: string | null;
 	error: string | null;
+	/** Prompt tokens removed by compaction before dispatch. 0 when none. NULL before v12. */
+	promptTokensSaved: number;
 }
 
 /** Rolling blended rate used to keep omp's cost display honest. */
@@ -165,6 +167,15 @@ export interface ModelLatency {
 	samples: number;
 	/** Mean time-to-first-token, ms, over streamed non-errored turns. */
 	ttftMs: number;
+	/**
+	 * Completion throughput, tokens/second, over streamed non-errored turns that
+	 * emitted tokens (aggregate: total completion tokens / total post-TTFT time).
+	 * 0 when no such row exists. Complements ttftMs: TTFT is how long the answer
+	 * takes to START, throughput is how long it takes to FINISH — a model can be
+	 * quick to first token yet stream the body slowly (e.g. deepseek-v4-flash:
+	 * ~2s TTFT but ~20 tok/s and ~38s total).
+	 */
+	tokensPerSec: number;
 }
 
 export interface Ledger {
@@ -181,10 +192,10 @@ export interface Ledger {
 	trust(slug: string, harnessId?: string): ModelTrust | null;
 	allTrust(): ModelTrust[];
 	/**
-	 * Per-model mean time-to-first-token (ms), optionally scoped to a harness.
-	 * Null until `filters.latencyMinSamples` streamed samples exist. TTFT, not
-	 * total latency: it measures model+provider responsiveness independent of
-	 * how many tokens the answer happened to need.
+	 * Per-model responsiveness (mean TTFT + completion throughput), optionally
+	 * scoped to a harness. Null until `filters.latencyMinSamples` streamed samples
+	 * exist. TTFT isolates start latency from answer length; throughput captures
+	 * how fast the body streams once it starts.
 	 */
 	latency(slug: string, harnessId?: string): ModelLatency | null;
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */

@@ -11,7 +11,8 @@ import type { ProfileConfig, RouterConfig } from "../config/types.ts";
 import { priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import { explorationDraw } from "./explore.ts";
-import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
+import type { CompactionEdit, NormRequest, ReasoningLevel } from "../wire/types.ts";
+import { planCompaction } from "./compaction.ts";
 import { planCacheBreakpoints } from "./cache-control.ts";
 import { buildCandidates } from "./candidates.ts";
 import {
@@ -147,6 +148,36 @@ export function select(args: SelectArgs): Decision {
 	// exploration (2c) and candidate building (3) so both agree on the term.
 	const cacheWarm = state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs;
 
+	// 2b. Context compaction: shrink stale tool output before dispatch when the
+	//     prompt exceeds the token budget (or would overflow the profile window).
+	//     Deterministic and content-only (never removes a message), so downstream
+	//     forecasting, the context_too_small filter, cache breakpoints, and the
+	//     agentdox block append all operate on the compacted size / stay valid.
+	let compactionPlan: CompactionEdit[] = [];
+	let promptTokensSaved = 0;
+	let effFeatures = features;
+	if (cfg.compaction.enabled && req.promptBytes > 0 && features.promptTokens > 0) {
+		const headroom = cfg.filters.contextHeadroom;
+		const overBudget = features.promptTokens > cfg.compaction.budgetTokens;
+		const overWindow =
+			cfg.compaction.fitToWindow && features.promptTokens * headroom + EXPECTED_COMPLETION_TOKENS > profile.contextWindow;
+		if (overBudget || overWindow) {
+			const targets: number[] = [];
+			if (overBudget) targets.push(cfg.compaction.budgetTokens);
+			if (overWindow) targets.push(Math.max(1, Math.floor((profile.contextWindow - EXPECTED_COMPLETION_TOKENS) / headroom)));
+			const targetBytes = Math.min(...targets) * (req.promptBytes / features.promptTokens);
+			const plan = planCompaction(req.messages, cfg.compaction, targetBytes, req.promptBytes);
+			if (plan.edits.length > 0) {
+				compactionPlan = plan.edits;
+				promptTokensSaved = Math.min(features.promptTokens - 1, Math.round(features.promptTokens * (plan.savedBytes / req.promptBytes)));
+				effFeatures = { ...features, promptTokens: features.promptTokens - promptTokensSaved };
+				reasons.push(
+					`compaction: ${plan.edits.length} tool result(s) shrunk, ~${promptTokensSaved} tokens saved (prompt ${features.promptTokens}→${effFeatures.promptTokens})`,
+				);
+			}
+		}
+	}
+
 	// 2c. Epsilon-greedy exploration: on a small deterministic fraction of
 	//     turns, route one tier BELOW the tier we would otherwise use, so the
 	//     ledger witnesses whether the cheaper tier would have sufficed.
@@ -201,7 +232,7 @@ export function select(args: SelectArgs): Decision {
 	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,
-			features,
+			features: effFeatures,
 			tier: t,
 			task: classification.task,
 			snapshot,
@@ -283,9 +314,9 @@ export function select(args: SelectArgs): Decision {
 		const warm = candidates.find((c) => c.model.slug === warmSlug);
 		if (warm !== undefined) {
 			const warmPrice = priceAt(warm.model, Math.max(1, state.lastPromptTokens));
-			const newPrice = priceAt(chosen.model, Math.max(1, features.promptTokens));
+			const newPrice = priceAt(chosen.model, Math.max(1, effFeatures.promptTokens));
 			const stayCost = state.lastPromptTokens * (warmPrice.cacheRead ?? warmPrice.prompt);
-			const switchCost = features.promptTokens * (newPrice.prompt + (newPrice.cacheWrite ?? 0));
+			const switchCost = effFeatures.promptTokens * (newPrice.prompt + (newPrice.cacheWrite ?? 0));
 			if (stayCost > switchCost * cfg.hysteresis.switchMargin) {
 				reasons.push(
 					`cache: switch ${warmSlug} → ${chosen.model.slug} (stay $${stayCost.toFixed(4)} > switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin})`,
@@ -402,6 +433,8 @@ export function select(args: SelectArgs): Decision {
 		sessionId: state.sessionId,
 		sticky,
 		cacheBreakpointMessageIndices,
+		compactionPlan,
+		promptTokensSaved,
 		reasoning,
 		maxTokens,
 		stripAssistantReasoning,

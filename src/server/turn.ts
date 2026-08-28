@@ -9,6 +9,7 @@
  */
 
 import type { CatalogSource } from "../catalog/types.ts";
+import type { ContextBridge } from "../context/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
@@ -42,6 +43,8 @@ export interface TurnDeps {
 	ledger: Ledger;
 	conversations: ConversationStore;
 	catalog: CatalogSource;
+	/** agentdox bridge. The disabled bridge makes every call here a no-op. */
+	context: ContextBridge;
 }
 
 /** A dead client connection surfaces as the sink throwing mid-stream. */
@@ -52,16 +55,39 @@ class SinkError extends Error {
 	}
 }
 
+/** Latest user text, used to bias agentdox relevance ranking and as the recorded turn. */
+function lastUserText(req: NormRequest): string {
+	for (let i = req.messages.length - 1; i >= 0; i--) {
+		const m = req.messages[i];
+		if (m !== undefined && m.role === "user") return m.text;
+	}
+	return "";
+}
+
+/** Session title: the conversation's opening ask, truncated. */
+function sessionTitle(req: NormRequest): string {
+	for (const m of req.messages) {
+		if (m.role === "user" && m.text.trim() !== "") {
+			const t = m.text.trim().replace(/\s+/g, " ");
+			return t.length > 80 ? `${t.slice(0, 79)}…` : t;
+		}
+	}
+	return `omp ${req.conversationKey.slice(0, 8)}`;
+}
+
 export async function runTurn(
 	req: NormRequest,
 	sink: ResponseSink,
 	deps: TurnDeps,
 	signal: AbortSignal,
 ): Promise<void> {
-	const { config, router, upstream, ledger, conversations } = deps;
+	const { config, router, upstream, ledger, conversations, context: bridge } = deps;
 	const log = createLogger(config.logLevel);
 	const state = conversations.load(req.conversationKey);
 	const turnNumber = state.turn + 1;
+	// Request header wins; the configured default covers harnesses that send none.
+	const doxScope = req.agentdoxScope !== "" ? req.agentdoxScope : config.context.defaultScope;
+	const doxActive = bridge.enabled && doxScope !== "";
 
 	// The trigger list is the source of truth for enabled signals, except
 	// length_stop, which rides on its own toggle (escalation.escalateOnLengthStop).
@@ -101,6 +127,37 @@ export async function runTurn(
 			}
 		}
 
+		// Resolve the shared context block. The bridge refreshes only when this
+		// turn's prefix is already cold — a model switch or a retry — so the
+		// injected bytes stay identical while the cache is worth keeping.
+		let contextBlock: string | undefined;
+		if (doxActive) {
+			const pin = await bridge.resolve({
+				scope: doxScope,
+				conversationKey: req.conversationKey,
+				pinnedVersion: state.contextVersion,
+				pinnedFetchedAtMs: state.contextFetchedAtMs,
+				modelSwitching: state.currentSlug !== null && state.currentSlug !== decision.slug,
+				retrying: attempt > 0,
+				query: lastUserText(req),
+			});
+			if (pin !== null) {
+				contextBlock = pin.block;
+				// Pin immediately, even if this attempt later fails: the block was
+				// dispatched, so the next turn must re-send the same bytes to hit
+				// whatever cache this attempt warmed.
+				state.contextVersion = pin.version;
+				state.contextFetchedAtMs = pin.fetchedAtMs;
+			}
+		}
+
+		log.debug("agentdox context", {
+			active: doxActive,
+			scope: doxScope === "" ? "(none)" : doxScope,
+			injected: contextBlock !== undefined,
+			chars: contextBlock?.length ?? 0,
+		});
+
 		const body = req.renderUpstreamBody({
 			slug: decision.slug,
 			fallbacks: decision.fallbacks,
@@ -109,6 +166,8 @@ export async function runTurn(
 			reasoning: decision.reasoning,
 			maxTokens: decision.maxTokens,
 			stripAssistantReasoning: decision.stripAssistantReasoning,
+			...(contextBlock === undefined ? {} : { contextBlock }),
+			...(decision.compactionPlan.length > 0 ? { compactionPlan: decision.compactionPlan } : {}),
 		});
 
 		// Our own abort composes with the client's: escalation teardown and
@@ -121,6 +180,9 @@ export async function runTurn(
 		let servedSlug: string | null = null;
 		let finishReason: string | null = null;
 		let ttftMs: number | null = null;
+		// Accumulated only when the bridge is live; the transcript write-back is
+		// the sole consumer, and a dead bridge must cost nothing on the hot path.
+		let assistantText = "";
 		let committed = false;
 		let dispatch: Dispatch | null = null;
 		let probe: Probe | null = null;
@@ -166,6 +228,7 @@ export async function runTurn(
 				wasted: fields.wasted,
 				upstreamGenerationId: generationId,
 				error: fields.error,
+				promptTokensSaved: decision.promptTokensSaved,
 			});
 		};
 
@@ -262,6 +325,9 @@ export async function runTurn(
 								if (ev.generationId !== null) generationId = ev.generationId;
 								break;
 							case "text":
+								if (ttftMs === null) ttftMs = Date.now() - startedAt;
+								if (doxActive) assistantText += ev.delta;
+								break;
 							case "reasoning":
 								if (ttftMs === null) ttftMs = Date.now() - startedAt;
 								break;
@@ -379,6 +445,27 @@ export async function runTurn(
 		}
 		state.updatedAtMs = Date.now();
 		conversations.save(state);
+
+		// Record the settled turn into agentdox, attributed to the model that
+		// actually served it. Queued and never awaited: the transcript is an
+		// artifact of the turn, not a precondition for finishing it.
+		if (doxActive) {
+			log.debug("agentdox record turn", {
+				userChars: lastUserText(req).length,
+				assistantChars: assistantText.length,
+				messages: req.messages.length,
+				roles: req.messages.map((m) => m.role).join(","),
+			});
+			bridge.recordTurn({
+				scope: doxScope,
+				conversationKey: req.conversationKey,
+				title: sessionTitle(req),
+				userText: lastUserText(req),
+				assistantText,
+				slug: servedSlug ?? decision.slug,
+				tier: decision.tier,
+			});
+		}
 
 		const summary: TurnSummary = {
 			servedSlug: servedSlug ?? decision.slug,

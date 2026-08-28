@@ -57,6 +57,7 @@ interface LedgerRow {
 	wasted: number;
 	upstream_generation_id: string | null;
 	error: string | null;
+	prompt_tokens_saved: number | null;
 }
 
 interface TrustRow {
@@ -70,6 +71,8 @@ interface TrustRow {
 interface LatencyRow {
 	samples: number;
 	ttft_ms: number | null;
+	ctok_sum: number | null;
+	elapsed_ms_sum: number | null;
 }
 
 interface CalibrationRow {
@@ -82,8 +85,11 @@ interface CalibrationRow {
  * Error kinds that say nothing about a MODEL's reliability, and so must not
  * count against its trust:
  *  - `aborted`: the client hung up (user pressed escape mid-turn).
- *  - `auth`: credential, credit, or account-policy refusal (age confirmation,
- *    prompt-injection blocking) — identical for every model on the key.
+ *  - `auth`: credential or credit refusal (401 invalid key, 402 out of credits)
+ *    — key-wide, identical for every model.
+ *  - `moderation`: a provider content-moderation or per-model policy gate (403:
+ *    prompt-injection block, age/data-policy confirmation). Per-model, not a
+ *    quality signal, and failover already handles it.
  *  - `model_unavailable`: the guardrail or data policy excludes the endpoint;
  *    an availability fact, not a quality one, and failover already handles it.
  *
@@ -92,7 +98,7 @@ interface CalibrationRow {
  * unclassifiable legacy row and stays attributable, preserving the old,
  * stricter behaviour rather than silently forgiving it.
  */
-const UNATTRIBUTABLE_KINDS = "('aborted', 'auth', 'model_unavailable')";
+const UNATTRIBUTABLE_KINDS = "('aborted', 'auth', 'moderation', 'model_unavailable')";
 
 const ATTRIBUTABLE_ERROR = `error IS NOT NULL AND (error_kind IS NULL OR error_kind NOT IN ${UNATTRIBUTABLE_KINDS})`;
 
@@ -104,14 +110,22 @@ const TRUST_SELECT = `COUNT(*) AS attempts,
 			THEN ABS(reported_usd - predicted_usd) / reported_usd END) AS mean_cost_error`;
 
 /**
- * Time-to-first-token, averaged over streamed, non-errored turns. TTFT (not
- * total latency) isolates model+provider responsiveness from answer length: a
- * model is "slow" when it takes a long time to START, not when it was asked for
- * a long answer. Errored/aborted rows and non-streaming rows (null ttft) are
- * excluded — they carry no responsiveness signal.
+ * Responsiveness over streamed, non-errored turns. TTFT (not total latency)
+ * isolates start latency from answer length: a model is "slow to start" when it
+ * takes a long time to emit the FIRST token. Throughput (aggregate completion
+ * tokens per post-TTFT second) captures the complementary axis — how fast the
+ * body streams once it starts. Errored/aborted and non-streaming rows (null
+ * ttft) are excluded; throughput additionally requires a positive completion
+ * count and elapsed time.
  */
 const LATENCY_SELECT = `COUNT(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN 1 END) AS samples,
-		AVG(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN ttft_ms END) AS ttft_ms`;
+		AVG(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL THEN ttft_ms END) AS ttft_ms,
+		SUM(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL AND latency_ms > ttft_ms
+			AND json_extract(usage, '$.completionTokens') > 0
+			THEN json_extract(usage, '$.completionTokens') END) AS ctok_sum,
+		SUM(CASE WHEN ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL AND latency_ms > ttft_ms
+			AND json_extract(usage, '$.completionTokens') > 0
+			THEN latency_ms - ttft_ms END) AS elapsed_ms_sum`;
 
 /**
  * Recovers the `UpstreamErrorKind` from the text turn.ts stored.
@@ -144,7 +158,11 @@ function toTrust(slug: string, row: TrustRow): ModelTrust {
 
 function toLatency(slug: string, row: LatencyRow): ModelLatency | null {
 	if (row.samples <= 0 || row.ttft_ms === null) return null;
-	return { slug, samples: row.samples, ttftMs: row.ttft_ms };
+	const tokensPerSec =
+		row.elapsed_ms_sum !== null && row.elapsed_ms_sum > 0 && row.ctok_sum !== null
+			? (row.ctok_sum * 1000) / row.elapsed_ms_sum
+			: 0;
+	return { slug, samples: row.samples, ttftMs: row.ttft_ms, tokensPerSec };
 }
 
 function toEntry(row: LedgerRow): LedgerEntry {
@@ -180,6 +198,7 @@ function toEntry(row: LedgerRow): LedgerEntry {
 		wasted: row.wasted === 1,
 		upstreamGenerationId: row.upstream_generation_id,
 		error: row.error,
+		promptTokensSaved: row.prompt_tokens_saved ?? 0,
 	};
 }
 
@@ -190,8 +209,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
-			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm, prompt_tokens_saved
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -279,6 +298,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.classifierReasons === null ? null : JSON.stringify(entry.classifierReasons),
 				entry.exploredFrom,
 				entry.holdArm,
+				entry.promptTokensSaved,
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only

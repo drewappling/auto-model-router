@@ -75,6 +75,13 @@ export interface NormRequest {
 	 * the client sends no header.
 	 */
 	ompSessionId: string;
+	/**
+	 * agentdox project scope from the `X-Agentdox-Scope` request header. Selects
+	 * which project's shared context is injected and which project's sessions
+	 * the turn is recorded into. Empty ⇒ fall back to `context.defaultScope`,
+	 * and if that is empty too the bridge stays inert for this request.
+	 */
+	agentdoxScope: string;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	messages: NormMessage[];
@@ -112,6 +119,35 @@ export interface UpstreamMutations {
 	maxTokens: number | undefined;
 	/** Drop assistant reasoning-replay fields the target rejects. */
 	stripAssistantReasoning: boolean;
+	/**
+	 * agentdox project context to fold into the system prefix. Appended to the
+	 * LAST system message rather than inserted as a new one: inserting would
+	 * shift every `cacheBreakpointMessageIndices` entry, and appending puts the
+	 * block inside the prefix that `planCacheBreakpoints` already marks.
+	 * Undefined ⇒ inject nothing.
+	 */
+	contextBlock?: string;
+	/**
+	 * Deterministic compaction edits to apply to the message array before the
+	 * other mutations. Each edit shrinks ONE tool-result's content in place;
+	 * message count and order are preserved so cache-breakpoint indices and the
+	 * context-block append stay valid. Empty ⇒ compact nothing.
+	 */
+	compactionPlan?: CompactionEdit[];
+}
+
+/**
+ * One in-place shrink of a tool-result message's content. `stub` replaces the
+ * whole content with a breadcrumb; `truncate` keeps `keepHead`/`keepTail`
+ * characters around an elision breadcrumb. `note` describes why, for the
+ * breadcrumb the model reads.
+ */
+export interface CompactionEdit {
+	index: number;
+	mode: "truncate" | "stub";
+	keepHead: number;
+	keepTail: number;
+	note: string;
 }
 
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "error";

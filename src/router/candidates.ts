@@ -73,14 +73,23 @@ const LATENCY_EXCESS_CAP = 3;
 
 /**
  * Latency penalty as a multiplier on effective cost (>= 1; 1 = no penalty).
- * Mean TTFT above `latencyReferenceMs` inflates the model's effective cost, the
- * same lever trust uses for flakiness, so a faster model of equal quality and
- * price outranks a sluggish one. Inert when the weight is 0 or the model has
- * too few streamed samples to judge.
+ *
+ * Models the EXPECTED TOTAL WAIT the user experiences: time to first token, plus
+ * streaming the expected completion at the model's measured throughput. That wait
+ * above the reference (built from `latencyReferenceMs` + `latencyReferenceTokensPerSec`)
+ * inflates effective cost — the same lever trust uses for flakiness — so a faster
+ * model of equal quality and price outranks a sluggish one. Capturing throughput,
+ * not just TTFT, is what catches a model that starts fast but streams slowly
+ * (deepseek-v4-flash: ~2s TTFT yet ~20 tok/s → ~38s total). Inert when the weight
+ * is 0 or the model has too few streamed samples to judge; when throughput is
+ * unmeasured it degrades to a TTFT-only comparison against the reference wait.
  */
-function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig): number {
+function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig, expectedCompletionTokens: number): number {
 	if (latency === null || filters.latencyWeight <= 0 || latency.samples < filters.latencyMinSamples) return 1;
-	const excess = Math.max(0, (latency.ttftMs - filters.latencyReferenceMs) / filters.latencyReferenceMs);
+	const streamMs = latency.tokensPerSec > 0 ? (expectedCompletionTokens / latency.tokensPerSec) * 1000 : 0;
+	const waitMs = latency.ttftMs + streamMs;
+	const refWaitMs = filters.latencyReferenceMs + (expectedCompletionTokens / filters.latencyReferenceTokensPerSec) * 1000;
+	const excess = refWaitMs > 0 ? Math.max(0, (waitMs - refWaitMs) / refWaitMs) : 0;
 	return 1 + filters.latencyWeight * Math.min(excess, LATENCY_EXCESS_CAP);
 }
 
@@ -238,7 +247,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			filters.latencyWeight > 0
 				? (ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null)
 				: null;
-		const latencyMult = latencyMultiplier(latency, filters);
+		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens);
 		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5)) * latencyMult;
 		const score = Math.pow(qualityScore / 100, tierCfg.qualityExponent) / Math.max(effectiveUsd, 1e-9);
 
@@ -252,7 +261,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			`expected $${fc.expectedUsd.toFixed(6)}`,
 		];
 		if (latencyMult > 1 && latency !== null) {
-			reasons.push(`latency penalty ×${latencyMult.toFixed(2)} (ttft ${Math.round(latency.ttftMs)}ms over ${latency.samples} samples)`);
+			reasons.push(
+				`latency penalty ×${latencyMult.toFixed(2)} (ttft ${Math.round(latency.ttftMs)}ms, ${latency.tokensPerSec.toFixed(0)} tok/s over ${latency.samples} samples)`,
+			);
 		}
 		if (pinned) reasons.push("pinned into tier");
 		candidates.push({ model, forecast: fc, qualityScore, trustScore, score, reasons });

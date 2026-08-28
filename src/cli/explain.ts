@@ -38,6 +38,7 @@ const ALWAYS_SHOW: Record<string, true> = {
 	toolLoopDepth: true,
 	lastToolFailed: true,
 	repeatedToolCall: true,
+	circularToolCall: true,
 	turnDepth: true,
 };
 

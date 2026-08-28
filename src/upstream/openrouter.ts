@@ -34,9 +34,16 @@ function classifyStatus(status: number, body: unknown): UpstreamError {
 	const message = typeof msg === "string" && msg !== "" ? msg : `OpenRouter HTTP ${status}`;
 	const fail = (kind: UpstreamErrorKind, retryable: boolean): UpstreamError =>
 		new UpstreamError(kind, status, message, retryable, body);
-	if (status === 401 || status === 403) return fail("auth", false);
+	// 401 = missing/invalid key. Key-wide, so every model fails identically;
+	// retrying is pointless.
+	if (status === 401) return fail("auth", false);
 	// 402 = out of credits; retrying changes nothing, only topping up does.
 	if (status === 402) return fail("auth", false);
+	// 403 = provider content-moderation or per-model policy gate (prompt-injection
+	// block, age/data-policy confirmation). This indicts the model/provider, NOT
+	// the key: siblings routinely serve the same content. Retryable so the turn
+	// fails over to a different model instead of dying on the client.
+	if (status === 403) return fail("moderation", true);
 	if (status === 429) return fail("rate_limit", true);
 	if (status === 400) {
 		return CONTEXT_LENGTH_RE.test(message) ? fail("context_length", false) : fail("invalid_request", false);
