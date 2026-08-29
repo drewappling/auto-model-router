@@ -15,13 +15,19 @@ export interface AgentDoxClientOptions {
 	log: Logger;
 }
 
+/** Bounds on what agentdox may select for one block. */
+export interface AssembleLimits {
+	memoryLimit: number;
+	sessionLimit: number;
+}
+
 export interface AgentDoxClient {
 	/**
 	 * Assembles a context slice for `scope`, biased by `query`. Falls back to
 	 * the server's pre-assembled baseline when assembly is unavailable (older
 	 * server, or no query-relevant content).
 	 */
-	assemble(scope: string, query: string): Promise<string | null>;
+	assemble(scope: string, query: string, limits: AssembleLimits): Promise<string | null>;
 	createSession(scope: string, title: string): Promise<string | null>;
 	append(sessionId: string, role: "user" | "assistant", content: string, refs: string[]): Promise<boolean>;
 }
@@ -75,8 +81,15 @@ export function createAgentDoxClient(opts: AgentDoxClientOptions): AgentDoxClien
 	};
 
 	return {
-		async assemble(scope, query) {
-			const res = await request("POST", "/context/assemble", { scope, query });
+		async assemble(scope, query, limits) {
+			// camelCase: the REST endpoint ignores snake_case limit keys entirely,
+			// which silently reads as "unbounded".
+			const res = await request("POST", "/context/assemble", {
+				scope,
+				query,
+				memoryLimit: limits.memoryLimit,
+				sessionLimit: limits.sessionLimit,
+			});
 			if (res !== null && res.status === 200) {
 				const prompt = promptOf(res.json);
 				if (prompt !== null) return prompt;

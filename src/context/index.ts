@@ -27,6 +27,8 @@ export function createBridgeFromConfig(cfg: RouterConfig, db: Database): Context
 		log,
 		maxStalenessMs: c.maxStalenessMs,
 		maxBlockChars: c.maxBlockChars,
+		memoryLimit: c.memoryLimit,
+		sessionLimit: c.sessionLimit,
 		recordTurns: c.recordTurns,
 		maxQueue: c.maxQueue,
 	});

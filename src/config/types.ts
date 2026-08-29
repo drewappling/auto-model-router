@@ -372,6 +372,10 @@ export interface ContextConfig {
 	maxStalenessMs: number;
 	/** Hard cap on injected block size, characters. */
 	maxBlockChars: number;
+	/** Max memory entries agentdox may select for the block. */
+	memoryLimit: number;
+	/** Max recent session messages agentdox may select for the block. */
+	sessionLimit: number;
 	/** Write settled turns back to agentdox sessions, tagged with the served model. */
 	recordTurns: boolean;
 	/** Bound on queued write-backs; excess turns are dropped, never buffered unbounded. */

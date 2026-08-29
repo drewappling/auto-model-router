@@ -161,6 +161,15 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// faster than the server reassembles buys nothing but cache misses.
 		maxStalenessMs: 900_000,
 		maxBlockChars: 24_000,
+		// Bound what agentdox SELECTS, rather than letting the block grow and then
+		// slicing it at `maxBlockChars`. Byte truncation cuts an entry mid-sentence
+		// and is blind to relevance; a limit lets the server rank first. Left
+		// unbounded, this scope reached 15 memory entries = 23.5k chars (~5.9k
+		// tokens) injected into every turn, against a 24k cap it was about to hit.
+		memoryLimit: 8,
+		// Session messages are cheap today but grow once recordTurns is on, and
+		// they feed straight back into the next assembly.
+		sessionLimit: 6,
 		recordTurns: true,
 		maxQueue: 64,
 	},

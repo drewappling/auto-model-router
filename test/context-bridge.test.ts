@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { AgentDoxClient } from "../src/context/agentdox.ts";
+import type { AgentDoxClient, AssembleLimits } from "../src/context/agentdox.ts";
 import { createContextBridge } from "../src/context/bridge.ts";
 import { createContextStore } from "../src/context/store.ts";
 import type { ContextResolveInput, TurnRecord } from "../src/context/types.ts";
@@ -15,16 +15,19 @@ interface FakeClient extends AgentDoxClient {
 	appended: { sessionId: string; role: string; content: string; refs: string[] }[];
 	sessionsCreated: number;
 	prompt: string;
+	lastLimits: AssembleLimits | null;
 }
 
 function mkClient(prompt = "MEMORY: player digs in 3/4 top-down"): FakeClient {
 	const c: FakeClient = {
 		assembleCalls: 0,
+		lastLimits: null,
 		appended: [],
 		sessionsCreated: 0,
 		prompt,
-		async assemble() {
+		async assemble(_scope, _query, limits) {
 			c.assembleCalls++;
+			c.lastLimits = limits;
 			return c.prompt;
 		},
 		async createSession() {
@@ -49,6 +52,8 @@ function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
 		log,
 		maxStalenessMs: 900_000,
 		maxBlockChars: 24_000,
+		memoryLimit: 8,
+		sessionLimit: 6,
 		recordTurns: true,
 		maxQueue: 64,
 		...over,
@@ -84,6 +89,22 @@ describe("context bridge refresh policy", () => {
 			);
 			expect(client.assembleCalls).toBe(1);
 			expect(second?.block).toBe(first?.block ?? "");
+		} finally {
+			db.close();
+		}
+	});
+
+	test("assembly is bounded, so the block cannot grow until bytes get severed", async () => {
+		// The block reached 23.5k chars (~5.9k tokens, 15 memory entries) against a
+		// 24k maxBlockChars cap, at which point renderBlock slices mid-entry. Byte
+		// truncation is blind to relevance, so the server must be told to rank and
+		// select instead. The REST endpoint ignores snake_case limit keys, which
+		// silently reads as unbounded — hence pinning that the limits are passed.
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client, { memoryLimit: 5, sessionLimit: 2 });
+		try {
+			await bridge.resolve(input());
+			expect(client.lastLimits).toEqual({ memoryLimit: 5, sessionLimit: 2 });
 		} finally {
 			db.close();
 		}
@@ -217,6 +238,8 @@ describe("context bridge refresh policy", () => {
 				log,
 				maxStalenessMs: 900_000,
 				maxBlockChars: 24_000,
+				memoryLimit: 8,
+				sessionLimit: 6,
 				recordTurns: true,
 				maxQueue: 64,
 			};
