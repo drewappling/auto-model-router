@@ -167,6 +167,15 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// unbounded, this scope reached 15 memory entries = 23.5k chars (~5.9k
 		// tokens) injected into every turn, against a 24k cap it was about to hit.
 		memoryLimit: 8,
+		// Docs are WHOLE DOCUMENTS, so they are the easiest way to blow the cap:
+		// this was left unbounded and a single ashlands note-doc measured 41,921
+		// chars — larger than maxBlockChars on its own, with three of them
+		// assembling a 104k-char block. Bounded rather than off, because a scope
+		// whose docs are genuinely short summaries benefits from them; set 0 where
+		// docs mirror whole repo files (agentdox ingest does this), since the
+		// content is retrievable on demand via docs_read and does not belong in
+		// every prompt's prefix.
+		docsLimit: 2,
 		// Session messages are cheap today but grow once recordTurns is on, and
 		// they feed straight back into the next assembly.
 		sessionLimit: 6,

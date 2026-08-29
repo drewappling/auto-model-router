@@ -18,6 +18,7 @@ export interface AgentDoxClientOptions {
 /** Bounds on what agentdox may select for one block. */
 export interface AssembleLimits {
 	memoryLimit: number;
+	docsLimit: number;
 	sessionLimit: number;
 }
 
@@ -88,6 +89,7 @@ export function createAgentDoxClient(opts: AgentDoxClientOptions): AgentDoxClien
 				scope,
 				query,
 				memoryLimit: limits.memoryLimit,
+				docsLimit: limits.docsLimit,
 				sessionLimit: limits.sessionLimit,
 			});
 			if (res !== null && res.status === 200) {

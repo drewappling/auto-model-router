@@ -53,6 +53,7 @@ function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
 		maxStalenessMs: 900_000,
 		maxBlockChars: 24_000,
 		memoryLimit: 8,
+		docsLimit: 2,
 		sessionLimit: 6,
 		recordTurns: true,
 		maxQueue: 64,
@@ -95,16 +96,18 @@ describe("context bridge refresh policy", () => {
 	});
 
 	test("assembly is bounded, so the block cannot grow until bytes get severed", async () => {
-		// The block reached 23.5k chars (~5.9k tokens, 15 memory entries) against a
-		// 24k maxBlockChars cap, at which point renderBlock slices mid-entry. Byte
-		// truncation is blind to relevance, so the server must be told to rank and
-		// select instead. The REST endpoint ignores snake_case limit keys, which
-		// silently reads as unbounded — hence pinning that the limits are passed.
+		// The block reached 23.5k chars against a 24k maxBlockChars cap, at which
+		// point renderBlock slices mid-entry. Byte truncation is blind to relevance,
+		// so the server must be told to rank and select instead. `docsLimit`
+		// especially: docs are WHOLE documents and were left unbounded, and a single
+		// ashlands note-doc measured 41,921 chars — over the whole cap by itself.
+		// The REST endpoint also ignores snake_case limit keys, which silently reads
+		// as unbounded, so pin that all three limits actually reach the client.
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { memoryLimit: 5, sessionLimit: 2 });
+		const { bridge, db } = mkBridge(client, { memoryLimit: 5, docsLimit: 1, sessionLimit: 2 });
 		try {
 			await bridge.resolve(input());
-			expect(client.lastLimits).toEqual({ memoryLimit: 5, sessionLimit: 2 });
+			expect(client.lastLimits).toEqual({ memoryLimit: 5, docsLimit: 1, sessionLimit: 2 });
 		} finally {
 			db.close();
 		}
@@ -239,6 +242,7 @@ describe("context bridge refresh policy", () => {
 				maxStalenessMs: 900_000,
 				maxBlockChars: 24_000,
 				memoryLimit: 8,
+				docsLimit: 2,
 				sessionLimit: 6,
 				recordTurns: true,
 				maxQueue: 64,

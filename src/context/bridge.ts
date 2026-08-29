@@ -36,6 +36,7 @@ export interface BridgeOptions {
 	 * useful entry instead of severing whatever straddles the cap.
 	 */
 	memoryLimit: number;
+	docsLimit: number;
 	sessionLimit: number;
 	/** Record settled turns back into agentdox sessions. */
 	recordTurns: boolean;
@@ -80,7 +81,7 @@ function appendFragment(prior: string, next: string): string {
 }
 
 export function createContextBridge(opts: BridgeOptions): ContextBridge {
-	const { client, store, log, maxStalenessMs, maxBlockChars, memoryLimit, sessionLimit, recordTurns, maxQueue } = opts;
+	const { client, store, log, maxStalenessMs, maxBlockChars, memoryLimit, docsLimit, sessionLimit, recordTurns, maxQueue } = opts;
 
 	// Serialized write-back queue. Session appends for one conversation must
 	// stay ordered, and agentdox is a local service — one worker is plenty.
@@ -118,7 +119,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 				return { ...pinned, fetchedAtMs: input.pinnedFetchedAtMs };
 			}
 
-			const raw = await client.assemble(input.scope, input.query, { memoryLimit, sessionLimit });
+			const raw = await client.assemble(input.scope, input.query, { memoryLimit, docsLimit, sessionLimit });
 			if (raw === null) {
 				// agentdox unreachable or empty. Keep serving the pinned block if we
 				// have one: stale shared context beats none, and re-using it also

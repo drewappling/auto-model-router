@@ -374,6 +374,9 @@ export interface ContextConfig {
 	maxBlockChars: number;
 	/** Max memory entries agentdox may select for the block. */
 	memoryLimit: number;
+	/** Max docs agentdox may select for the block. Docs are whole documents, so
+	 *  this is the easiest way to blow `maxBlockChars`; 0 disables them. */
+	docsLimit: number;
 	/** Max recent session messages agentdox may select for the block. */
 	sessionLimit: number;
 	/** Write settled turns back to agentdox sessions, tagged with the served model. */
