@@ -43,7 +43,8 @@ Deterministic, so the same folder always resolves to the same slug:
      stop and ask for a distinguishing slug.
    - **Near match** (`my-app` vs `my-app-v2`) — a stop sign: ask, rather than fork a second
      namespace for one project.
-4. `project_ensure {slug, name}` — `name` is the readable form of the folder.
+4. `project_ensure {slug}` — `name` is optional and only used if the project is new; it
+   defaults to the slug, so pass one only when the readable form differs.
 5. **Make `.env.agentdox` un-committable *before* writing it.** Run `git check-ignore -v
    .env.agentdox`. If it is not ignored, **add `.env.agentdox` to `.gitignore`** (create that
    file if there is none) — do not merely check and move on. Patterns like `.env` and
@@ -136,7 +137,7 @@ await fetch("http://localhost:3003/memory", { method: "POST", headers: H,
 
 | Step | MCP | REST |
 | --- | --- | --- |
-| Ensure the project | `project_ensure {slug, name}` | `POST /projects {slug,name}` (idempotent) |
+| Ensure the project | `project_ensure {slug}` | `POST /projects {slug}` (idempotent) |
 | Read the brief | `context_brief {scope}` | `GET /context/brief?scope=<scope>` |
 
 The brief is the cumulative on-ramp: overview, repo layout, code style, build/test,
