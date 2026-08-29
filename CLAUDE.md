@@ -28,6 +28,18 @@ another project. Getting `omp-router` right is on you, not on RBAC.
 | Server | `http://localhost:3003` — Docker container `agentdox-server` |
 | Admin token (to re-mint the global PAT) | `E:/projects/agentdox/deploy/.env` |
 
+**Searching agentdox.** Retrieval is hybrid — BM25 keyword matching fused with embeddings — and
+runs over *passages* of docs, not whole files. So ask in your own words; exact identifiers work
+too. Two habits worth having:
+
+- **Prefer `docs_passages` over `docs_search`.** It returns the section that answers the
+  question. `docs_search` returns whole documents, which then get truncated, and the truncation
+  is rarely the relevant part.
+- **If results look thin, run `index_stats {scope}` before concluding the store is empty.** It
+  reports how much of the scope is indexed and whether the embedding provider is reachable;
+  `embedded` far below `total`, or an unreachable provider, means you are getting keyword-only
+  results.
+
 `.env.agentdox` is the durable record; the environment variable is what Claude Code actually
 substitutes into `.mcp.json` at MCP-server startup. If agentdox MCP returns **401**, the
 variable is missing from the environment — re-set it from `.env.agentdox` and restart Claude

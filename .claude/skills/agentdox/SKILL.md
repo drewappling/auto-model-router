@@ -180,11 +180,28 @@ while memory, docs, or the brief for the area you touched is stale.
 | Architecture / conventions | `docs_update {id, content}` | `PATCH /docs/:id {title?, content?, tags?}` |
 | A genuinely new doc | `docs_write {slug, title, content, scope}` | `POST /docs {slug, title, content, scope}` |
 | List / read docs | `docs_read` · `docs_search` | `GET /docs?scope=<scope>` · `GET /docs/search?q=…` · `GET /docs/slug/:slug` |
+| Find the *part* of a doc that answers something | `docs_passages` | `GET /docs/passages?q=…&scope=<scope>` |
 | A decision you made | `context_brief_record {scope, title, decision, rationale}` | `POST /context/brief/decision {scope, title, decision, rationale}` |
 | Edit brief sections | — | `PUT /context/brief {scope, overview?, repoLayout?, codeStyle?, buildTest?, assetConventions?, gotchas?}` |
 
 **Search before you add.** Update the existing entry rather than leaving two contradictory
 facts. Record the *why* of a decision, not just the *what*.
+
+## Searching well
+
+Retrieval is hybrid — keyword *and* meaning — so you do not have to guess the stored wording.
+Ask in your own words; exact identifiers (`SettlementLayout.Build`, `AGENTDOX_TOKEN`) work too.
+
+**Prefer `docs_passages` over `docs_search`** when you want the part of a doc that answers a
+question. `docs_search` hands back whole documents, which then get truncated — and the
+truncation is rarely the relevant part. A passage arrives with its slug and heading, so
+`docs_read` the full doc when the passage is not enough.
+
+If results look thin or stale, check `index_stats {scope}` before concluding the store is
+empty: it reports how much of the scope is indexed and whether the embedding provider is
+reachable. `embedded` far below `total`, or an unreachable provider, means you are getting
+keyword-only results. `index_rebuild` fixes an index that has drifted; ordinary writes index
+themselves, so you should rarely need it.
 
 ## Two inconsistencies that cause silent mistakes
 
