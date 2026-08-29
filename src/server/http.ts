@@ -167,7 +167,7 @@ function isLoopbackHostHeader(hostHeader: string | null): boolean {
 export function startServer(cfg: RouterConfig): StartedServer {
 	const log = createLogger(cfg.logLevel);
 
-	mkdirSync(dirname(cfg.ledger.path), { recursive: true });
+	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
 	const upstream = createOpenRouterClient(cfg);
@@ -258,7 +258,14 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		runTurn(normReq, sink, turnDeps, req.signal)
 			.catch((err: unknown) => {
 				log.error("turn failed", { error: err instanceof Error ? err.message : String(err) });
-				return Promise.resolve(sink.error(toWireError(err))).catch(() => {});
+				// sink.error() is SYNCHRONOUS: it runs before Promise.resolve wraps
+				// anything, so a throw out of it escapes this .catch() handler and
+				// becomes an unhandled rejection that kills the process. Wrap it.
+				try {
+					Promise.resolve(sink.error(toWireError(err))).catch(() => {});
+				} catch {
+					// Stream already gone; the response cannot carry the error.
+				}
 			})
 			.finally(() => {
 				// Release the concurrency slot when the turn settles, not when the

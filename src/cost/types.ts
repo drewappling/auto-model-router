@@ -124,7 +124,12 @@ export interface LedgerEntry {
 	/** Time to first content token, ms. */
 	ttftMs: number | null;
 	finishReason: string | null;
-	/** Tokens billed but discarded because the attempt was aborted and retried. */
+	/**
+	 * Attempt superseded by a retry or escalation. NOT a cost figure: by design
+	 * these rows never carry reported_usd, so "wasted spend" sums to $0.00.
+	 * The meaningful waste measure is retry spend — rows with attempt > 0 that
+	 * DID bill. Kept for compatibility; do not read it as money.
+	 */
 	wasted: boolean;
 	upstreamGenerationId: string | null;
 	error: string | null;

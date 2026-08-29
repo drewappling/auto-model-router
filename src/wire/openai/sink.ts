@@ -26,12 +26,25 @@ export function createStreamingSink(virtualModel: string): { sink: ResponseSink;
 		},
 	});
 	const send = (bytes: Uint8Array): void => {
-		if (!closed) controller?.enqueue(bytes);
+		if (closed) return;
+		try {
+			controller?.enqueue(bytes);
+		} catch {
+			// The runtime can close the controller under us — a client cancelling
+			// the stream (reader.cancel()) is not exceptional and nothing above us
+			// observes it. Mark closed and drop the write; measured to throw
+			// ERR_INVALID_STATE synchronously on Bun 1.x otherwise.
+			closed = true;
+		}
 	};
 	const close = (): void => {
 		if (!closed) {
 			closed = true;
-			controller?.close();
+			try {
+				controller?.close();
+			} catch {
+				// Already closed by the runtime; nothing left to do.
+			}
 		}
 	};
 

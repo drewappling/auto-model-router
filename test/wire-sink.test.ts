@@ -70,6 +70,37 @@ describe("createStreamingSink", () => {
 			{ error: { message: "boom", type: "server_error", code: "upstream_error" } },
 		]);
 	});
+
+	test("chunk, error, and finish survive a client-cancelled body without throwing", async () => {
+		const { sink, response } = createStreamingSink("auto");
+		const reader = response.body?.getReader();
+		expect(reader).toBeDefined();
+		// Client disconnects mid-stream: reader cancels, controller closes.
+		await reader?.cancel("client closed connection");
+
+		// None of these may throw ERR_INVALID_STATE:
+		expect(() => {
+			sink.chunk(
+				chunk({
+					id: "gen-cancelled",
+					model: "openai/gpt-5.5",
+					choices: [{ index: 0, delta: { content: "trailing" }, finish_reason: null }],
+				}),
+			);
+		}).not.toThrow();
+
+		expect(() => {
+			sink.finish(SUMMARY);
+		}).not.toThrow();
+
+		// Repeated calls (e.g. error after chunk on dead stream) must also stay safe:
+		const { sink: sink2, response: response2 } = createStreamingSink("auto");
+		const reader2 = response2.body?.getReader();
+		await reader2?.cancel();
+		expect(() => {
+			sink2.error({ status: 500, code: "server_error", message: "late failure" });
+		}).not.toThrow();
+	});
 });
 
 describe("createBufferedSink", () => {

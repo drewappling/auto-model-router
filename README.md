@@ -362,12 +362,11 @@ auto-model-router config
 
 Same fields, prompted on the terminal. Also:
 
-- `auto-model-router config --print` — prints the `models.yml` provider block.
-- `auto-model-router config --write` — merges that block into omp's `models.yml`.
+- `auto-model-router config --print` — prints the OpenAI-compatible provider block ready to paste into `models.yml` or your harness config.
+- `auto-model-router config --write` — merges that block into omp's `models.yml` automatically.
 
 Both write paths validate the merged file against the schema before touching
 disk and back up the previous file to a timestamped `.bak`.
-
 ### Configuration file location
 
 - Router config: `$AUTO_MODEL_ROUTER_HOME/config.yml` (default `~/.auto-model-router/config.yml`).
@@ -689,10 +688,17 @@ to a cheaper tier than an architecture question in the same conversation; a
 malformed tool call is escalated to a stronger model without the client ever
 seeing the failure; and the abandoned attempt is booked as wasted spend.
 
-`auto-model-router explain --file request.json` routes a saved request and prints the
-feature vector, classification reasoning, ranked candidates with forecasts, and
-every rejection with its cause — without dispatching a completion.
+### Diagnostic CLI: `explain`
 
+`auto-model-router explain --file request.json` routes a saved request offline and prints the
+complete decision trace without dispatching a completion:
+
+- **Features:** token counts, toolLoopDepth, code fence markers, image presence.
+- **Classification:** chosen tier, confidence, rule hits, complexity reasoning.
+- **Candidates:** ranked models with price forecasts, latency penalties, quality scores.
+- **Rejections:** every filtered model and the exact constraint that excluded it (`over_price_ceiling`, `below_quality_floor`, `untrusted`, `context_length`).
+
+Use it to debug unexpected tier selections or to see why a model was excluded in seconds.
 ---
 
 ## Where quality scores come from
