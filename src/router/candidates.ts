@@ -134,6 +134,8 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 
 	const candidates: Candidate[] = [];
 	const rejected: Rejection[] = [];
+	// Carries the trust/latency-adjusted cost into the second scoring pass.
+	const effectiveUsdBySlug = new Map<string, number>();
 
 	for (const model of snapshot.models) {
 		const slug = model.slug;
@@ -263,7 +265,10 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 				: null;
 		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens);
 		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5)) * latencyMult;
-		const score = Math.pow(qualityScore / 100, tierCfg.qualityExponent) / Math.max(effectiveUsd, 1e-9);
+		// Score is assigned in a SECOND PASS below: both qualityNormalization and
+		// capabilityFloorUsd are properties of the candidate SET, not of one
+		// model, so no per-model value can be computed here. Placeholder only.
+		const score = 0;
 
 		const reasons: string[] = [
 			quality === null
@@ -281,6 +286,30 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		}
 		if (pinned) reasons.push("pinned into tier");
 		candidates.push({ model, forecast: fc, qualityScore, trustScore, score, reasons });
+		effectiveUsdBySlug.set(slug, effectiveUsd);
+	}
+
+	// Second pass: both new tier modes need the whole set.
+	//  - qualityNormalization rescales quality to the set's own [worst, best]
+	//    range, so the exponent operates on a full 0-1 spread instead of the
+	//    raw index's compressed 69-78 band.
+	//  - capabilityFloorUsd ignores the ratio entirely and takes the highest
+	//    quality candidate affordable within the cap.
+	const qualities = candidates.map((c) => c.qualityScore);
+	const qMin = qualities.length > 0 ? Math.min(...qualities) : 0;
+	const qMax = qualities.length > 0 ? Math.max(...qualities) : 0;
+	const qSpread = qMax - qMin;
+	const normalize = tierCfg.qualityNormalization === true && qSpread > 0;
+	for (const c of candidates) {
+		const effectiveUsd = effectiveUsdBySlug.get(c.model.slug) ?? c.forecast.expectedUsd;
+		// Normalised quality is unitless in [0,1]: the set's cheapest-quality
+		// model scores 0, its best scores 1. A single-model set has no spread,
+		// so it keeps the raw path (guarded by qSpread > 0).
+		const q = normalize ? (c.qualityScore - qMin) / qSpread : c.qualityScore / 100;
+		c.score = Math.pow(q, tierCfg.qualityExponent) / Math.max(effectiveUsd, 1e-9);
+		if (normalize) {
+			c.reasons.push(`quality normalised ${q.toFixed(3)} within set [${qMin}, ${qMax}]`);
+		}
 	}
 
 	candidates.sort((a, b) => {
@@ -299,5 +328,28 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		if (b.model.slug === warmSlug) return 1;
 		return a.model.slug < b.model.slug ? -1 : 1;
 	});
+
+	// Capability-floor mode: the top tier's job is "best model the work needs",
+	// which quality-per-dollar cannot express — a bargain model always wins the
+	// ratio however weak it is. Promote the highest-quality candidate whose
+	// forecast turn cost fits the cap to the front. Strictly an upgrade: when
+	// nothing is affordable, or the ranked winner is already the best quality,
+	// the order is untouched.
+	const floorUsd = tierCfg.capabilityFloorUsd;
+	if (floorUsd !== undefined && candidates.length > 1) {
+		let best: Candidate | undefined;
+		for (const c of candidates) {
+			if (c.forecast.coldUsd > floorUsd) continue;
+			if (best === undefined || c.qualityScore > best.qualityScore) best = c;
+		}
+		if (best !== undefined && best !== candidates[0]) {
+			const idx = candidates.indexOf(best);
+			candidates.splice(idx, 1);
+			candidates.unshift(best);
+			best.reasons.push(
+				`capability floor: highest quality ${best.qualityScore} within $${floorUsd}/turn (cold $${best.forecast.coldUsd.toFixed(4)})`,
+			);
+		}
+	}
 	return { candidates, rejected };
 }

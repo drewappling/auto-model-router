@@ -115,7 +115,11 @@ function withOverrides(cfg: RouterConfig, sets: readonly string[]): RouterConfig
 			node = child as Record<string, unknown>;
 		}
 		const leaf = path[path.length - 1];
-		if (leaf === undefined || !(leaf in node)) throw new Error(`--set path not found: ${entry}`);
+		if (leaf === undefined) throw new Error(`--set expects a key, got: ${entry}`);
+		// An absent leaf is legitimate and required: optional config fields are
+		// simply missing until set (exactOptionalPropertyTypes), and introducing
+		// one is exactly what a variant does. A wrong PARENT path still throws,
+		// in the walk above, which is what catches typos.
 		node[leaf] = value;
 	}
 	return next;

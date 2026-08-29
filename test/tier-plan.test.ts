@@ -354,3 +354,94 @@ describe("adaptive price ceilings", () => {
 		expect(on.rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
 	});
 });
+
+describe("quality normalization and capability floor (benchmark findings 4/6)", () => {
+	const req = parseChatRequest(
+		{
+			model: "auto",
+			tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }],
+			messages: [{ role: "user", content: "implement nested transaction savepoints" }],
+		},
+		new Headers(),
+	);
+	const features = extractFeatures(req, 100);
+
+	// The real catalog's shape: quality in a narrow band, price spanning ~100x.
+	// `hard` has a quality floor of 72, so cheap/1 is deliberately below it —
+	// it must be rejected, and mid/2 is the cheapest ELIGIBLE model, the one
+	// raw quality-per-dollar ranking picks at any sane exponent.
+	const spread = snapshot(
+		models([
+			["cheap/1", 70, 0.05],
+			["mid/2", 74, 1.0],
+			["good/3", 76, 3.0],
+			["best/4", 78, 5.0],
+		]),
+	);
+
+	const run = (tierOverride: Partial<(typeof BASE)["tiers"]["hard"]>) =>
+		buildCandidates({
+			req,
+			features,
+			tier: "hard",
+			task: "coding",
+			snapshot: spread,
+			ledger: null,
+			cfg: { ...BASE, tiers: { ...BASE.tiers, hard: { ...BASE.tiers.hard, ...tierOverride } } },
+			expectedCompletionTokens: 512,
+			warmSlug: null,
+		});
+
+	test("raw scoring at the shipped exponent picks the cheapest ELIGIBLE model", () => {
+		const { candidates, rejected } = run({ qualityExponent: 3 });
+		expect(candidates[0]?.model.slug).toBe("mid/2");
+		// cheap/1 is under the hard floor of 72 and never competes.
+		expect(rejected.some((r) => r.slug === "cheap/1" && r.reason === "below_quality_floor")).toBe(true);
+	});
+
+	test("normalization lets a single-digit exponent buy the best model, which raw cannot", () => {
+		// Raw at the same exponent still cannot reach it: that is the defect.
+		expect(run({ qualityExponent: 12 }).candidates[0]?.model.slug).toBe("mid/2");
+		// Normalised, the same 12 selects the top-quality model.
+		const normalised = run({ qualityExponent: 12, qualityNormalization: true });
+		expect(normalised.candidates[0]?.model.slug).toBe("best/4");
+		expect(normalised.candidates[0]?.reasons.some((r) => r.includes("quality normalised"))).toBe(true);
+	});
+
+	test("normalization is monotone in the exponent: higher never picks a weaker model", () => {
+		let lastQuality = 0;
+		for (const qualityExponent of [1, 4, 8, 12, 20]) {
+			const top = run({ qualityExponent, qualityNormalization: true }).candidates[0];
+			expect(top).toBeDefined();
+			expect(top?.qualityScore ?? 0).toBeGreaterThanOrEqual(lastQuality);
+			lastQuality = top?.qualityScore ?? 0;
+		}
+	});
+
+	test("capability floor takes the best model inside the cap, ignoring the ratio", () => {
+		// mid/2 costs ~$0.0016 and good/3 ~$0.0049, so this cap admits both but
+		// excludes best/4 (~$0.0082). The ranked winner is mid/2 (cheapest).
+		const cap = 0.005;
+		const capped = run({ capabilityFloorUsd: cap });
+		const top = capped.candidates[0];
+		expect(top).toBeDefined();
+		expect(top?.forecast.coldUsd ?? 1).toBeLessThanOrEqual(cap);
+		// It must be the highest-quality affordable one, not the cheapest: good/3.
+		expect(top?.model.slug).toBe("good/3");
+		expect(top?.reasons.some((r) => r.includes("capability floor"))).toBe(true);
+	});
+
+	test("capability floor is strictly an upgrade: an unaffordable cap changes nothing", () => {
+		const base = run({}).candidates.map((c) => c.model.slug);
+		// A cap below every candidate's cost promotes nobody.
+		const tiny = run({ capabilityFloorUsd: 1e-9 }).candidates.map((c) => c.model.slug);
+		expect(tiny).toEqual(base);
+	});
+
+	test("both modes stay inert by default, so shipped behaviour is unchanged", () => {
+		const shipped = run({});
+		expect(shipped.candidates[0]?.model.slug).toBe("mid/2");
+		expect(shipped.candidates.every((c) => !c.reasons.some((r) => r.includes("normalised")))).toBe(true);
+		expect(shipped.candidates.every((c) => !c.reasons.some((r) => r.includes("capability floor")))).toBe(true);
+	});
+});

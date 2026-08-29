@@ -46,6 +46,8 @@ const tierConfig = z.strictObject({
 	maxInputPerMtok: z.number().nonnegative().optional(),
 	maxOutputPerMtok: z.number().nonnegative().optional(),
 	qualityExponent: z.number().nonnegative().optional(),
+	qualityNormalization: z.boolean().optional(),
+	capabilityFloorUsd: z.number().positive().optional(),
 	pin: z.array(z.string()).optional(),
 });
 

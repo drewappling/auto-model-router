@@ -108,6 +108,32 @@ export interface TierConfig {
 	 * above the floor (Pareto-style). Higher ⇒ pay for headroom above it.
 	 */
 	qualityExponent: number;
+	/**
+	 * Rank on quality NORMALISED WITHIN the candidate set instead of on the raw
+	 * 0-100 index. Default false (raw).
+	 *
+	 * Why it exists: raw scores occupy a narrow band (69-78 on the coding axis)
+	 * while prices span ~250x ($0.02-$5.00/MTok), so `(quality/100)^exponent`
+	 * over a forecast cost is a bounded numerator over an unbounded denominator
+	 * — price wins unless the exponent is enormous (measured: ~140 to select a
+	 * frontier model, where 0.715^140 is ~1e-20 and numerically fragile).
+	 * Normalising maps the set's worst quality to 0 and its best to 1, so the
+	 * exponent becomes a legible "how much do I pay for the best available
+	 * model" dial at single digits instead of triple.
+	 */
+	qualityNormalization?: boolean;
+	/**
+	 * Treat this tier as a CAPABILITY FLOOR rather than a cost ranking: pick the
+	 * highest-quality candidate whose forecast turn cost is within this many USD,
+	 * ignoring quality-per-dollar entirely. Unset ⇒ normal ranking.
+	 *
+	 * This is the top tier's real job. `hard` exists because the work needs a
+	 * capable model, so "best quality under a spend cap" states the intent
+	 * directly; ranking by quality/price cannot, since a bargain model always
+	 * wins on the ratio however weak it is. Falls back to the ranked winner when
+	 * no candidate fits the budget, so this can only ever upgrade a choice.
+	 */
+	capabilityFloorUsd?: number;
 	/** Slugs always allowed in this tier regardless of the quality floor. */
 	pin: string[];
 }
