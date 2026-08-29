@@ -230,6 +230,13 @@ export async function runTurn(
 				error: fields.error,
 				promptTokensSaved: decision.promptTokensSaved,
 			});
+			// Book the money HERE, beside the ledger row, so the two can never
+			// disagree. Every dispatch that reaches this point was billed —
+			// committed, wasted by an escalation, or aborted mid-stream — but only
+			// the committed path used to reach the state update below, so aborted
+			// dispatches (30% of real spend on live data) stayed invisible to the
+			// per-conversation budget guard.
+			conversations.accrue(req.conversationKey, { spentUsd: reportedUsd ?? decision.forecast.expectedUsd });
 		};
 
 		// "retry" re-enters the attempt loop; "done" means the turn is settled
@@ -422,7 +429,9 @@ export async function runTurn(
 		// hysteresis re-arm below can tell whether this turn changed tier.
 		const prevTier = state.currentTier;
 		state.currentTier = decision.tier;
-		state.escalations += escalations;
+		// Escalations accumulate in SQL for the same reason spend does: `save`
+		// below no longer writes this column, so a snapshot cannot clobber it.
+		conversations.accrue(req.conversationKey, { escalations });
 		// Hysteresis window. Only re-arm when the served tier actually changed
 		// (or this turn escalated). Re-arming on EVERY turn — even a trivial one
 		// served by a held hard model — extends the lock forever: the classifier
@@ -434,9 +443,11 @@ export async function runTurn(
 		if (tierChanged || escalations > 0) {
 			state.stickyUntilTurn = turnNumber + resolveHoldTurns(config, req.conversationKey, escalations > 0).turns;
 		}
-		// Reported cost is authoritative; fall back to the forecast so the
-		// budget guard still works when the provider omits cost.
+		// Spend is already booked in `writeEntry`, beside the ledger row, so it is
+		// deliberately NOT accumulated here — doing both would double-count.
+		// Keep the in-memory copy coherent for anything reading `state` later.
 		state.spentUsd += reportedUsd ?? decision.forecast.expectedUsd;
+		state.escalations += escalations;
 		state.lastPromptTokens = usage.promptTokens;
 		if (usage.cachedTokens > 0 || usage.cacheWriteTokens > 0) {
 			// Non-zero cache traffic is direct evidence the upstream cache exists.

@@ -241,8 +241,14 @@ function mkLedger(): { ledger: Ledger; entries: LedgerEntry[] } {
 	return { ledger, entries };
 }
 
-function mkConversations(): { store: ConversationStore; map: Map<string, ConversationState> } {
+function mkConversations(): {
+	store: ConversationStore;
+	map: Map<string, ConversationState>;
+	accrued: Map<string, { spentUsd: number; escalations: number }>;
+} {
 	const map = new Map<string, ConversationState>();
+	// Mirrors the real store: money accumulates here, NOT through `save`.
+	const accrued = new Map<string, { spentUsd: number; escalations: number }>();
 	const store: ConversationStore = {
 		get: (k) => map.get(k) ?? null,
 		load: (k) => {
@@ -270,9 +276,15 @@ function mkConversations(): { store: ConversationStore; map: Map<string, Convers
 		save: (s) => {
 			map.set(s.key, s);
 		},
+		accrue: (k, d) => {
+			const cur = accrued.get(k) ?? { spentUsd: 0, escalations: 0 };
+			cur.spentUsd += d.spentUsd ?? 0;
+			cur.escalations += d.escalations ?? 0;
+			accrued.set(k, cur);
+		},
 		prune: () => 0,
 	};
-	return { store, map };
+	return { store, map, accrued };
 }
 
 function mkSink(): { sink: ResponseSink; chunks: UpstreamChunk[]; errors: WireError[]; finishes: TurnSummary[] } {
@@ -629,5 +641,56 @@ describe("agentdox write-back sees the shape of the turn", () => {
 
 		expect(errors).toHaveLength(0);
 		expect(records).toHaveLength(0);
+	});
+});
+
+describe("spend reaches the conversation total however the dispatch ends", () => {
+	test("a dispatch that dies mid-stream still books what it was billed", async () => {
+		// Live data: 152 aborted dispatches billed $0.9985 — 30% of all spend —
+		// and none of it reached the conversation's running total, because an abort
+		// returns before the commit path. The ledger row and the per-conversation
+		// budget guard must never disagree about money. Probe maxTokens 1 commits
+		// on the first token, so the retryable error below cannot re-enter the
+		// attempt loop and confuse the accounting.
+		const { router } = mkRouter([mkDecision("simple", "cheap/model", { maxTokens: 1, escalateTo: null })]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "die",
+				chunks: [
+					startChunk("cheap/model"),
+					textChunk("plenty of text here, enough to commit on"),
+					usageChunk({ promptTokens: 47_700, completionTokens: 154 }, 0.0071),
+				],
+				error: new UpstreamError("network", 0, "request aborted", true),
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store, accrued } = mkConversations();
+		const { sink } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		// The turn never committed: the ledger row carries the error.
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.error).not.toBeNull();
+		// ...but the money was still booked.
+		expect(accrued.get("conv-test")?.spentUsd).toBeCloseTo(0.0071, 10);
+	});
+
+	test("a committed turn books its cost exactly once", async () => {
+		const { router } = mkRouter([mkDecision("simple", "cheap/model", { escalateTo: null })]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("done"), finishChunk("stop"), usageChunk({}, 0.002)] },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store, accrued } = mkConversations();
+		const { sink, errors } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(entries).toHaveLength(1);
+		// Booked in writeEntry only — the commit path must not add it again.
+		expect(accrued.get("conv-test")?.spentUsd).toBeCloseTo(0.002, 10);
 	});
 });

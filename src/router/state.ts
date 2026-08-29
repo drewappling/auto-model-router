@@ -57,13 +57,17 @@ export function createConversationStore(db: Database): ConversationStore {
 	const insertOne: Statement<unknown, [string, string, number]> = db.query(
 		"INSERT INTO conversations (key, session_id, updated_at_ms) VALUES (?, ?, ?)",
 	);
+	// `spent_usd` and `escalations` are ABSENT from this statement on purpose.
+	// They accumulate through `accrueOne` below, so writing a turn-start snapshot
+	// back here would erase whatever a billed-but-uncommitted dispatch added.
+	// The schema defaults both to 0, so the INSERT arm still works.
 	const upsert = db.query(`
 		INSERT INTO conversations (
 			key, session_id, turn, current_slug, current_tier, sticky_until_turn,
-			escalations, spent_usd, last_prompt_tokens, cache_warm_slug, cache_warm_at_ms,
+			last_prompt_tokens, cache_warm_slug, cache_warm_at_ms,
 			context_version, context_fetched_at_ms, updated_at_ms
 		) VALUES ($key, $sessionId, $turn, $currentSlug, $currentTier, $stickyUntilTurn,
-			$escalations, $spentUsd, $lastPromptTokens, $cacheWarmSlug, $cacheWarmAtMs,
+			$lastPromptTokens, $cacheWarmSlug, $cacheWarmAtMs,
 			$contextVersion, $contextFetchedAtMs, $updatedAtMs)
 		ON CONFLICT(key) DO UPDATE SET
 			session_id = excluded.session_id,
@@ -71,14 +75,25 @@ export function createConversationStore(db: Database): ConversationStore {
 			current_slug = excluded.current_slug,
 			current_tier = excluded.current_tier,
 			sticky_until_turn = excluded.sticky_until_turn,
-			escalations = excluded.escalations,
-			spent_usd = excluded.spent_usd,
 			last_prompt_tokens = excluded.last_prompt_tokens,
 			cache_warm_slug = excluded.cache_warm_slug,
 			cache_warm_at_ms = excluded.cache_warm_at_ms,
 			context_version = excluded.context_version,
 			context_fetched_at_ms = excluded.context_fetched_at_ms,
 			updated_at_ms = excluded.updated_at_ms
+	`);
+	// Read-modify-write in JS lost money: an aborted or failed dispatch is still
+	// billed by the upstream, but it returns before the commit path, so the next
+	// dispatch loaded a stale total and overwrote it. Measured on live data:
+	// 152 aborted dispatches billing $0.9985 — 30% of all spend — never reached
+	// `spent_usd`, leaving the per-conversation budget guard blind to it.
+	// Accumulating in SQL is correct regardless of who raced whom.
+	const accrueOne = db.query(`
+		UPDATE conversations
+		SET spent_usd = spent_usd + $spentUsd,
+			escalations = escalations + $escalations,
+			updated_at_ms = $updatedAtMs
+		WHERE key = $key
 	`);
 	const deleteStale: Statement<unknown, [number]> = db.query("DELETE FROM conversations WHERE updated_at_ms < ?");
 
@@ -103,6 +118,7 @@ export function createConversationStore(db: Database): ConversationStore {
 		save(state) {
 			// bun:sqlite matches named parameters by their literal `$name` key;
 			// bare keys bind nothing at all and every column silently lands NULL.
+			// No $spentUsd / $escalations here — see the statement above.
 			upsert.run({
 				$key: state.key,
 				$sessionId: state.sessionId,
@@ -110,8 +126,6 @@ export function createConversationStore(db: Database): ConversationStore {
 				$currentSlug: state.currentSlug,
 				$currentTier: state.currentTier,
 				$stickyUntilTurn: state.stickyUntilTurn,
-				$escalations: state.escalations,
-				$spentUsd: state.spentUsd,
 				$lastPromptTokens: state.lastPromptTokens,
 				$cacheWarmSlug: state.cacheWarmSlug,
 				$cacheWarmAtMs: state.cacheWarmAtMs,
@@ -119,6 +133,15 @@ export function createConversationStore(db: Database): ConversationStore {
 				$contextFetchedAtMs: state.contextFetchedAtMs,
 				$updatedAtMs: Date.now(),
 			});
+		},
+
+		accrue(key, delta) {
+			const spentUsd = delta.spentUsd ?? 0;
+			const escalations = delta.escalations ?? 0;
+			// Nothing to add: skip the write rather than bump updated_at_ms and
+			// keep a dead conversation alive against `prune`.
+			if (spentUsd === 0 && escalations === 0) return;
+			accrueOne.run({ $key: key, $spentUsd: spentUsd, $escalations: escalations, $updatedAtMs: Date.now() });
 		},
 
 		prune(maxAgeMs) {

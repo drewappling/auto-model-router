@@ -275,6 +275,7 @@ function mkConversations(): { store: ConversationStore; map: Map<string, Convers
 		save: (s) => {
 			map.set(s.key, s);
 		},
+		accrue: () => {},
 		prune: () => 0,
 	};
 	return { store, map };

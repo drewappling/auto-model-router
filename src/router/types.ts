@@ -179,7 +179,21 @@ export interface ConversationStore {
 	get(key: string): ConversationState | null;
 	/** Loads existing state or creates a fresh record. */
 	load(key: string): ConversationState;
+	/**
+	 * Persists the latest-wins fields. Deliberately does NOT write `spentUsd` or
+	 * `escalations` — those accumulate via `accrue`, and writing back a snapshot
+	 * here would clobber what a concurrent or already-billed dispatch added.
+	 */
 	save(state: ConversationState): void;
+	/**
+	 * Adds to the persisted counters, atomically in SQL.
+	 *
+	 * Separate from `save` because a dispatch that never reaches the commit path
+	 * — a client abort, an upstream error — was still BILLED, and its cost must
+	 * reach the per-conversation budget guard anyway. Requires `load` to have
+	 * created the row.
+	 */
+	accrue(key: string, delta: { spentUsd?: number; escalations?: number }): void;
 	/** Drops records untouched for longer than `maxAgeMs`. */
 	prune(maxAgeMs: number): number;
 }
