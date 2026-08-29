@@ -36,7 +36,7 @@ function mergeValue(base: unknown, override: unknown): unknown {
 	return override;
 }
 
-function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
+export function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
 	return mergeValue(base, override) as RouterConfig;
 }
 

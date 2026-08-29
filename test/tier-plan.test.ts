@@ -2,14 +2,18 @@ import { describe, expect, test } from "bun:test";
 
 import { joinBenchmarks, normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
-import { loadConfig } from "../src/config/load.ts";
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { computeTierPlan, effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "../src/router/tier-plan.ts";
 import { TIER_ORDER } from "../src/router/types.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
-const BASE = loadConfig({});
+// SHIPPED defaults, deliberately NOT loadConfig({}): that reads the developer's
+// live ~/.auto-model-router/config.yml, so an enabled machine-wide knob (e.g.
+// tiers.hard.capabilityFloorUsd during the 0.2.20 rollout) silently changed
+// these expectations and made the suite machine-dependent.
+const BASE = DEFAULT_CONFIG;
 
 /** Raw `/models`-shaped record with a controllable coding score and price. */
 function raw(id: string, coding: number | null, inPerMtok: number): Record<string, unknown> {

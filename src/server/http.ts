@@ -10,6 +10,8 @@ import { createConversationStore } from "../router/state.ts";
 import { createOpenRouterClient } from "../upstream/openrouter.ts";
 import { UpstreamError } from "../upstream/types.ts";
 import { apiKeySource } from "../config/load.ts";
+import { routerConfigPath } from "../cli/config-cmd.ts";
+import { watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
 import { openDb } from "../util/sqlite.ts";
@@ -176,6 +178,27 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
 	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context };
+
+	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
+	// effect on the next turn without a restart, because every consumer reads
+	// the shared config object at call time. Construction-captured blocks
+	// (server socket, OpenRouter client, agentdox bridge) are pinned — editing
+	// those still requires a restart, and the watcher says so explicitly.
+	const pinned = { ...cfg };
+	const configWatcher = watchConfig(
+		routerConfigPath(),
+		cfg,
+		pinned,
+		["server", "openrouter", "context", "ledger"],
+		{
+			onReload: ({ changed }) => {
+				log.info("config reloaded", { changed: changed.join(", ") });
+			},
+			onError: (message) => {
+				log.warn("config reload rejected; keeping the running config", { error: message });
+			},
+		},
+	);
 
 	if (context.enabled) {
 		log.info("agentdox context bridge enabled", {
@@ -355,8 +378,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	return {
 		server,
 		stop: async () => {
+			configWatcher.close();
 			clearInterval(pruneTimer);
-			clearInterval(catalogRefreshTimer);
 			await server.stop(true);
 			// Drain queued agentdox write-backs before the DB closes under them.
 			context.close();
