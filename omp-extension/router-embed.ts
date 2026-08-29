@@ -22,6 +22,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { syncModelsYml } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
 import type { StartedServer } from "../src/server/http.ts";
@@ -35,6 +36,7 @@ import {
 	EMBED_PROVIDER_ID,
 	embedPortPath,
 	readEmbedPort,
+	probeEmbed,
 	resolveEmbedPort,
 	writeEmbedPort,
 } from "./embed-logic.ts";
@@ -98,15 +100,31 @@ export default function (pi: ExtensionAPI): void {
 	let app: StartedServer | null = null;
 
 	pi.on("session_start", (_event, ctx) => {
-		// Subagents and headless sessions do not bind their own router; they
-		// route to the main's router via the shared port file. The main writes
-		// the file before spawning subagents, so the port is available here.
 		// The omp UI session id tags every request so the toast can scope its
 		// notifications to that exact session (see router-toast.ts).
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!ctx.hasUI) {
-			const port = readEmbedPort(portFile);
-			if (port !== null) registerRouterProvider(pi, port, cfg, sessionId);
+			// Subagents and headless (-p) sessions prefer the main session's
+			// shared router: one process, one ledger, one place to inspect.
+			// The main writes the port file before spawning subagents.
+			const shared = readEmbedPort(portFile);
+			if (shared !== null && probeEmbed(shared)) {
+				registerRouterProvider(pi, shared, cfg, sessionId);
+				return;
+			}
+			// No live interactive session (headless batch runs, CI, the
+			// benchmark harness): fall back to binding a private router so
+			// `--model auto-model-router/auto` still resolves. Ephemeral by
+			// design — it dies with this process and never writes the shared
+			// port file, so it can never hijack another session's subagents.
+			const started = startServer(cfg);
+			if (started.server.port === undefined) return;
+			app = started;
+			registerRouterProvider(pi, started.server.port, cfg, sessionId);
+			pi.on("session_shutdown", () => {
+				void app?.stop().catch(() => {});
+				app = null;
+			});
 			return;
 		}
 
@@ -122,6 +140,15 @@ export default function (pi: ExtensionAPI): void {
 
 		// Publish the shared port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
+
+		// Keep models.yml pointing at this port. Headless runs (`-p`) and
+		// subagent processes resolve models from models.yml in a FRESH registry
+		// — extension registration does not reach them — so without this they
+		// fail with "Model not found" when no interactive session is live
+		// (the print-mode gap the external benchmark hit). Registration still
+		// wins at runtime, so a live session always overrides a stale block.
+		const syncAction = syncModelsYml(cfg, actualPort);
+		if (syncAction !== null) pi.setLabel(`auto-model-router embed (models.yml ${syncAction})`);
 		registerRouterProvider(pi, actualPort, cfg, sessionId);
 
 		pi.on("session_shutdown", () => {

@@ -317,6 +317,45 @@ export function ompModelsPath(): string {
 	if (agentDir !== undefined && agentDir !== "") return join(agentDir, "models.yml");
 	return join(homedir(), ".omp", "agent", "models.yml");
 }
+/**
+ * Keeps omp's models.yml carrying an up-to-date `auto-model-router` provider
+ * block pointing at `port`, silently. The embedded extension calls this every
+ * time the main session binds its router, so headless (`-p`) runs, subagent
+ * processes, and any other consumer that builds a FRESH model registry (which
+ * extension registration does NOT reach) still resolve
+ * `auto-model-router/auto` — they read models.yml, not the live registry.
+ *
+ * Same splice + validation as `config --write`, minus the console output and
+ * the backup: this runs on every session start, and a `.bak` per launch would
+ * churn the directory. Failure to write is logged by the caller, never thrown —
+ * a read-only models.yml must degrade to "registration only", which is the
+ * pre-existing behavior.
+ *
+ * Returns the splice action, or null when nothing was written (already
+ * current, or the write failed).
+ */
+export function syncModelsYml(cfg: RouterConfig, port: number, target = ompModelsPath()): SpliceResult["action"] | null {
+	try {
+		const pointed: RouterConfig = { ...cfg, server: { ...cfg.server, port } };
+		const block = renderProviderBlock(pointed, null);
+		const existing = existsSync(target) ? readFileSync(target, "utf8") : "";
+		const result = spliceProviderBlock(existing, block);
+		if (result.action === "replaced") {
+			// The guards make "replaced" cheap to detect but the text may still be
+			// byte-identical (same port, same costs): skip the write so the file
+			// mtime stays stable for tools watching it.
+			if (result.text === existing) return null;
+		}
+		assertUsableModelsYaml(result.text);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(target, result.text, "utf8");
+		return result.action;
+	} catch {
+		return null;
+	}
+}
+
+/** omp's models.yml location: `$PI_CODING_AGENT_DIR` relocates the whole agent dir. */
 
 export async function configCommand(args: CliArgs): Promise<void> {
 	const cfg = loadConfig(configOpts(args));

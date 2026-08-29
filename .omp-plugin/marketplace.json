@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "auto-model-router: a local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
-    "version": "0.2.19",
+    "version": "0.2.20",
     "pluginRoot": "."
   },
   "plugins": [
     {
       "name": "auto-model-router",
       "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter. Runs in-process, routes per turn by price and task complexity, with budget caps, mid-stream escalation, and cache-aware hysteresis.",
-      "version": "0.2.19",
+      "version": "0.2.20",
       "author": {
         "name": "drewappling",
         "email": "drewappling@gmail.com"

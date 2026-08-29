@@ -126,6 +126,27 @@ export function readEmbedPort(path: string): number | null {
 }
 
 /**
+ * Checks the shared router actually answers before a subagent registers it.
+ * The port file outlives the process that wrote it, so a stale entry is normal:
+ * registering against a dead port would produce a provider whose every turn
+ * fails with connection refused. A failed health check means "bind your own".
+ */
+export async function probeEmbed(port: number, timeoutMs = 1_000): Promise<boolean> {
+	try {
+		const ctl = new AbortController();
+		const timer = setTimeout(() => ctl.abort(), timeoutMs);
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctl.signal });
+			return res.ok;
+		} finally {
+			clearTimeout(timer);
+		}
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Builds the provider config for `pi.registerProvider(EMBED_PROVIDER_ID, …)`
  * given the shared bound port. `models` are the router's own `profiles`, mapped
  * into omp's provider-model shape (cost is USD per million tokens, same unit
