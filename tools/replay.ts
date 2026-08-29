@@ -26,20 +26,29 @@
  *  - `explorationDraw` keys on `conversationKey:turn`, both recorded, so
  *    exploration reproduces deterministically and cancels out in a diff.
  *
+ * Conversation state is reconstructed from the PRECEDING recorded dispatch in
+ * the same conversation — prior slug, prior tier, cache warmth, cumulative
+ * spend — rather than simulated, so cache-warmth behaviour is exercised. Rows
+ * are replayed chronologically for that reason.
+ *
  * WHAT IT DOES NOT MODEL — read this before trusting a conclusion
  *  - `messages` are not recorded, so compaction cannot be re-planned. Replay
  *    forces `compaction.enabled=false` and feeds the POST-compaction prompt
  *    size (`usage.promptTokens`), i.e. the prompt selection actually saw.
- *  - Conversation state is not recoverable historically (only the current row
- *    survives), so replay uses a neutral state: no sticky tier, no warm cache,
- *    no accumulated spend. Hysteresis, cache-warmth tie-breaks and the
- *    per-conversation budget guard are therefore NOT exercised.
+ *  - `stickyUntilTurn` was never persisted per turn, so the hysteresis hold
+ *    window is absent. This is the main residual gap.
  *  - `requestedReasoning` is the one `Features` field the ledger omits; it
  *    replays as undefined.
+ *  - Module constants are not config, so things like CAP_AUTONOMOUS_LOOP cannot
+ *    be A/B'd via `--set` — only `RouterConfig` paths can.
  *
- * Because of those gaps, the report leads with a FIDELITY figure: how often the
- * baseline variant reproduces the model that actually served. Low fidelity means
- * the unmodelled parts dominate and any delta below is weak evidence.
+ * Because of those gaps the report leads with a FIDELITY figure. Read it with
+ * care: it conflates replay error with genuine code change, since replay always
+ * runs CURRENT code against rows served by whatever code was live then. Measured
+ * on rows served by matching code it is 90% model / 77% tier; across older
+ * history it drops to ~55%, and that drop is the shipped classifier changes
+ * showing up, not the tool being wrong. Isolate a population with `--where` when
+ * measuring one change.
  */
 
 import { Database } from "bun:sqlite";
@@ -124,6 +133,7 @@ interface Row {
 	usage: string;
 	reported_usd: number | null;
 	predicted_usd: number;
+	created_at_ms: number;
 }
 
 /** Rebuilds the classifier input. The ledger stores 20 of 21 Features fields. */
@@ -164,24 +174,46 @@ function requestOf(row: Row, f: Features): NormRequest {
 	};
 }
 
-/** Neutral state: no sticky tier, no warm cache, no prior spend. See header. */
-function stateOf(row: Row): ConversationState {
+/**
+ * Conversation state reconstructed from the PRECEDING recorded dispatch in the
+ * same conversation, not simulated.
+ *
+ * A neutral state cannot validate anything that depends on cache warmth — every
+ * candidate looks cold, so a warm-cache change shows zero effect. But the
+ * ledger does carry what the previous dispatch actually did, so warmth is
+ * recoverable: `cacheWarmSlug` is the slug it served, `lastPromptTokens` its
+ * prompt size. Deriving state from the RECORDED outcome rather than the
+ * replayed one also stops replay error compounding down a conversation.
+ *
+ * Still not modelled: `stickyUntilTurn`, which was never persisted per turn, so
+ * the hysteresis hold window remains absent.
+ */
+function stateOf(row: Row, prior: PriorTurn | undefined): ConversationState {
 	return {
 		key: row.conversation_key,
 		sessionId: `omp-${row.conversation_key}`,
 		turn: row.turn,
-		currentSlug: null,
-		currentTier: null,
+		currentSlug: prior?.slug ?? null,
+		currentTier: (prior?.tier as Tier | undefined) ?? null,
 		stickyUntilTurn: 0,
 		escalations: 0,
-		spentUsd: 0,
-		lastPromptTokens: 0,
-		cacheWarmSlug: null,
-		cacheWarmAtMs: 0,
+		spentUsd: prior?.spentUsd ?? 0,
+		lastPromptTokens: prior?.promptTokens ?? 0,
+		cacheWarmSlug: prior?.cachedTokens !== undefined && prior.cachedTokens > 0 ? prior.slug : null,
+		cacheWarmAtMs: prior?.atMs ?? 0,
 		contextVersion: null,
 		contextFetchedAtMs: 0,
-		updatedAtMs: 0,
+		updatedAtMs: prior?.atMs ?? 0,
 	};
+}
+
+interface PriorTurn {
+	slug: string | null;
+	tier: string;
+	promptTokens: number;
+	cachedTokens: number;
+	spentUsd: number;
+	atMs: number;
 }
 
 /**
@@ -224,14 +256,18 @@ const bySlug = new Map(snapshot.models.map((m) => [m.slug, m]));
 const ledger = createLedger(db, cfgA);
 
 const predicate = args.where === "" ? "" : ` AND (${args.where})`;
-const rows = db
-	.query(
-		`SELECT id, conversation_key, turn, requested_model, harness_id, served_slug, tier, features, usage, reported_usd, predicted_usd
-		 FROM ledger
-		 WHERE features IS NOT NULL AND wasted = 0${predicate}
-		 ORDER BY created_at_ms DESC LIMIT ?`,
-	)
-	.all(args.limit) as Row[];
+// Newest-first to honour --limit, then flipped to chronological so each row can
+// see the dispatch that preceded it in its conversation.
+const rows = (
+	db
+		.query(
+			`SELECT id, conversation_key, turn, requested_model, harness_id, served_slug, tier, features, usage, reported_usd, predicted_usd, created_at_ms
+			 FROM ledger
+			 WHERE features IS NOT NULL AND wasted = 0${predicate}
+			 ORDER BY created_at_ms DESC LIMIT ?`,
+		)
+		.all(args.limit) as Row[]
+).reverse();
 
 if (rows.length === 0) {
 	console.error("no rows matched; widen --where or --limit");
@@ -253,7 +289,7 @@ interface Outcome {
 	usd: number;
 }
 
-function run(cfg: RouterConfig, row: Row, usage: UsageCounts): Outcome {
+function run(cfg: RouterConfig, row: Row, usage: UsageCounts, prior: PriorTurn | undefined): Outcome {
 	const f = featuresOf(row, usage.promptTokens);
 	const req = requestOf(row, f);
 	const decision: Decision = select({
@@ -261,7 +297,7 @@ function run(cfg: RouterConfig, row: Row, usage: UsageCounts): Outcome {
 		features: f,
 		classification: scoreHeuristic(f, cfg),
 		profile: profileOf(cfg, row.requested_model),
-		state: stateOf(row),
+		state: stateOf(row, prior),
 		snapshot,
 		ledger,
 		cfg,
@@ -285,11 +321,24 @@ let comparable = 0;
 const flips: { id: string; tier: string; from: string; to: string; delta: number }[] = [];
 const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
 
+// Carries the RECORDED outcome of each conversation's previous dispatch forward,
+// so cache warmth and the prior slug are real rather than assumed absent.
+const priorByConv = new Map<string, PriorTurn>();
+
 for (const row of rows) {
 	const u = JSON.parse(row.usage) as UsageCounts;
 	if (!(u.promptTokens > 0)) continue;
-	const a = run(cfgA, row, u);
-	const b = run(cfgB, row, u);
+	const prior = priorByConv.get(row.conversation_key);
+	const a = run(cfgA, row, u, prior);
+	const b = run(cfgB, row, u, prior);
+	priorByConv.set(row.conversation_key, {
+		slug: row.served_slug,
+		tier: row.tier,
+		promptTokens: u.promptTokens,
+		cachedTokens: u.cachedTokens,
+		spentUsd: (prior?.spentUsd ?? 0) + (row.reported_usd ?? row.predicted_usd),
+		atMs: row.created_at_ms,
+	});
 	bump(tallyA, a.slug);
 	bump(tallyB, b.slug);
 	bump(tierA, a.tier);

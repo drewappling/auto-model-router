@@ -231,6 +231,20 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
+		// Every candidate is priced COLD, deliberately, and this has been measured
+		// rather than assumed. Two reasons:
+		//  1. `coldUsd` feeds the budget guard in select.ts, and a budget must
+		//     survive a cache miss.
+		//  2. Discounting the warm slug here only ever LOWERS its effective cost,
+		//     so it can only make the warm model win more often — and the warm
+		//     model is already either the cheapest candidate or kept by the
+		//     dedicated stay-vs-switch comparison in select.ts step 4, which does
+		//     price staying at `cacheRead` against switching at cold+`cacheWrite`.
+		//     So the ranking change has no headroom to alter an outcome.
+		// Verified with tools/replay.ts: scoring the warm candidate at hit rates
+		// 0.5 / 0.8 / 0.95 changed 0 of 897 decisions, and 0 of 702 on the subset
+		// whose conversations ran the expensive model. Cache economics belong in
+		// the switch decision, not in candidate scoring — do not "fix" this.
 		const fc = forecast(model, {
 			promptTokens: features.promptTokens,
 			completionTokens: expectedCompletionTokens,
