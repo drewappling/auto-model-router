@@ -213,16 +213,24 @@ describe("scoreHeuristic", () => {
 		}
 	});
 
-	test("pure loop depth ramps to moderate in the mid-range and hard only when runaway", () => {
+	test("pure loop depth never reaches hard on its own, however runaway", () => {
 		// A sustained-but-not-runaway loop tops out in moderate: the calibrated
 		// ramp ceiling for ordinary deep work.
 		const midRange = scoreHeuristic(contFeatures(30), BASE);
 		expect(midRange.tier).toBe("moderate");
-		// A runaway loop of pure continuations (no other signal) must reach hard.
-		// moderate never swaps the cheapest coding model off — it clears the 60
-		// floor even after the latency penalty — so only hard's 72 floor breaks it.
+		// And so does a runaway one. This reverses an earlier cap of 0.70 that let
+		// raw depth buy `hard`: on live data 152 of 155 hard dispatches were
+		// depth-driven and carried 63.5% of ALL spend, while those same rows also
+		// scored the mechanical tool-result-continuation penalty. `hard` has no
+		// price ceiling, so depth alone was buying a ~8x model for work the
+		// classifier already knew was mechanical. Depth is a weak signal of
+		// DIFFICULTY; hard must be bought by a corroborating stuck signal (see the
+		// circular-tool-call test below), which is the case that actually needs a
+		// stronger model.
 		const runaway = scoreHeuristic(contFeatures(90), BASE);
-		expect(runaway.tier).toBe("hard");
+		expect(runaway.tier).toBe("moderate");
+		// The ceiling must still be a real ceiling, not an accident of the ramp.
+		expect(scoreHeuristic(contFeatures(400), BASE).tier).toBe("moderate");
 	});
 
 	test("a circular tool call on a deep loop escalates to hard", () => {

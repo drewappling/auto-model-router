@@ -49,19 +49,27 @@ const CAP_LOOP_DEPTH = -0.06;
 // the agent keeps grinding without human input. Unlike the mechanical-step
 // penalty above, this term ACCUMULATES with depth past the agentic threshold so
 // long loops climb out of trivial. The ramp slope is calibrated on recorded
-// coding turns; the cap governs the ceiling. `moderate` is NOT enough to break a
-// distinct-read loop: on the coding axis the cheapest model above the moderate
-// floor (deepseek-v4-flash, coding 69.1) also clears it after the latency
-// penalty, so escalating to moderate never swaps the weak model off — live
-// evidence (conv 888e5bddc1) is a loop grinding to depth 27+ on it. Only `hard`
-// (floor 72) excludes that model and forces a materially stronger, faster one.
-// So the cap lets a RUNAWAY loop (~depth 38 of pure continuations, no other
-// signal) reach `hard`; the calibrated mid-range still tops out in `moderate`,
-// and any corroborating stuck signal (circular call, tool failure, keywords)
-// reaches `hard` far sooner.
+// coding turns; the cap governs the ceiling.
+//
+// The cap was briefly 0.70, which let pure depth reach `hard`. That was aimed at
+// a real problem — a distinct-read loop grinding at depth 27+ on
+// deepseek-v4-flash (coding 69.1), which clears the moderate floor, so escalating
+// to moderate swapped nothing. But it overcorrected: on live data 152 of 155
+// `hard` dispatches were depth-driven and carried 63.5% of ALL spend, and those
+// same rows also carry the `-0.28 tool-result continuation (mechanical)` term —
+// the classifier already knew the work was mechanical and the depth bonus
+// overrode it. `hard` (floor 72, no price ceiling) forces gemini-3.7-flash at
+// roughly 8x the cost of the model moderate picks.
+//
+// The original grinding failure is now covered independently: windowed latency
+// scoring inflates a chronically slow model's effective cost, and it removed
+// deepseek-v4-flash from selection entirely. So depth alone tops out at
+// `moderate` again, and `hard` stays reachable via a CORROBORATING stuck signal
+// (circular call, tool failure, keywords) — which is what should buy a $2/Mtok
+// model, not depth by itself.
 const W_AUTONOMOUS_LOOP = 0.06; // base bonus at the threshold
 const W_AUTONOMOUS_LOOP_PER_DEPTH = 0.018; // added per loop step beyond the threshold
-const CAP_AUTONOMOUS_LOOP = 0.7; // pure depth ramps through moderate into hard for a runaway loop
+const CAP_AUTONOMOUS_LOOP = 0.45; // pure depth ramps into moderate, never alone into hard
 const W_IMAGES = 0.04;
 const W_TOOLS_OFFERED = 0.03;
 
