@@ -694,3 +694,36 @@ describe("spend reaches the conversation total however the dispatch ends", () =>
 		expect(accrued.get("conv-test")?.spentUsd).toBeCloseTo(0.002, 10);
 	});
 });
+
+describe("latency measurement covers the work the router actually does", () => {
+	test("a tool-call-only dispatch still records TTFT", async () => {
+		// 83% of dispatches in an agentic loop finish with `tool_calls`, and 64.5%
+		// of those recorded ttft_ms NULL because only text/reasoning stamped it.
+		// LATENCY_SELECT requires ttft_ms, so throughput scoring (weight 0.75) was
+		// measuring the narrating minority and steering everything else with it.
+		const { router } = mkRouter([mkDecision("simple", "cheap/model", { maxTokens: 1, escalateTo: null })]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "chunks",
+				chunks: [
+					startChunk("cheap/model"),
+					chunk([{ type: "tool_call", index: 0, id: "c1", name: "read", argsDelta: '{"path":"a.ts"}' }]),
+					finishChunk("tool_calls"),
+					usageChunk({ promptTokens: 50_000, completionTokens: 160 }, 0.004),
+				],
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.finishReason).toBe("tool_calls");
+		// The qualifying condition for latency stats: a real, positive TTFT.
+		expect(entries[0]?.ttftMs).not.toBeNull();
+		expect(entries[0]?.ttftMs ?? -1).toBeGreaterThanOrEqual(0);
+	});
+});

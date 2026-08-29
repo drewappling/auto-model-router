@@ -335,7 +335,15 @@ export async function runTurn(
 								if (ttftMs === null) ttftMs = Date.now() - startedAt;
 								if (doxActive) assistantText += ev.delta;
 								break;
+							// A tool call is output too. Only text/reasoning used to stamp
+							// TTFT, so a dispatch that emitted nothing BUT tool calls —
+							// the dominant shape in an agentic loop, 83% of dispatches —
+							// recorded ttft_ms NULL and was then discarded by
+							// LATENCY_SELECT, which requires it. Latency/throughput
+							// scoring was therefore measuring the minority of turns that
+							// happened to narrate, and steering all the rest with it.
 							case "reasoning":
+							case "tool_call":
 								if (ttftMs === null) ttftMs = Date.now() - startedAt;
 								break;
 							case "finish":
