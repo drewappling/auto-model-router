@@ -148,6 +148,14 @@ export interface CompactionEdit {
 	keepHead: number;
 	keepTail: number;
 	note: string;
+	/**
+	 * Original (pre-edit) byte length of the targeted message's string content,
+	 * captured when the edit was planned. Persisted with the plan so a later
+	 * turn can verify the history it is re-applying to is byte-identical before
+	 * re-applying — a client-side rewrite or an upstream difference invalidates
+	 * the edit instead of corrupting the prompt.
+	 */
+	bytes: number;
 }
 
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "error";

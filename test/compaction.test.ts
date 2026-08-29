@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CompactionConfig } from "../src/config/types.ts";
-import { planCompaction } from "../src/router/compaction.ts";
+import { planCompaction, validatePlan } from "../src/router/compaction.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 import type { NormMessage } from "../src/wire/types.ts";
 
 const CFG: CompactionConfig = {
 	enabled: true,
 	budgetTokens: 1,
+	floorRatio: 1,
 	fitToWindow: false,
 	protectRecentTurns: 2,
 	maxToolResultBytes: 50,
@@ -159,7 +160,7 @@ describe("renderUpstreamBody applies compaction", () => {
 			{ role: "tool", tool_call_id: "c1", content: "HEAD" + "x".repeat(500) + "TAIL" },
 		];
 		const req = parseChatRequest(bodyWith(raw), new Headers());
-		const out = req.renderUpstreamBody({ ...MUT, compactionPlan: [{ index: 2, mode: "truncate", keepHead: 4, keepTail: 4, note: "large read result" }] });
+		const out = req.renderUpstreamBody({ ...MUT, compactionPlan: [{ index: 2, mode: "truncate", keepHead: 4, keepTail: 4, note: "large read result", bytes: 508 }] });
 		const messages = out.messages as { role: string; content: unknown }[];
 		expect(messages).toHaveLength(3); // no message removed → pairing intact
 		const content = messages[2]?.content;
@@ -178,8 +179,93 @@ describe("renderUpstreamBody applies compaction", () => {
 			{ role: "tool", tool_call_id: "c1", content: "a".repeat(300) },
 		];
 		const req = parseChatRequest(bodyWith(raw), new Headers());
-		const out = req.renderUpstreamBody({ ...MUT, compactionPlan: [{ index: 2, mode: "stub", keepHead: 0, keepTail: 0, note: "identical repeated read result" }] });
+		const out = req.renderUpstreamBody({ ...MUT, compactionPlan: [{ index: 2, mode: "stub", keepHead: 0, keepTail: 0, note: "identical repeated read result", bytes: 300 }] });
 		const messages = out.messages as { content: string }[];
 		expect(messages[2]?.content).toBe("[omp-router: identical repeated read result elided to save context; re-run the tool to restore]");
+	});
+});
+
+describe("plan byte-stability across turns", () => {
+	// The prompt cache is a byte-prefix cache: changing any already-sent byte
+	// invalidates everything after it. So an edit, once dispatched, must be
+	// re-emitted identically on every later turn — which means the planner has
+	// to be told what it already did rather than re-deriving it.
+	test("edits carry their original byte length for persistence", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
+		expect(edits).toHaveLength(1);
+		expect(edits[0]?.bytes).toBe(Buffer.byteLength(big("A")));
+	});
+
+	test("validatePlan keeps edits whose target is byte-identical and role-correct", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
+		expect(validatePlan(edits, msgs)).toEqual(edits);
+	});
+
+	test("validatePlan drops edits when history changed under them", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
+		// Client re-wrote history: the tool result is a different length now.
+		const rewritten = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", "short"), ...PAD];
+		expect(validatePlan(edits, rewritten)).toEqual([]);
+	});
+
+	test("validatePlan drops edits that fall off the message array", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
+		// Conversation compacted away client-side: index 2 no longer exists.
+		expect(validatePlan(edits, [user("go"), ...PAD.slice(1)])).toEqual([]);
+	});
+
+	test("a carried plan produces identical edits to a fresh plan over the same bytes", () => {
+		// Determinism contract: re-planning over unchanged bytes re-derives the
+		// persisted plan, so the merge in select.ts is a no-op, not a rewrite.
+		const msgs = [
+			user("go"),
+			asst("c1", "read", '{"path":"a.ts"}'),
+			toolMsg("c1", "read", big("A")),
+			asst("c2", "read", '{"path":"b.ts"}'),
+			toolMsg("c2", "read", big("B")),
+			...PAD,
+		];
+		const first = planCompaction(msgs, CFG, 1, 10_000);
+		const again = planCompaction(msgs, CFG, 1, 10_000);
+		expect(again.edits).toEqual(first.edits);
+	});
+
+	test("a carried edit is re-emitted verbatim even when nothing new is eligible", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const carried = planCompaction(msgs, CFG, 1, 10_000).edits;
+		// Target already met, so a stateless planner would emit nothing at all.
+		const next = planCompaction(msgs, CFG, 1_000_000, 10_000, carried);
+		expect(next.edits).toEqual(carried);
+		expect(next.savedBytes).toBeGreaterThan(0);
+	});
+
+	test("carried savings count toward the target, so the planner only adds what is still needed", () => {
+		const msgs = [
+			user("go"),
+			asst("c1", "read", '{"path":"a.ts"}'),
+			toolMsg("c1", "read", big("A")),
+			asst("c2", "read", '{"path":"b.ts"}'),
+			toolMsg("c2", "read", big("B")),
+			...PAD,
+		];
+		const promptBytes = 10_000;
+		// Carry the first edit, then re-plan with a target the carried edit alone
+		// already satisfies: no second edit may be added.
+		const carried = [planCompaction(msgs, CFG, 1, promptBytes).edits[0]!];
+		const target = promptBytes - (carried[0]!.bytes - CFG.keepHeadBytes - CFG.keepTailBytes - 120);
+		const next = planCompaction(msgs, CFG, target, promptBytes, carried);
+		expect(next.edits.map((e) => e.index)).toEqual(carried.map((e) => e.index));
+	});
+
+	test("a carried edit is never re-planned into a different shape", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		// Carried as a stub; a fresh plan would have chosen truncate.
+		const carried = [{ index: 2, mode: "stub" as const, keepHead: 0, keepTail: 0, note: "carried", bytes: Buffer.byteLength(big("A")) }];
+		const next = planCompaction(msgs, CFG, 1, 10_000, carried);
+		expect(next.edits.filter((e) => e.index === 2)).toEqual(carried);
 	});
 });

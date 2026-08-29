@@ -151,6 +151,7 @@ const context = z.strictObject({
 const compaction = z.strictObject({
 	enabled: z.boolean().optional(),
 	budgetTokens: z.number().int().positive().optional(),
+	floorRatio: z.number().positive().max(1).optional(),
 	fitToWindow: z.boolean().optional(),
 	protectRecentTurns: z.number().int().positive().optional(),
 	maxToolResultBytes: z.number().int().positive().optional(),

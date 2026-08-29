@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 12;
+const USER_VERSION = 13;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -211,6 +211,14 @@ const MIGRATE_V12 = `
 ALTER TABLE ledger ADD COLUMN prompt_tokens_saved INTEGER;
 `;
 
+// v13: conversations persist the last compaction plan (JSON array of
+// CompactionEdit). Re-applying it verbatim each turn keeps already-shrunk tool
+// results shrunk — without it, protectRecentTurns drift drops edits and
+// re-inflates mid-prefix bytes, breaking the prompt cache for zero savings.
+const MIGRATE_V13 = `
+ALTER TABLE conversations ADD COLUMN compaction_plan TEXT;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -242,9 +250,10 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "features")) db.exec(MIGRATE_V6);
 		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
 		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
+		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
 		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
-		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
+		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

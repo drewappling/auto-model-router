@@ -56,6 +56,7 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 		cacheWarmAtMs: 0,
 		contextVersion: null,
 		contextFetchedAtMs: 0,
+		compactionPlan: null,
 		updatedAtMs: NOW,
 		...over,
 	};

@@ -11,7 +11,9 @@
 
 import type { Database, Statement } from "bun:sqlite";
 
+import type { CompactionEdit } from "../wire/types.ts";
 import type { ConversationState, ConversationStore, Tier } from "./types.ts";
+
 
 /** Row shape as stored; column names are snake_case per the schema. */
 interface Row {
@@ -28,6 +30,7 @@ interface Row {
 	cache_warm_at_ms: number;
 	context_version: string | null;
 	context_fetched_at_ms: number;
+	compaction_plan: string | null;
 	updated_at_ms: number;
 }
 
@@ -47,6 +50,7 @@ function toState(row: Row): ConversationState {
 		cacheWarmAtMs: row.cache_warm_at_ms,
 		contextVersion: row.context_version,
 		contextFetchedAtMs: row.context_fetched_at_ms,
+		compactionPlan: row.compaction_plan === null ? null : (JSON.parse(row.compaction_plan) as CompactionEdit[]),
 		updatedAtMs: row.updated_at_ms,
 	};
 }
@@ -65,10 +69,10 @@ export function createConversationStore(db: Database): ConversationStore {
 		INSERT INTO conversations (
 			key, session_id, turn, current_slug, current_tier, sticky_until_turn,
 			last_prompt_tokens, cache_warm_slug, cache_warm_at_ms,
-			context_version, context_fetched_at_ms, updated_at_ms
+			context_version, context_fetched_at_ms, compaction_plan, updated_at_ms
 		) VALUES ($key, $sessionId, $turn, $currentSlug, $currentTier, $stickyUntilTurn,
 			$lastPromptTokens, $cacheWarmSlug, $cacheWarmAtMs,
-			$contextVersion, $contextFetchedAtMs, $updatedAtMs)
+			$contextVersion, $contextFetchedAtMs, $compactionPlan, $updatedAtMs)
 		ON CONFLICT(key) DO UPDATE SET
 			session_id = excluded.session_id,
 			turn = excluded.turn,
@@ -80,6 +84,7 @@ export function createConversationStore(db: Database): ConversationStore {
 			cache_warm_at_ms = excluded.cache_warm_at_ms,
 			context_version = excluded.context_version,
 			context_fetched_at_ms = excluded.context_fetched_at_ms,
+			compaction_plan = excluded.compaction_plan,
 			updated_at_ms = excluded.updated_at_ms
 	`);
 	// Read-modify-write in JS lost money: an aborted or failed dispatch is still
@@ -127,6 +132,7 @@ export function createConversationStore(db: Database): ConversationStore {
 				$currentTier: state.currentTier,
 				$stickyUntilTurn: state.stickyUntilTurn,
 				$lastPromptTokens: state.lastPromptTokens,
+				$compactionPlan: state.compactionPlan === null ? null : JSON.stringify(state.compactionPlan),
 				$cacheWarmSlug: state.cacheWarmSlug,
 				$cacheWarmAtMs: state.cacheWarmAtMs,
 				$contextVersion: state.contextVersion,

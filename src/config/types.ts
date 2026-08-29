@@ -432,6 +432,13 @@ export interface CompactionConfig {
 	enabled: boolean;
 	/** Compact when the estimated prompt exceeds this many tokens. */
 	budgetTokens: number;
+	/**
+	 * Target fraction of `budgetTokens` to compact DOWN to once compaction
+	 * fires. Below 1 the plan overshoots, so it stays byte-stable for several
+	 * turns instead of gaining an edit per turn; every plan change rewrites
+	 * already-cached prompt bytes, and a cold prompt costs ~4.3x a warm one.
+	 */
+	floorRatio: number;
 	/** Also compact when the prompt would overflow the profile's context window. */
 	fitToWindow: boolean;
 	/** Never touch the last N user/assistant turns or the volatile tail. */

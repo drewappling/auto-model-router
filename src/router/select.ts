@@ -12,7 +12,7 @@ import { priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import { explorationDraw } from "./explore.ts";
 import type { CompactionEdit, NormRequest, ReasoningLevel } from "../wire/types.ts";
-import { planCompaction } from "./compaction.ts";
+import { compactedBytes, planCompaction, validatePlan, type CompactionResult } from "./compaction.ts";
 import { planCacheBreakpoints } from "./cache-control.ts";
 import { buildCandidates } from "./candidates.ts";
 import {
@@ -153,28 +153,54 @@ export function select(args: SelectArgs): Decision {
 	//     Deterministic and content-only (never removes a message), so downstream
 	//     forecasting, the context_too_small filter, cache breakpoints, and the
 	//     agentdox block append all operate on the compacted size / stay valid.
+	//
+	//     Two properties make this cache-safe, and both are load-bearing:
+	//
+	//     1. The plan is PERSISTED per conversation and re-applied verbatim. omp
+	//        re-sends the original bytes every turn, so a re-applied edit yields
+	//        byte-identical output; a plan re-derived from scratch could differ
+	//        (a looser target, a re-tuned knob) and rewrite already-cached bytes.
+	//     2. Compaction is triggered on the COMPACTED size and then overshoots
+	//        to `floorRatio` of the budget. Comparing the RAW prompt against the
+	//        budget re-planned on every single turn, so the plan gained one more
+	//        edit per turn — and each plan change rewrites cached prompt bytes.
+	//        Measured on live ledger data (7 long conversations, 894 compacted
+	//        dispatches): a turn whose plan changed ran 15.4% cold vs 8.9% when
+	//        the plan held, and a cold prompt costs 4.34x a warm one per token.
+	//        Overshooting buys several byte-stable turns per plan change.
 	let compactionPlan: CompactionEdit[] = [];
 	let promptTokensSaved = 0;
 	let effFeatures = features;
 	if (cfg.compaction.enabled && req.promptBytes > 0 && features.promptTokens > 0) {
+		const bytesPerToken = req.promptBytes / features.promptTokens;
+		const carried = validatePlan(state.compactionPlan ?? [], req.messages);
+		const carriedSavedBytes = carried.reduce((sum, e) => sum + (e.bytes - compactedBytes(e.bytes, e)), 0);
+		const tokensOf = (savedBytes: number): number =>
+			Math.min(features.promptTokens - 1, Math.round(features.promptTokens * (savedBytes / req.promptBytes)));
+		// What the upstream would actually receive if nothing new were planned.
+		const compactedTokens = features.promptTokens - tokensOf(carriedSavedBytes);
+
 		const headroom = cfg.filters.contextHeadroom;
-		const overBudget = features.promptTokens > cfg.compaction.budgetTokens;
+		const overBudget = compactedTokens > cfg.compaction.budgetTokens;
 		const overWindow =
-			cfg.compaction.fitToWindow && features.promptTokens * headroom + EXPECTED_COMPLETION_TOKENS > profile.contextWindow;
+			cfg.compaction.fitToWindow && compactedTokens * headroom + EXPECTED_COMPLETION_TOKENS > profile.contextWindow;
+		let plan: CompactionResult = { edits: carried, savedBytes: carriedSavedBytes };
 		if (overBudget || overWindow) {
 			const targets: number[] = [];
-			if (overBudget) targets.push(cfg.compaction.budgetTokens);
+			// Overshoot the budget so the next re-plan is several turns away.
+			if (overBudget) targets.push(Math.max(1, Math.floor(cfg.compaction.budgetTokens * cfg.compaction.floorRatio)));
 			if (overWindow) targets.push(Math.max(1, Math.floor((profile.contextWindow - EXPECTED_COMPLETION_TOKENS) / headroom)));
-			const targetBytes = Math.min(...targets) * (req.promptBytes / features.promptTokens);
-			const plan = planCompaction(req.messages, cfg.compaction, targetBytes, req.promptBytes);
-			if (plan.edits.length > 0) {
-				compactionPlan = plan.edits;
-				promptTokensSaved = Math.min(features.promptTokens - 1, Math.round(features.promptTokens * (plan.savedBytes / req.promptBytes)));
-				effFeatures = { ...features, promptTokens: features.promptTokens - promptTokensSaved };
-				reasons.push(
-					`compaction: ${plan.edits.length} tool result(s) shrunk, ~${promptTokensSaved} tokens saved (prompt ${features.promptTokens}→${effFeatures.promptTokens})`,
-				);
-			}
+			const targetBytes = Math.min(...targets) * bytesPerToken;
+			plan = planCompaction(req.messages, cfg.compaction, targetBytes, req.promptBytes, carried);
+		}
+		if (plan.edits.length > 0) {
+			compactionPlan = [...plan.edits];
+			promptTokensSaved = tokensOf(plan.savedBytes);
+			effFeatures = { ...features, promptTokens: features.promptTokens - promptTokensSaved };
+			const added = plan.edits.length - carried.length;
+			reasons.push(
+				`compaction: ${plan.edits.length} tool result(s) shrunk (${carried.length} carried, ${added} new), ~${promptTokensSaved} tokens saved (prompt ${features.promptTokens}→${effFeatures.promptTokens})`,
+			);
 		}
 	}
 

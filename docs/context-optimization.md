@@ -130,20 +130,46 @@ request → classify (on ORIGINAL turn)
   valid — the same reason `injectContextBlock` appends instead of inserts. Phase 2,
   which changes message count, MUST return adjusted indices (see Phase 2).
 
-## Trigger (locked: fit + cost budget)
+## Trigger (locked: fit + cost budget), and plan hysteresis
 
-Two conditions arm compaction; both compact to the same safe floor, they differ only
-in *whether* to bother:
+Two conditions arm compaction; they differ only in *whether* to bother:
 
-- **Budget:** `estimateTokens(promptBytes + injectedBlockBytes) > compaction.budgetTokens`.
-  The injected agentdox block counts toward the budget (it is resolved before render
-  and bounded by `context.maxBlockChars`).
+- **Budget:** the **compacted** estimate — i.e. the prompt as it would be dispatched
+  with the plan already carried from the previous turn — exceeds
+  `compaction.budgetTokens`. The injected agentdox block counts toward the budget (it
+  is resolved before render and bounded by `context.maxBlockChars`).
 - **Fit:** the estimate exceeds `model.contextLength × filters.contextHeadroom` (minus
   expected completion) for a model under consideration — so the `context_too_small`
   filter tests each model against the compacted floor rather than the raw size.
 
 Requests below `budgetTokens` and within every viable window are dispatched untouched —
 the common small-prompt path allocates nothing.
+
+### The plan is state, not a per-turn derivation
+
+A prompt cache is a **byte-prefix** cache: change any byte and everything after it is
+a miss. That makes the compaction plan cache-visible state, subject to two rules.
+
+1. **A dispatched edit is permanent and verbatim.** `ConversationState.compactionPlan`
+   persists the plan (schema v13, `conversations.compaction_plan`); `select()` re-emits
+   it every turn and the planner is *seeded* with it (`planCompaction(..., carried)`),
+   so an existing edit is never re-derived into a different shape and never dropped
+   when the turn alone would not have triggered compaction. `validatePlan` first checks
+   each edit still lands on a tool message of the recorded byte length, so a
+   client-side history rewrite invalidates the edit instead of corrupting the prompt.
+   Re-applying is safe because omp re-sends the original bytes every turn.
+2. **Re-planning is rationed.** The trigger compares the **compacted** size against the
+   budget, and when it fires the planner targets `budgetTokens × compaction.floorRatio`
+   rather than stopping just under the budget. Comparing the *raw* size re-planned every
+   single turn, so the plan gained one more edit per turn — a cache invalidation per turn
+   for a marginal saving.
+
+Measured (`tools/verify-plan-persist.ts`, 20-turn agentic conversation): `floorRatio`
+1.0 changes the plan on **10 of 10** compacting turns, 0.75 on **3**, 0.6 on **2**. On
+live ledger data (7 long conversations, 894 compacted dispatches) a changed-plan
+dispatch ran **15.4% cold** vs **8.9%** when the plan held, and a cold prompt costs
+**4.34x** a warm one per token ($0.1839 vs $0.0424 per Mtok). `floorRatio` ships at 1
+(today's behaviour, elision is never implicit); 0.75 is the recommended setting.
 
 ## Interaction with the agentdox bridge
 

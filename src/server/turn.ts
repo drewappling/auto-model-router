@@ -457,6 +457,10 @@ export async function runTurn(
 		state.spentUsd += reportedUsd ?? decision.forecast.expectedUsd;
 		state.escalations += escalations;
 		state.lastPromptTokens = usage.promptTokens;
+		// Persist the plan that was actually dispatched. The next turn re-applies
+		// it verbatim (after byte-length validation), keeping shrunk tool results
+		// shrunk so the prompt cache survives and the savings compound.
+		state.compactionPlan = decision.compactionPlan.length > 0 ? decision.compactionPlan : null;
 		if (usage.cachedTokens > 0 || usage.cacheWriteTokens > 0) {
 			// Non-zero cache traffic is direct evidence the upstream cache exists.
 			state.cacheWarmSlug = servedSlug ?? decision.slug;

@@ -66,6 +66,7 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 		cacheWarmAtMs: 0,
 		contextVersion: null,
 		contextFetchedAtMs: 0,
+		compactionPlan: null,
 		updatedAtMs: Date.now(),
 		...over,
 	};
@@ -601,6 +602,7 @@ describe("context compaction", () => {
 		compaction: {
 			enabled: true,
 			budgetTokens: 1_000,
+			floorRatio: 1,
 			fitToWindow: false,
 			protectRecentTurns: 1,
 			maxToolResultBytes: 100,
@@ -663,5 +665,81 @@ describe("context compaction", () => {
 		});
 		expect(d.compactionPlan).toEqual([]);
 		expect(d.promptTokensSaved).toBe(0);
+	});
+
+	test("a carried plan is re-applied even when the turn is now under budget", () => {
+		// The prompt cache is a byte-prefix cache: dropping an edit that was
+		// already dispatched rewrites history the upstream had cached, and
+		// re-sends the tokens the edit saved. So a carried plan survives a turn
+		// that would not have triggered compaction on its own.
+		const req = loopReq();
+		const over = extractFeatures(req, 5_000);
+		const first = select({
+			req,
+			features: over,
+			classification: scoreHeuristic(over, COMPACT_CFG),
+			profile: PROFILE,
+			state: state(),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: COMPACT_CFG,
+			nowMs: Date.now(),
+		});
+		expect(first.compactionPlan.length).toBeGreaterThan(0);
+
+		const under = extractFeatures(req, 500); // under budgetTokens=1000
+		const second = select({
+			req,
+			features: under,
+			classification: scoreHeuristic(under, COMPACT_CFG),
+			profile: PROFILE,
+			state: state({ compactionPlan: first.compactionPlan }),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: COMPACT_CFG,
+			nowMs: Date.now(),
+		});
+		expect(second.compactionPlan).toEqual(first.compactionPlan);
+		expect(second.promptTokensSaved).toBeGreaterThan(0);
+	});
+
+	test("floorRatio below 1 compacts strictly past the budget so the plan holds longer", () => {
+		// Each plan change rewrites cached prompt bytes, so compaction overshoots
+		// deliberately: eliding more now buys byte-stable turns later.
+		const req = parseChatRequest(
+			{
+				model: "auto",
+				tools: TOOLS,
+				messages: [
+					{ role: "system", content: "You are a coding agent." },
+					{ role: "user", content: "read the files" },
+					...[1, 2, 3, 4, 5, 6].flatMap((n) => [
+						{ role: "assistant", content: null, tool_calls: [{ id: `c${n}`, type: "function", function: { name: "read", arguments: `{"path":"f${n}.ts"}` } }] },
+						{ role: "tool", tool_call_id: `c${n}`, content: `F${n}${"x".repeat(2000)}` },
+					]),
+					{ role: "user", content: "continue" },
+				],
+			},
+			new Headers(),
+		);
+		// Prompt is ~12k bytes; claim 4000 tokens against a 1000-token budget, so
+		// floorRatio 1 targets 1000 and floorRatio 0.5 targets 500.
+		const features = extractFeatures(req, 4_000);
+		const run = (floorRatio: number) =>
+			select({
+				req,
+				features,
+				classification: scoreHeuristic(features, COMPACT_CFG),
+				profile: PROFILE,
+				state: state(),
+				snapshot: SNAPSHOT,
+				ledger: null,
+				cfg: { ...COMPACT_CFG, compaction: { ...COMPACT_CFG.compaction, floorRatio } },
+				nowMs: Date.now(),
+			});
+		const tight = run(0.5);
+		const loose = run(1);
+		expect(tight.compactionPlan.length).toBeGreaterThan(loose.compactionPlan.length);
+		expect(tight.promptTokensSaved).toBeGreaterThan(loose.promptTokensSaved);
 	});
 });

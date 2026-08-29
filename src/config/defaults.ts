@@ -193,6 +193,20 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		enabled: false,
 		// ~40k tokens: above this the prompt is dominated by re-sent tool output.
 		budgetTokens: 40_000,
+		// Once compaction fires, compact down to this fraction of the budget
+		// instead of stopping just under it. Below 1 the plan overshoots and then
+		// holds for several turns; at 1 it gains an edit almost every turn, and
+		// every plan change rewrites already-cached prompt bytes.
+		//
+		// Measured (tools/verify-plan-persist.ts, 20-turn agentic conversation):
+		// 1.0 changes the plan on 10 of 10 compacting turns, 0.75 on 3, 0.6 on 2.
+		// Live ledger: a changed-plan dispatch runs 15.4% cold vs 8.9% when the
+		// plan holds, and a cold prompt costs 4.34x a warm one per token.
+		//
+		// Ships at 1 because elision is lossy and compaction is never implicit
+		// here — the same reason `enabled` is false. 0.75 is the recommended
+		// setting once a deployment has watched its own ledger.
+		floorRatio: 1,
 		fitToWindow: true,
 		protectRecentTurns: 4,
 		maxToolResultBytes: 4_096,

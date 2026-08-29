@@ -170,6 +170,13 @@ export interface ConversationState {
 	 * cache survives; refreshed only when the cache is already cold.
 	 */
 	contextVersion: string | null;
+	/**
+	 * The compaction plan applied on the previous dispatch. Re-applied verbatim
+	 * each turn (after byte-length validation) so already-shrunk tool results
+	 * stay shrunk: dropping them re-inflates mid-prefix bytes, which both breaks
+	 * the prompt cache and un-saves the tokens. Fresh planning only extends it.
+	 */
+	compactionPlan: CompactionEdit[] | null;
 	/** When that block was fetched, for the staleness TTL. */
 	contextFetchedAtMs: number;
 	updatedAtMs: number;

@@ -38,6 +38,27 @@ export function compactedBytes(originalBytes: number, edit: CompactionEdit | und
 }
 
 /**
+ * Validates a persisted compaction plan against this turn's messages before it
+ * is re-applied. Every edit must land on a tool-role message whose string
+ * content still has the original byte length the edit was planned against.
+ * A failed check means the client rewrote or truncated its history — the edit
+ * is dropped rather than applied to the wrong bytes.
+ */
+export function validatePlan(
+	plan: readonly CompactionEdit[],
+	messages: readonly NormMessage[],
+): CompactionEdit[] {
+	const valid: CompactionEdit[] = [];
+	for (const e of plan) {
+		const m = messages[e.index];
+		if (m === undefined || m.role !== "tool") continue;
+		if (m.textBytes !== e.bytes) continue;
+		valid.push(e);
+	}
+	return valid;
+}
+
+/**
  * First string value in a tool call's argument JSON — a schema-agnostic proxy
  * for the resource a call operates on (a `path`, `id`, `query`, ...). Used to
  * detect when a later call supersedes an earlier read of the same resource.
@@ -82,6 +103,16 @@ interface ToolResult {
 }
 
 /**
+ * Result for a turn that adds nothing: the carried plan alone, with its
+ * savings recomputed against this turn's messages.
+ */
+function carriedOnly(carried: readonly CompactionEdit[]): CompactionResult {
+	const edits = [...carried].sort((a, b) => a.index - b.index);
+	const savedBytes = edits.reduce((sum, e) => sum + (e.bytes - compactedBytes(e.bytes, e)), 0);
+	return { edits, savedBytes };
+}
+
+/**
  * Plans compaction for a turn's messages toward `targetBytes` of total prompt.
  * Duplicate and superseded elisions (pure stale-data wins) are always applied;
  * large-result truncation (more lossy) runs OLDEST-first only until the target
@@ -96,17 +127,27 @@ interface ToolResult {
  * fresh edits at arbitrarily early indices on later turns, rewriting history
  * the upstream had already cached and collapsing cache reads to the system
  * prefix (measured: 61% cache read, bimodal, vs 76-82% before compaction).
+ *
+ * `carried` is the plan already applied to this conversation on a previous
+ * dispatch (validated by `validatePlan`). It is re-emitted verbatim and its
+ * savings count toward the target, so an existing edit is never re-derived
+ * differently and the planner only ever ADDS. Re-applying it costs nothing:
+ * the client re-sends the original bytes every turn, so the same edit produces
+ * the same output.
  */
 export function planCompaction(
 	messages: readonly NormMessage[],
 	cfg: CompactionConfig,
 	targetBytes: number,
 	promptBytes: number,
+	carried: readonly CompactionEdit[] = [],
 ): CompactionResult {
 	if (!cfg.enabled) return EMPTY;
 
 	const protectStart = protectFromIndex(messages, cfg.protectRecentTurns);
-	if (protectStart <= 0) return EMPTY;
+	// Carried edits still apply even when nothing new is eligible this turn:
+	// dropping them would re-inflate bytes the upstream has already cached.
+	if (protectStart <= 0) return carriedOnly(carried);
 
 	// Assistant tool_call id → name/args, to key tool results by their call.
 	const callById = new Map<string, { name: string; args: string }>();
@@ -128,16 +169,19 @@ export function planCompaction(
 			key: call === undefined ? null : primaryArg(call.args),
 		});
 	}
-	if (tools.length === 0) return EMPTY;
+	if (tools.length === 0) return carriedOnly(carried);
 
-	const edits: CompactionEdit[] = [];
-	const done = new Set<number>();
-	let saved = 0;
+	// Seed with the carried plan: those indices are settled, and their savings
+	// already count against the target, so the target math asks "how much MORE
+	// is needed" rather than re-deriving the whole plan.
+	const edits: CompactionEdit[] = [...carried];
+	const done = new Set<number>(carried.map((e) => e.index));
+	let saved = carried.reduce((sum, e) => sum + (e.bytes - compactedBytes(e.bytes, e)), 0);
 	const stub = (t: ToolResult, note: string): void => {
 		if (done.has(t.index)) return;
 		const gain = t.bytes - BREADCRUMB_BYTES;
 		if (gain <= 0) return; // already smaller than a breadcrumb
-		edits.push({ index: t.index, mode: "stub", keepHead: 0, keepTail: 0, note });
+		edits.push({ index: t.index, mode: "stub", keepHead: 0, keepTail: 0, note, bytes: t.bytes });
 		done.add(t.index);
 		saved += gain;
 	};
@@ -172,7 +216,7 @@ export function planCompaction(
 	const truncatable = tools.filter((t) => !done.has(t.index) && t.bytes > cfg.maxToolResultBytes && t.bytes > keepBudget);
 	for (const t of truncatable) {
 		if (promptBytes - saved <= targetBytes) break;
-		edits.push({ index: t.index, mode: "truncate", keepHead: cfg.keepHeadBytes, keepTail: cfg.keepTailBytes, note: `large ${t.name || "tool"} result` });
+		edits.push({ index: t.index, mode: "truncate", keepHead: cfg.keepHeadBytes, keepTail: cfg.keepTailBytes, note: `large ${t.name || "tool"} result`, bytes: t.bytes });
 		done.add(t.index);
 		saved += t.bytes - keepBudget;
 	}
