@@ -143,6 +143,7 @@ const context = z.strictObject({
 	memoryLimit: z.number().int().positive().optional(),
 	docsLimit: z.number().int().nonnegative().optional(),
 	sessionLimit: z.number().int().nonnegative().optional(),
+	briefChars: z.number().int().nonnegative().optional(),
 	recordTurns: z.boolean().optional(),
 	maxQueue: z.number().int().positive().optional(),
 });

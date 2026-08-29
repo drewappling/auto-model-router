@@ -405,6 +405,16 @@ export interface ContextConfig {
 	docsLimit: number;
 	/** Max recent session messages agentdox may select for the block. */
 	sessionLimit: number;
+	/**
+	 * Character budget for the project brief inside the assembled block, 0 to
+	 * omit. The brief is query-independent curated context (overview, style,
+	 * gotchas, decision log) that renders FIRST, where the prompt cache holds it.
+	 * It grows by one entry per recorded decision, so it takes an explicit
+	 * budget; measured on two live scopes, static sections ~1.6k-8.6k chars and
+	 * the decision log the rest. Keep this well inside `maxBlockChars` so the
+	 * query-relevant tail always fits too.
+	 */
+	briefChars: number;
 	/** Write settled turns back to agentdox sessions, tagged with the served model. */
 	recordTurns: boolean;
 	/** Bound on queued write-backs; excess turns are dropped, never buffered unbounded. */

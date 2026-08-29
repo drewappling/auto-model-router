@@ -20,6 +20,8 @@ export interface AssembleLimits {
 	memoryLimit: number;
 	docsLimit: number;
 	sessionLimit: number;
+	/** Character budget for the project brief; 0 omits it (pre-brief servers ignore it). */
+	briefChars: number;
 }
 
 export interface AgentDoxClient {
@@ -84,13 +86,16 @@ export function createAgentDoxClient(opts: AgentDoxClientOptions): AgentDoxClien
 	return {
 		async assemble(scope, query, limits) {
 			// camelCase: the REST endpoint ignores snake_case limit keys entirely,
-			// which silently reads as "unbounded".
+			// which silently reads as "unbounded". briefChars is sent even when 0:
+			// an older server ignores the unknown key, and 0 is the documented
+			// "no brief" value there.
 			const res = await request("POST", "/context/assemble", {
 				scope,
 				query,
 				memoryLimit: limits.memoryLimit,
 				docsLimit: limits.docsLimit,
 				sessionLimit: limits.sessionLimit,
+				briefChars: limits.briefChars,
 			});
 			if (res !== null && res.status === 200) {
 				const prompt = promptOf(res.json);

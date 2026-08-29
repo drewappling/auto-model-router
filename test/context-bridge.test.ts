@@ -55,6 +55,7 @@ function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
 		memoryLimit: 8,
 		docsLimit: 2,
 		sessionLimit: 6,
+		briefChars: 0,
 		recordTurns: true,
 		maxQueue: 64,
 		...over,
@@ -102,12 +103,12 @@ describe("context bridge refresh policy", () => {
 		// especially: docs are WHOLE documents and were left unbounded, and a single
 		// ashlands note-doc measured 41,921 chars — over the whole cap by itself.
 		// The REST endpoint also ignores snake_case limit keys, which silently reads
-		// as unbounded, so pin that all three limits actually reach the client.
+		// as unbounded, so pin that all four limits actually reach the client.
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { memoryLimit: 5, docsLimit: 1, sessionLimit: 2 });
+		const { bridge, db } = mkBridge(client, { memoryLimit: 5, docsLimit: 1, sessionLimit: 2, briefChars: 9000 });
 		try {
 			await bridge.resolve(input());
-			expect(client.lastLimits).toEqual({ memoryLimit: 5, docsLimit: 1, sessionLimit: 2 });
+			expect(client.lastLimits).toEqual({ memoryLimit: 5, docsLimit: 1, sessionLimit: 2, briefChars: 9000 });
 		} finally {
 			db.close();
 		}
@@ -244,6 +245,7 @@ describe("context bridge refresh policy", () => {
 				memoryLimit: 8,
 				docsLimit: 2,
 				sessionLimit: 6,
+				briefChars: 0,
 				recordTurns: true,
 				maxQueue: 64,
 			};

@@ -179,6 +179,12 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Session messages are cheap today but grow once recordTurns is on, and
 		// they feed straight back into the next assembly.
 		sessionLimit: 6,
+		// The project brief renders FIRST in the block (query-independent →
+		// cache-friendly) but grows one entry per recorded decision, so it is
+		// budgeted, not unbounded. 12k keeps the whole measured brief (8.9k across
+		// statics + all 14 decisions) inside a 24k block while leaving ~15k for
+		// the query-relevant memory/docs tail. 0 omits the brief.
+		briefChars: 12_000,
 		recordTurns: true,
 		maxQueue: 64,
 	},
