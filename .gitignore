@@ -8,5 +8,8 @@ node_modules/
 !.env.example
 dist/
 *.log
+# Editor/manual backups. A stray .mcp.json.bak was nearly committed by `git add -A`;
+# these sit beside credential-bearing config and are never wanted in the repo.
+*.bak
 .DS_Store
 .session-memory.md
