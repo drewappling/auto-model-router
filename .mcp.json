@@ -4,7 +4,7 @@
       "type": "http",
       "url": "http://localhost:3003/mcp",
       "headers": {
-        "Authorization": "Bearer ${AGENTDOX_OMP_TOKEN}"
+        "Authorization": "Bearer ${AGENTDOX_TOKEN}"
       }
     }
   }

@@ -13,17 +13,20 @@ It presents one keyless OpenAI-compatible provider and picks a concrete OpenRout
 
 agentdox is this repo's memory + docs + live-conversation system. The project slug is
 **`omp-router`** — ALWAYS scope agentdox writes to it. The HTTP MCP server in `.mcp.json`
-uses **`AGENTDOX_OMP_TOKEN`** (a bearer token with admin on the `omp-router` scope only).
+uses **`AGENTDOX_TOKEN`**, one **global** bearer token shared by every agentdox-wired repo.
+The scope comes from *this folder* (`AGENTDOX_SCOPE` in `.env.agentdox`), not from the token:
+the token grants every scope, so a wrong slug is **not** rejected — it silently writes into
+another project. Getting `omp-router` right is on you, not on RBAC.
 
 **Where the credentials live:**
 
 | What | Where |
 | --- | --- |
 | Token + URL + scope | `.env.agentdox` in this repo root (**gitignored** via `.env.*` — never commit) |
-| What `.mcp.json` reads | the `AGENTDOX_OMP_TOKEN` **environment variable**, not the file |
-| Persisted env value | Windows **User** environment (`[Environment]::GetEnvironmentVariable('AGENTDOX_OMP_TOKEN','User')`) |
+| What `.mcp.json` reads | the `AGENTDOX_TOKEN` **environment variable**, not the file |
+| Persisted env value | Windows **User** environment (`[Environment]::GetEnvironmentVariable('AGENTDOX_TOKEN','User')`) |
 | Server | `http://localhost:3003` — Docker container `agentdox-server` |
-| Admin token (to re-mint scoped PATs) | `E:/projects/agentdox/deploy/.env` |
+| Admin token (to re-mint the global PAT) | `E:/projects/agentdox/deploy/.env` |
 
 `.env.agentdox` is the durable record; the environment variable is what Claude Code actually
 substitutes into `.mcp.json` at MCP-server startup. If agentdox MCP returns **401**, the
@@ -60,7 +63,7 @@ served from this repo's `.mcp.json`.
 headers. It mounts them **prefixed**: `agentdox_memory_add`, `agentdox_context_assemble`, …
 (fully qualified `mcp__agentdox_*`). All 17 tools load.
 
-The one prerequisite is `AGENTDOX_OMP_TOKEN` being present in the **launching shell's**
+The one prerequisite is `AGENTDOX_TOKEN` being present in the **launching shell's**
 environment. It is persisted at Windows *User* scope, so only shells started afterwards
 inherit it — an already-open terminal will show no agentdox tools until restarted.
 
@@ -69,7 +72,7 @@ inherited) MUST use the REST API directly** — same live store, same RBAC. Don'
 just because the MCP tools are absent.
 
 REST basics: base `http://localhost:3003`, header `Authorization: Bearer <token>` where the token
-is `AGENTDOX_TOKEN` from `.env.agentdox` (admin on the `omp-router` scope). **memory uses
+is `AGENTDOX_TOKEN` from `.env.agentdox` (global; grants every scope). **memory uses
 `category`, everything else uses `scope`; both are always `"omp-router"`.** MCP-tool → REST map:
 
 | Duty / MCP tool | REST |
@@ -111,7 +114,7 @@ Turning the bridge on for the router itself (distinct from the MCP wiring above)
 
 ```bash
 export AGENTDOX_URL=http://localhost:3003
-export AGENTDOX_TOKEN=<same PAT as AGENTDOX_OMP_TOKEN>
+export AGENTDOX_TOKEN=<the global PAT, same value .mcp.json uses>
 export AGENTDOX_SCOPE=omp-router
 ```
 
