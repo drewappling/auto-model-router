@@ -35,8 +35,12 @@
  *  - `messages` are not recorded, so compaction cannot be re-planned. Replay
  *    forces `compaction.enabled=false` and feeds the POST-compaction prompt
  *    size (`usage.promptTokens`), i.e. the prompt selection actually saw.
- *  - `stickyUntilTurn` was never persisted per turn, so the hysteresis hold
- *    window is absent. This is the main residual gap.
+ *  - Hysteresis holds ARE modelled: the window is re-armed after each replayed
+ *    decision exactly as `turn.ts` does, and evolved PER VARIANT so a change
+ *    that stops arming an expensive tier also drops the holds that followed it.
+ *    What remains absent is escalation-lengthened holds, since replay does not
+ *    retry, and `hold_arm` exploration draws are reproduced from the
+ *    conversation key rather than read back from the row.
  *  - `requestedReasoning` IS recorded and is now used. It was previously forced
  *    to undefined here on the belief the ledger omitted it, which under-scored
  *    ~42% of dispatches and reproduced 27 hard decisions against 120 served.
@@ -63,6 +67,7 @@ import { computeCost } from "../src/cost/forecast.ts";
 import { createLedger } from "../src/cost/ledger.ts";
 import type { UsageCounts } from "../src/cost/types.ts";
 import { scoreHeuristic } from "../src/router/classify.ts";
+import { resolveHoldTurns } from "../src/router/explore.ts";
 import { select } from "../src/router/select.ts";
 import type { ConversationState, Decision, Features, Tier } from "../src/router/types.ts";
 import type { UpstreamClient } from "../src/upstream/types.ts";
@@ -140,6 +145,7 @@ interface Row {
 	reported_usd: number | null;
 	predicted_usd: number;
 	created_at_ms: number;
+	error_kind: string | null;
 }
 
 /**
@@ -201,17 +207,24 @@ function requestOf(row: Row, f: Features): NormRequest {
  * prompt size. Deriving state from the RECORDED outcome rather than the
  * replayed one also stops replay error compounding down a conversation.
  *
- * Still not modelled: `stickyUntilTurn`, which was never persisted per turn, so
- * the hysteresis hold window remains absent.
+ * `stickyUntilTurn` and `currentTier` are the exception: they are SIMULATED per
+ * variant, by re-arming the hold exactly as `turn.ts` does after each replayed
+ * decision. Without that, replay never held a tier and every hysteresis change
+ * priced as zero.
  */
-function stateOf(row: Row, prior: PriorTurn | undefined): ConversationState {
+function stateOf(row: Row, prior: PriorTurn | undefined, hold: HoldState | undefined): ConversationState {
 	return {
 		key: row.conversation_key,
 		sessionId: `omp-${row.conversation_key}`,
-		turn: row.turn,
+		// `turn.ts` computes turnNumber = state.turn + 1 and records THAT, so the
+		// state `select` sees carries the PREVIOUS turn number. Passing row.turn
+		// would expire every hold a turn early.
+		turn: row.turn - 1,
 		currentSlug: prior?.slug ?? null,
-		currentTier: (prior?.tier as Tier | undefined) ?? null,
-		stickyUntilTurn: 0,
+		// Tier and hold window come from THIS VARIANT's own history (see
+		// HoldState); everything else comes from the recorded outcome.
+		currentTier: hold?.tier ?? ((prior?.tier as Tier | undefined) ?? null),
+		stickyUntilTurn: hold?.stickyUntilTurn ?? 0,
 		escalations: 0,
 		spentUsd: prior?.spentUsd ?? 0,
 		lastPromptTokens: prior?.promptTokens ?? 0,
@@ -233,6 +246,24 @@ interface PriorTurn {
 	cachedTokens: number;
 	spentUsd: number;
 	atMs: number;
+}
+
+/**
+ * Hysteresis state, evolved PER VARIANT.
+ *
+ * A hold is a consequence of the decisions a variant made, so A and B must each
+ * carry their own: if both read the recorded holds, a change that stops arming
+ * `hard` would still be charged for the holds that followed it in production,
+ * and the change would price as smaller than it is.
+ *
+ * This is the one place replay departs from "inputs come from the recorded
+ * outcome". The cost is that hold state compounds a variant's own replay error
+ * down a conversation; the benefit is that hold policy becomes measurable at
+ * all, which it was not.
+ */
+interface HoldState {
+	tier: Tier | null;
+	stickyUntilTurn: number;
 }
 
 /**
@@ -281,7 +312,7 @@ const predicate = args.where === "" ? "" : ` AND (${args.where})`;
 const rows = (
 	db
 		.query(
-			`SELECT id, conversation_key, turn, requested_model, harness_id, served_slug, tier, features, usage, reported_usd, predicted_usd, created_at_ms
+			`SELECT id, conversation_key, turn, requested_model, harness_id, served_slug, tier, features, usage, reported_usd, predicted_usd, created_at_ms, error_kind
 			 FROM ledger
 			 WHERE features IS NOT NULL AND wasted = 0${predicate}
 			 ORDER BY created_at_ms DESC LIMIT ?`,
@@ -307,23 +338,49 @@ interface Outcome {
 	tier: Tier;
 	slug: string;
 	usd: number;
+	/** Whether the hysteresis hold bound this dispatch, for reporting. */
+	held: boolean;
+	/** Hold state to carry into this variant's next dispatch. */
+	hold: HoldState;
 }
 
-function run(cfg: RouterConfig, row: Row, usage: UsageCounts, prior: PriorTurn | undefined): Outcome {
+function run(cfg: RouterConfig, row: Row, usage: UsageCounts, prior: PriorTurn | undefined, hold: HoldState | undefined): Outcome {
 	const f = featuresOf(row, usage.promptTokens);
 	const req = requestOf(row, f);
+	const state = stateOf(row, prior, hold);
 	const decision: Decision = select({
 		req,
 		features: f,
 		classification: scoreHeuristic(f, cfg),
 		profile: profileOf(cfg, row.requested_model),
-		state: stateOf(row, prior),
+		state,
 		snapshot: catalogSnapshot,
 		ledger,
 		cfg,
 		nowMs: Date.now(),
 	});
-	return { tier: decision.tier, slug: decision.slug, usd: repriceUsd(bySlug.get(decision.slug), usage) };
+
+	// Re-arm exactly as turn.ts does: only when the served tier CHANGED, because
+	// re-arming every turn extends the window forever and the router then never
+	// downgrades. `escalated` is false — replay does not model escalation
+	// retries, so escalation-lengthened holds are still absent.
+	// Only a dispatch that reaches the COMMIT path re-arms, as in turn.ts: an
+	// aborted one never gets there, and 27% of rows abort (omp closing the
+	// stream once it has the tool calls). Re-arming on those inflated the hold
+	// count roughly 4x against what production recorded.
+	const committed = row.error_kind === null;
+	const tierChanged = committed && (hold?.tier ?? null) !== decision.tier;
+	const next: HoldState = tierChanged
+		? { tier: decision.tier, stickyUntilTurn: row.turn + resolveHoldTurns(cfg, row.conversation_key, false).turns }
+		: { tier: committed ? decision.tier : (hold?.tier ?? null), stickyUntilTurn: hold?.stickyUntilTurn ?? 0 };
+
+	return {
+		tier: decision.tier,
+		slug: decision.slug,
+		usd: repriceUsd(bySlug.get(decision.slug), usage),
+		held: decision.classification.source === "sticky",
+		hold: next,
+	};
 }
 
 const tallyA = new Map<string, number>();
@@ -344,13 +401,23 @@ const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1
 // Carries the RECORDED outcome of each conversation's previous dispatch forward,
 // so cache warmth and the prior slug are real rather than assumed absent.
 const priorByConv = new Map<string, PriorTurn>();
+// Hold state is per VARIANT, since a hold follows from that variant's own
+// decisions. See HoldState.
+const holdA = new Map<string, HoldState>();
+const holdB = new Map<string, HoldState>();
+let heldA = 0;
+let heldB = 0;
 
 for (const row of rows) {
 	const u = JSON.parse(row.usage) as UsageCounts;
 	if (!(u.promptTokens > 0)) continue;
 	const prior = priorByConv.get(row.conversation_key);
-	const a = run(cfgA, row, u, prior);
-	const b = run(cfgB, row, u, prior);
+	const a = run(cfgA, row, u, prior, holdA.get(row.conversation_key));
+	const b = run(cfgB, row, u, prior, holdB.get(row.conversation_key));
+	holdA.set(row.conversation_key, a.hold);
+	holdB.set(row.conversation_key, b.hold);
+	if (a.held) heldA++;
+	if (b.held) heldB++;
 	priorByConv.set(row.conversation_key, {
 		slug: row.served_slug,
 		tier: row.tier,
@@ -386,8 +453,8 @@ console.log(`variant B overrides: ${args.setB.length ? args.setB.join(" ") : "(n
 console.log(`\nFIDELITY vs what actually ran:`);
 console.log(`  same model ${fidelitySlug}/${comparable} (${pct(fidelitySlug, comparable)}%)   same tier ${fidelityTier}/${comparable} (${pct(fidelityTier, comparable)}%)`);
 console.log("  Divergence is expected where code has changed since those rows were served");
-console.log("  (replay runs CURRENT code); the rest is the unmodelled neutral state.");
-console.log("  Low fidelity => treat the A/B delta below as weak evidence.");
+console.log("  (replay runs CURRENT code); the rest is what replay cannot model.");
+console.log(`  hysteresis holds bound ${heldA} dispatches in A, ${heldB} in B (simulated per variant).`);
 
 function table(label: string, rec: Map<string, number>, A: Map<string, number>, B: Map<string, number>) {
 	const keys = [...new Set([...rec.keys(), ...A.keys(), ...B.keys()])].sort((x, y) => (B.get(y) ?? 0) - (B.get(x) ?? 0));
