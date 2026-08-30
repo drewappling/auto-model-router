@@ -80,17 +80,29 @@ export function deriveAgentdoxScope(cwd: string): string {
 }
 
 /**
- * Resolves the desired bind port: an explicit `AUTO_MODEL_ROUTER_PORT` when set and
- * valid, else `0` so Bun assigns a free ephemeral port (the "random port" that
- * lets multiple local omp sessions coexist without colliding). Returning 0
- * means "let the OS pick"; the caller must read the actual port back off the
- * started server.
+ * Resolves the port the embedded router should serve on, in precedence order:
+ * an explicit `AUTO_MODEL_ROUTER_PORT`, else the configured `server.port`, else
+ * 0 (let the OS pick a free one).
+ *
+ * A STABLE port is what keeps omp's model resolution honest. omp resolves
+ * `modelRoles.default` from `models.yml` during startup — BEFORE extensions
+ * load, so before this session can bind and rewrite that file. With an
+ * ephemeral port the block names the PREVIOUS session's port, which is dead
+ * once that session exits, and every main-agent turn fails with "Unable to
+ * connect" while utility calls (resolved later, from the live registration)
+ * still work. A deterministic port makes the pre-bind block correct by
+ * construction. Sessions sharing that port share one router, which is already
+ * how subagents behave.
+ *
+ * `0` is still honoured when asked for explicitly, and remains the fallback
+ * when the desired port is occupied by something that is not our router.
  */
-export function resolveEmbedPort(envPort: string | undefined): number {
+export function resolveEmbedPort(envPort: string | undefined, configuredPort = 0): number {
 	if (envPort !== undefined && envPort !== "") {
 		const port = Number.parseInt(envPort, 10);
 		if (Number.isInteger(port) && port >= 0 && port <= 65_535) return port;
 	}
+	if (Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65_535) return configuredPort;
 	return 0;
 }
 

@@ -86,8 +86,6 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 export default function (pi: ExtensionAPI): void {
 	pi.setLabel("auto-model-router embed");
 
-	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT);
-
 	// Shared port file, written only by the main session's router.
 	const homeRaw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
 	const home =
@@ -95,11 +93,15 @@ export default function (pi: ExtensionAPI): void {
 			? join(homedir(), homeRaw.slice(1))
 			: homeRaw;
 	const portFile = embedPortPath(home);
-	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
+	// Load first WITHOUT a port override so `server.port` from config.yml is
+	// visible, then let it (or the env var) decide the bind port.
+	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1" } } });
+	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT, cfg.server.port);
+	cfg.server.port = requestedPort;
 
 	let app: StartedServer | null = null;
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		// The omp UI session id tags every request so the toast can scope its
 		// notifications to that exact session (see router-toast.ts).
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -108,7 +110,7 @@ export default function (pi: ExtensionAPI): void {
 			// shared router: one process, one ledger, one place to inspect.
 			// The main writes the port file before spawning subagents.
 			const shared = readEmbedPort(portFile);
-			if (shared !== null && probeEmbed(shared)) {
+			if (shared !== null && (await probeEmbed(shared))) {
 				registerRouterProvider(pi, shared, cfg, sessionId);
 				return;
 			}
@@ -128,12 +130,35 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 
-		// Main interactive session: bind the router once, then register the
-		// provider against the exact bound port. Registration happens only
-		// here — never at factory load, where a stale shared port would be
-		// captured into omp's model registry and defeat the correct bound URL.
+		// Main interactive session. The port is deterministic (see
+		// resolveEmbedPort), which matters because omp resolves
+		// `modelRoles.default` from models.yml BEFORE this extension loads: the
+		// URL that block names must be one this session will actually serve.
 		if (app) return;
-		const started = startServer(cfg);
+
+		// Another live session already serving this port? Share it rather than
+		// fighting over the socket — subagents already share one router, and the
+		// ledger and DB are shared regardless.
+		if (requestedPort !== 0 && (await probeEmbed(requestedPort))) {
+			writeEmbedPort(portFile, requestedPort);
+			syncModelsYml(cfg, requestedPort);
+			registerRouterProvider(pi, requestedPort, cfg, sessionId);
+			pi.setLabel(`auto-model-router embed (shared :${requestedPort})`);
+			return;
+		}
+
+		// Bind the desired port; if something that is NOT our router holds it,
+		// fall back to an ephemeral port rather than leaving the session with no
+		// provider at all. models.yml is rewritten either way, so headless runs
+		// and subagents still resolve.
+		let started: StartedServer;
+		try {
+			started = startServer(cfg);
+		} catch (err) {
+			if (requestedPort === 0) throw err;
+			cfg.server.port = 0;
+			started = startServer(cfg);
+		}
 		const actualPort = started.server.port;
 		if (actualPort === undefined) return;
 		app = started;
@@ -145,8 +170,7 @@ export default function (pi: ExtensionAPI): void {
 		// subagent processes resolve models from models.yml in a FRESH registry
 		// — extension registration does not reach them — so without this they
 		// fail with "Model not found" when no interactive session is live
-		// (the print-mode gap the external benchmark hit). Registration still
-		// wins at runtime, so a live session always overrides a stale block.
+		// (the print-mode gap the external benchmark hit).
 		const syncAction = syncModelsYml(cfg, actualPort);
 		if (syncAction !== null) pi.setLabel(`auto-model-router embed (models.yml ${syncAction})`);
 		registerRouterProvider(pi, actualPort, cfg, sessionId);

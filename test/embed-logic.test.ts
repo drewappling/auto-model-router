@@ -16,7 +16,7 @@ import {
 } from "../omp-extension/embed-logic.ts";
 
 describe("resolveEmbedPort", () => {
-	test("returns 0 (let the OS assign a free port) when AUTO_MODEL_ROUTER_PORT is absent", () => {
+	test("returns 0 (let the OS assign a free port) when nothing is configured", () => {
 		expect(resolveEmbedPort(undefined)).toBe(0);
 		expect(resolveEmbedPort("")).toBe(0);
 	});
@@ -30,6 +30,28 @@ describe("resolveEmbedPort", () => {
 		expect(resolveEmbedPort("notaport")).toBe(0);
 		expect(resolveEmbedPort("-1")).toBe(0);
 		expect(resolveEmbedPort("70000")).toBe(0);
+	});
+
+	// A stable port is what keeps omp's PRE-extension model resolution correct:
+	// it reads models.yml before this extension can bind and rewrite it, so an
+	// ephemeral port leaves that block naming the previous session's dead port.
+	test("uses the configured server.port when no env override is set", () => {
+		expect(resolveEmbedPort(undefined, 8788)).toBe(8788);
+		expect(resolveEmbedPort("", 8788)).toBe(8788);
+	});
+
+	test("the env var wins over the configured port", () => {
+		expect(resolveEmbedPort("8812", 8788)).toBe(8812);
+	});
+
+	test("an explicit env 0 wins, so an ephemeral port stays requestable", () => {
+		expect(resolveEmbedPort("0", 8788)).toBe(0);
+	});
+
+	test("ignores a nonsense configured port rather than binding it", () => {
+		expect(resolveEmbedPort(undefined, 0)).toBe(0);
+		expect(resolveEmbedPort(undefined, -5)).toBe(0);
+		expect(resolveEmbedPort(undefined, 70_000)).toBe(0);
 	});
 });
 
