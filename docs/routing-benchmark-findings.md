@@ -13,15 +13,18 @@ of my own earlier conclusions were wrong and are corrected in place.
 
 1. **The router is 20–32× cheaper at equal solve rate.** On 10 easy tasks both
    arms solved 20/20; on a 7-rung difficulty ladder both solved 5/7.
-2. **It never escalates.** Across 86 routed turns on the ladder — including the
-   rungs it *failed* — there were zero escalation signals, zero retry
-   dispatches, and only two models ever served: `glm-5.3-flash` and
-   `gemini-3.7-flash`.
-3. **Root cause is two independent gates, and both must move.** The price
-   ceiling hard-excludes expensive models below `hard`; and the ranking
-   arithmetic makes quality unable to outweigh price at any sane exponent.
-4. **Escalation does work once both gates are opened** — verified end to end,
-   with `claude-opus-5` serving 3 turns of a task the cheap-only config failed.
+2. **Tier escalation works.** A turn classified `hard` reliably selects a
+   costlier model — the hard-turn count matches the non-flash turn count ~1:1
+   across two independent ladder runs (to `gemini-3.7-flash` in one, to
+   `grok-4.6` in the other). *An earlier version of this document claimed the
+   opposite; that was my error, corrected in §3.*
+3. **What never happens is reaching `claude-opus-5`.** Two gates: the price
+   ceiling excludes it below `hard`, and at `hard` it is outranked by cheaper
+   high-quality models. Whether that is a defect depends on whether
+   `grok-4.6`-class is "good enough" — this benchmark cannot say.
+4. **Mid-stream escalation signals never fired** — `escalation_signal` was empty
+   on every one of ~190 routed ladder turns. That is a different mechanism from
+   tier selection and may simply mean nothing malformed occurred.
 5. **The standalone `serve` process died 4 times inside one normally-completing
    run.** The crash is real and mid-run; the *trigger* is unidentified — my first
    explanation (client disconnect mid-stream) does not reproduce. Details in §7.
@@ -33,6 +36,11 @@ of my own earlier conclusions were wrong and are corrected in place.
 - **Harness**: omp in `-p --mode=json` print mode. Every turn's tokens,
   duration, TTFT and tool calls are read off omp's own event stream, so both
   arms are measured by the same instrument.
+- **Provider guard**: each arm declares its expected omp provider and every
+  completion turn is checked against it — `anthropic` + `claude-opus-5` for the
+  baseline (first-party, never OpenRouter), `benchrouter` for the router arm.
+  Zero violations across the re-runs. Added after an early pilot silently
+  resolved `--model auto` to OpenRouter's own `auto` meta-router.
 - **Router arm**: the standalone `auto-model-router serve` endpoint registered
   as a plain OpenAI-compatible provider — the documented non-omp path (README
   § "Standalone alternative"). Nothing pinned, nothing stubbed; the router
@@ -46,22 +54,29 @@ of my own earlier conclusions were wrong and are corrected in place.
   verified to fail an untouched workspace and to pass a reference solution
   before any run (`bench/validate-ladder.ts`).
 
-> **A note on print mode.** The embedded extension only registers the
-> `auto-model-router` provider inside an interactive session — `ctx.hasUI` is
-> false in `-p`, so it takes the subagent path and looks for an existing
-> `embed.port`. In print mode with no interactive session running, the provider
-> is absent from the model registry entirely and `--model auto-model-router/auto`
-> fails with "Model not found". Worth documenting, or worth having the subagent
-> path fall back to binding its own server.
+> **Print mode — resolved.** During the benchmark the embedded extension only
+> registered the provider inside a session with a UI, so `omp -p` could not see
+> `auto-model-router/auto` at all; that is why the harness drives the standalone
+> `serve` endpoint instead. Fixed upstream in **0.2.20** (`fix(embed): resolve the
+> router in print mode and subagents`) — verified: `omp -p --model
+> auto-model-router/auto` now resolves natively with no standalone server. The
+> harness keeps the `serve` path because it gives the benchmark its own isolated
+> ledger, not because the embedded path is broken.
 
 ---
 
 ## 2. Cost result
 
-| Suite | Router | Opus 5 | Ratio |
-|---|---|---|---|
-| 10 easy tasks × 2 trials | 20/20 · $0.3577 | 20/20 · $11.4040 | 31.9× |
-| 7-rung ladder × 1 trial | 5/7 · $0.3026 | 5/7 · $6.2506 | 20.7× |
+| Suite | Run | Router | Opus 5 | Ratio |
+|---|---|---|---|---|
+| 10 easy tasks | trials 1+2 | 20/20 · $0.3577 | 20/20 · $11.4040 | 31.9× |
+| 10 easy tasks | re-run | 10/10 · $0.2695 | 10/10 · $5.2092 | 19.3× |
+| 7-rung ladder | first | 5/7 · $0.3026 | 5/7 · $6.2506 | 20.7× |
+| 7-rung ladder | re-run | 5/7 · $0.4619 | **6/7** · $6.5967 | 14.3× |
+
+Across four independent runs the ratio lands between **14× and 32×**. On the
+ladder re-run Opus 5 edged the router on correctness for the first time (6/7 vs
+5/7), which is the outcome the ladder was built to be able to detect.
 
 Turn counts are comparable (184 vs 217 on the easy suite; 86 vs 91 on the
 ladder), so the saving is not bought with extra turns. Median TTFT is the
@@ -74,30 +89,56 @@ magnitude" is defensible; a precise figure is not.
 
 ---
 
-## 3. The router never escalates
+## 3. Escalation — corrected
 
-The ladder was built specifically to force an escalation decision: seven rungs
-ending in npm semver range semantics and a minimal-diff with a specified
-tie-break.
+**I got this wrong first time.** I reported that the router "never escalates",
+having looked at the served-model list, seen only `glm-5.3-flash` and
+`gemini-3.7-flash`, and mentally filed both as "flash models, therefore no
+escalation". I never checked whether the counts lined up with the tier. They do.
 
-| Rung | Task | Router | Opus 5 | Escalated? |
-|---|---|---|---|---|
-| 1 | in-range | PASS | PASS | no |
-| 2 | round-half-even | PASS | PASS | no |
-| 3 | csv-document | PASS | PASS | no |
-| 4 | sliding-limiter | PASS | **FAIL** | no |
-| 5 | savepoints | **FAIL** | PASS | **no** |
-| 6 | semver-ranges | timeout | timeout | no |
-| 7 | minimal-diff | PASS | PASS | no |
+### Tier escalation works, and is close to deterministic
 
-Rung 6 timed out on both arms at the 10-minute cap; it is not evidence about
-capability either way.
+Hard-tier turns versus turns served by something other than the cheap default:
 
-**The router assigned its `hard` tier on six of the seven rungs**, so the
-classifier is not blind — the tier simply never converts into a more capable
-model. On rung 5 it failed while continuing to dispatch to `glm-5.3-flash`.
+| Rung | ladder-1 hard / non-flash | v2-ladder hard / non-flash |
+|---|---|---|
+| L1 in-range | 0 / 0 | 0 / 0 |
+| L2 round-half-even | 6 / 6 | 0 / 0 |
+| L3 csv-document | 4 / 4 | 0 / 0 |
+| L4 sliding-limiter | 3 / 6 | 5 / 5 |
+| L5 savepoints | 3 / 3 | 7 / 7 |
+| L6 semver-ranges | 2 / 3 | 0 / 0 |
+| L7 minimal-diff | 3 / 4 | 1 / 1 |
 
----
+The escalation *target* differs by run, which is itself worth knowing:
+`ladder-1` stepped up to `gemini-3.7-flash` ($0.75/MTok, ~10× the default);
+`v2-ladder` stepped up to `grok-4.6` ($2.00/MTok, ~28×). Same config, same
+catalog — the choice moves with trust and latency history, which are live inputs
+to the ranking. Escalation behaviour is therefore **not reproducible run to run**,
+even though it is reliable *within* a run.
+
+### What genuinely never happens
+
+`anthropic/claude-opus-5` was never selected in any run. §4 explains why, and
+that analysis stands: the price ceiling excludes it below `hard`, and at `hard`
+it loses the quality-per-dollar ranking to cheaper models scoring nearly as well.
+
+Whether that is a *problem* is not something this benchmark answers. If
+`grok-4.6` is good enough for the hard turns, the router is behaving correctly
+and cheaply. The one weak signal available: rung 5 failed in `ladder-1` when it
+escalated only as far as `gemini-3.7-flash` (3 turns) and passed in `v2-ladder`
+when it escalated to `grok-4.6` (7 turns). Rung 4 pushes the other way — it
+passed in `ladder-1` without much escalation and failed in `v2-ladder` *with*
+`grok-4.6` on 5 turns. With n=1 per cell these cancel out; nothing is
+established.
+
+### Mid-stream escalation is a separate mechanism, and it never fired
+
+`escalation_signal` — the abort-and-redispatch-upward path for malformed tool
+calls, empty completions and repeated calls — was empty on every routed ladder
+turn, as was `attempt > 0`. That is consistent with "no turn ever came back
+malformed" rather than evidence of a defect; the ladder gave it nothing to react
+to.
 
 ## 4. Root cause: two gates, both hard
 

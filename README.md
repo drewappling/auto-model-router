@@ -32,6 +32,93 @@ This router exists for the things a prompt classifier structurally cannot do:
 | **Closed-loop trust** | Per-model escalation and error rates from *your* traffic demote cheap-but-flaky models automatically. |
 | **Explainability** | Every decision — candidates, rejections, forecasts, reasons — is persisted and replayable via `auto-model-router explain`. |
 
+## Measured against Claude Opus 5
+
+Five benchmark runs, 88 graded task runs, 2026-08-29. Each task is a real omp
+session working in a pristine git workspace from a written spec. Hidden tests are
+copied in only *after* the agent exits, so they cannot be read or edited by it;
+every task is verified to fail an untouched workspace and to pass a reference
+solution. Both arms are metered from omp's own event stream, run under an
+identical tool surface, and are checked per turn against their expected provider.
+The router arm routes freely — nothing pinned. The baseline is `claude-opus-5`
+on Anthropic first-party.
+
+### Core suite — 10 coding tasks × 3 trials
+
+| | auto-model-router | Claude Opus 5 |
+| --- | --- | --- |
+| Tasks solved | **30 / 30** | 30 / 30 |
+| Total cost | **$0.63** | $16.61 |
+| Cost per solved task | **$0.0209** | $0.5538 |
+| Turns to finish | **278** | 303 |
+| Tool calls | **265** | 337 |
+| Wall clock | **2 057 s** | 3 185 s |
+| Median time to first token | 5 776 ms | **1 490 ms** |
+
+**26.5× cheaper at identical correctness** — and in fewer turns, fewer tool
+calls, and 19 minutes less wall clock. The saving is not bought by grinding out
+extra turns. The one regression is time to first token: a routed turn pays for
+classification and dispatch before anything streams back.
+
+Per task the ratio ranges from 9× to 264×. The widest gaps are tasks where the
+single-model baseline entered long tool loops — `semver` and `queue-order` cost
+it $2.99 each across three trials against a $1.32 median, 36% of its entire bill.
+
+### Difficulty ladder — 7 rungs, run twice
+
+A second suite of deliberately escalating difficulty, ending in npm semver range
+semantics and a minimal diff with a specified tie-break.
+
+| | auto-model-router | Claude Opus 5 |
+| --- | --- | --- |
+| Run 1 | 5 / 7 · $0.30 | 5 / 7 · $6.25 |
+| Run 2 | 5 / 7 · $0.46 | **6 / 7** · $6.60 |
+
+At the top of the ladder the engines separate: they fail different rungs, and on
+the second run the single-model baseline finished one more. Both arms timed out
+on the semver rung at the 10-minute cap.
+
+### What it routed to
+
+Across 464 routed turns in all five runs:
+
+| Model | Turns | Input price | Role |
+| --- | --- | --- | --- |
+| `z-ai/glm-5.3-flash` | 389 (84%) | $0.07 / MTok | default |
+| `google/gemini-3.7-flash` | 56 (12%) | $0.75 / MTok | escalation target |
+| `x-ai/grok-4.6` | 18 (4%) | $2.00 / MTok | escalation target |
+
+**Tier escalation converts to a costlier model roughly one-for-one**: on the
+ladder, the count of turns classified `hard` matched the count served by
+something other than the default (6/6, 4/4, 3/3, 5/5, 7/7, 1/1 across rungs and
+runs). The escalation *target* is chosen live from trust and latency history, so
+it differs between runs on the same catalog — run 1 stepped up to
+`gemini-3.7-flash`, run 2 to `grok-4.6`.
+
+Escalation stays inside the cheaper half of the catalog. A model priced above a
+tier's `maxInputPerMtok` is excluded before ranking, and at `hard` the
+`(quality/100)^qualityExponent ÷ expected cost` score favours cheaper models that
+score nearly as well. If your workload needs a frontier model on hard turns,
+raise the tier price ceiling and `qualityExponent` — measured thresholds are in
+[`docs/routing-benchmark-findings.md`](docs/routing-benchmark-findings.md).
+
+### Scope
+
+These are small, self-contained tasks of one to three files, solved in under 25
+turns. On the core suite both engines solved everything, so it measures cost at
+equal correctness rather than capability; the ladder is where capability
+separates. The cost multiple varied between 14× and 32× across runs depending on
+which task the baseline stalled on — treat "well over an order of magnitude" as
+the claim, not a specific figure.
+
+For sustained work on a large codebase the economics differ: cost there is
+dominated by the conversation being resent each turn rather than by per-token
+price. Replaying a week of real omp traffic (6 918 billed turns, 410:1
+input-to-output) against a single-model baseline gives **≈15×**.
+
+Harness, tasks and raw per-turn data:
+[`docs/routing-benchmark-findings.md`](docs/routing-benchmark-findings.md).
+
 ## Architecture
 
 ```mermaid
