@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { classify, classifyTask, pickQualityAxis, scoreHeuristic } from "../src/router/classify.ts";
@@ -176,6 +177,35 @@ describe("scoreHeuristic", () => {
 			BASE,
 		);
 		expect(thinking.score).toBeGreaterThan(plain.score);
+	});
+
+	test("the reasoning weight is configurable, so a session-wide level can be discounted", () => {
+		// A harness that pins one reasoning level for a whole session turns this
+		// "signal" into a constant that lifts every turn's score. Measured live:
+		// the level never changed within 111 of 115 conversations, and 64 of 119
+		// hard dispatches reached that tier ONLY via the weight — $6.66 billed
+		// against $0.16 for the same tokens on the moderate pick.
+		//
+		// DEFAULT_CONFIG, not BASE: BASE is loadConfig({}), which reads this
+		// machine's real config.yml, and this assertion is about shipped values.
+		const features = extractFeatures(
+			parseChatRequest(
+				{ model: "auto", tools: TOOLS, reasoning_effort: "medium", messages: [SYSTEM, { role: "user", content: "tidy this up" }] },
+				new Headers(),
+			),
+			5000,
+		);
+		const shipped = scoreHeuristic(features, DEFAULT_CONFIG);
+		const discounted = scoreHeuristic(features, {
+			...DEFAULT_CONFIG,
+			classifier: { ...DEFAULT_CONFIG.classifier, reasoningWeights: { ...DEFAULT_CONFIG.classifier.reasoningWeights, medium: 0 } },
+		});
+		expect(shipped.score - discounted.score).toBeCloseTo(DEFAULT_CONFIG.classifier.reasoningWeights.medium, 5);
+		expect(discounted.reasons.some((r) => /requested reasoning/.test(r))).toBe(false);
+	});
+
+	test("ships with the historical weights, so enabling a discount is opt-in", () => {
+		expect(DEFAULT_CONFIG.classifier.reasoningWeights).toEqual({ medium: 0.14, high: 0.24, xhigh: 0.3, max: 0.34 });
 	});
 
 	test("always produces a bounded score, a real tier, and its reasoning", () => {

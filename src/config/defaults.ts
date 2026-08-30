@@ -98,6 +98,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		toolAxis: "coding",
 		chatAxis: "intelligence",
 		agenticLoopDepth: 3,
+		// Shipped values, unchanged. See ClassifierConfig.reasoningWeights: a
+		// harness that pins the level for a whole session turns these into a
+		// constant tier offset, in which case `medium` belongs near 0.
+		reasoningWeights: { medium: 0.14, high: 0.24, xhigh: 0.3, max: 0.34 },
 	},
 	escalation: {
 		enabled: true,

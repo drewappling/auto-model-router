@@ -76,17 +76,24 @@ const W_TOOLS_OFFERED = 0.03;
 /** Score bucket boundaries: [trivial, simple, moderate, hard]. */
 const BOUNDARIES: readonly [number, number, number] = [0.25, 0.5, 0.75];
 
-/** A client that asks for reasoning is stating expected difficulty directly. */
-function reasoningWeight(level: ReasoningLevel | undefined): number {
+/**
+ * Score for a client-stated reasoning effort. The premise is that asking for
+ * reasoning states expected difficulty — true when a harness raises the level
+ * for a hard turn, false when it pins one level for the whole session, where the
+ * "signal" is a constant that lifts every turn's score. Weights are therefore
+ * configurable per deployment; see ClassifierConfig.reasoningWeights.
+ */
+function reasoningWeight(level: ReasoningLevel | undefined, cfg: RouterConfig): number {
+	const w = cfg.classifier.reasoningWeights;
 	switch (level) {
 		case "medium":
-			return 0.14;
+			return w.medium;
 		case "high":
-			return 0.24;
+			return w.high;
 		case "xhigh":
-			return 0.3;
+			return w.xhigh;
 		case "max":
-			return 0.34;
+			return w.max;
 		default:
 			// off/minimal/low/undefined: no stated difficulty above the baseline.
 			return 0;
@@ -113,7 +120,7 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 	);
 	if (f.lastToolFailed) add(W_TOOL_FAILED, "last tool result failed");
 	if (f.circularToolCall) add(W_CIRCULAR_LOOP, "circular tool call (re-issued a prior call; stuck)");
-	const rw = reasoningWeight(f.requestedReasoning);
+	const rw = reasoningWeight(f.requestedReasoning, cfg);
 	if (rw > 0) add(rw, `client requested reasoning=${f.requestedReasoning ?? ""}`);
 	if (f.isTerseInstruction) add(W_TERSE, "terse instruction");
 	add(Math.min(f.codeBlocks * W_CODE_BLOCK, CAP_CODE), `${f.codeBlocks} code block(s) in new content`);

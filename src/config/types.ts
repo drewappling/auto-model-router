@@ -229,6 +229,28 @@ export interface ClassifierConfig {
 	chatAxis: QualityAxis;
 	/** Tool-loop depth above which the agentic axis takes over. */
 	agenticLoopDepth: number;
+	/**
+	 * Score added when the CLIENT asks for a reasoning effort, per level. The
+	 * premise is that asking for reasoning states expected difficulty directly.
+	 *
+	 * That premise fails when a harness sets the level once for a whole session:
+	 * a constant cannot discriminate difficulty between turns, but it still
+	 * shifts every turn's score. Measured on a live day: the requested level
+	 * never changed within 111 of 115 conversations, `medium` (+0.14, over half
+	 * of a 0.25-wide tier band) rode on 41.6% of dispatches, and 64 of 119
+	 * `hard` dispatches reached that tier ONLY because of it — $6.66 billed
+	 * against $0.16 for the same tokens on the moderate pick.
+	 *
+	 * Tune per deployment: a harness that raises the level deliberately for hard
+	 * turns wants these weights, one that pins it session-wide wants `medium`
+	 * near zero. Defaults preserve the shipped behaviour.
+	 */
+	reasoningWeights: {
+		medium: number;
+		high: number;
+		xhigh: number;
+		max: number;
+	};
 }
 
 export interface EscalationConfig {

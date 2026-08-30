@@ -1,6 +1,6 @@
 {
   "name": "auto-model-router",
-  "version": "0.2.28",
+  "version": "0.2.29",
   "private": false,
   "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
   "type": "module",

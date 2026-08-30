@@ -85,6 +85,14 @@ const classifier = z.strictObject({
 	toolAxis: qualityAxis.optional(),
 	chatAxis: qualityAxis.optional(),
 	agenticLoopDepth: z.number().int().nonnegative().optional(),
+	reasoningWeights: z
+		.strictObject({
+			medium: z.number().nonnegative().optional(),
+			high: z.number().nonnegative().optional(),
+			xhigh: z.number().nonnegative().optional(),
+			max: z.number().nonnegative().optional(),
+		})
+		.optional(),
 });
 
 const escalation = z.strictObject({

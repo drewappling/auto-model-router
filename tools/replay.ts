@@ -37,8 +37,10 @@
  *    size (`usage.promptTokens`), i.e. the prompt selection actually saw.
  *  - `stickyUntilTurn` was never persisted per turn, so the hysteresis hold
  *    window is absent. This is the main residual gap.
- *  - `requestedReasoning` is the one `Features` field the ledger omits; it
- *    replays as undefined.
+ *  - `requestedReasoning` IS recorded and is now used. It was previously forced
+ *    to undefined here on the belief the ledger omitted it, which under-scored
+ *    ~42% of dispatches and reproduced 27 hard decisions against 120 served.
+ *    Treat replay numbers produced before that fix as biased toward cheap tiers.
  *  - Module constants are not config, so things like CAP_AUTONOMOUS_LOOP cannot
  *    be A/B'd via `--set` — only `RouterConfig` paths can.
  *
@@ -140,10 +142,20 @@ interface Row {
 	created_at_ms: number;
 }
 
-/** Rebuilds the classifier input. The ledger stores 20 of 21 Features fields. */
+/**
+ * Rebuilds the classifier input from the recorded blob.
+ *
+ * `requestedReasoning` IS recorded (JSON.stringify only drops it when the client
+ * sent no level), and it must be used: it is worth up to +0.34 of score, rides
+ * on ~42% of dispatches, and forcing it to undefined — as this did, on the
+ * assumption the ledger omitted it — under-scored every one of those rows.
+ * Measured effect of the bug: replay reproduced 27 hard-tier decisions against
+ * 120 actually served, i.e. it silently biased every comparison toward cheaper
+ * tiers and made reasoning-weight changes look like no-ops.
+ */
 function featuresOf(row: Row, promptTokens: number): Features {
 	const f = JSON.parse(row.features) as Partial<Features>;
-	return { ...(f as Features), promptTokens, requestedReasoning: undefined };
+	return { ...(f as Features), promptTokens };
 }
 
 /**
