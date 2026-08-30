@@ -102,6 +102,29 @@ score nearly as well. If your workload needs a frontier model on hard turns,
 raise the tier price ceiling and `qualityExponent` — measured thresholds are in
 [`docs/routing-benchmark-findings.md`](docs/routing-benchmark-findings.md).
 
+### Real-world — a week on the live ledger
+
+The suites above are small and clean. To measure the economics on *actual*
+usage we replayed a week of real omp traffic from the router's own ledger —
+**6 918 billed turns across 299 conversations, 7 days, 410:1 input-to-output,
+68% cache hit** — and repriced the identical token stream against a single Opus 5
+model with its own cache namespace.
+
+| | auto-model-router | Claude Opus 5 (single-model) |
+| --- | --- | --- |
+| Spend over the week | **$61.69** | $921.20 |
+| Per turn | **$0.0089** | $0.133 |
+| Extrapolated / month | **$263** | $3 932 |
+
+**≈15× cheaper, ~93% saved** — a four-figure monthly bill becomes a three-figure
+one. This baseline is deliberately conservative: one cache namespace, with each
+conversation's cache replayed on the real turn gaps. A naive like-for-like
+repricing at Opus rates reports ~31×, but on a single model the replayed context
+is cache reads at $0.50/MTok, so ≈15× is the number we stand behind. Unlike the
+core suite, sustained work on a large codebase is dominated by the conversation
+resent each turn rather than per-token price — exactly where a single frontier
+model gets expensive and routing's per-turn cache awareness pays off.
+
 ### Scope
 
 These are small, self-contained tasks of one to three files, solved in under 25
@@ -110,11 +133,6 @@ equal correctness rather than capability; the ladder is where capability
 separates. The cost multiple varied between 14× and 32× across runs depending on
 which task the baseline stalled on — treat "well over an order of magnitude" as
 the claim, not a specific figure.
-
-For sustained work on a large codebase the economics differ: cost there is
-dominated by the conversation being resent each turn rather than by per-token
-price. Replaying a week of real omp traffic (6 918 billed turns, 410:1
-input-to-output) against a single-model baseline gives **≈15×**.
 
 Harness, tasks and raw per-turn data:
 [`docs/routing-benchmark-findings.md`](docs/routing-benchmark-findings.md).
