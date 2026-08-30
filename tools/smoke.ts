@@ -140,7 +140,7 @@ async function drain(res: Response) {
 		const frame = FrameSchema.safeParse(parsed);
 		if (!frame.success) continue;
 		if (frame.data.model !== undefined) seenModel = frame.data.model;
-		if (frame.data.x_auto_model_router !== undefined) meta = frame.data.x_auto_model_router;
+		if (frame.data.x_auto_model_router !== undefined) meta = { ...(frame.data.x_auto_model_router.model === undefined ? {} : { model: frame.data.x_auto_model_router.model }), ...(frame.data.x_auto_model_router.tier === undefined ? {} : { tier: frame.data.x_auto_model_router.tier }) };
 		const delta = frame.data.choices?.[0]?.delta;
 		if (typeof delta?.content === "string") content += delta.content;
 		for (const call of delta?.tool_calls ?? []) toolArgs += call.function?.arguments ?? "";
@@ -153,7 +153,7 @@ const mock = await startMockOpenRouter("test/fixtures/openrouter-models.json");
 console.log(`mock openrouter: ${mock.url}`);
 
 const cfg = loadConfig({});
-cfg.server = { host: "127.0.0.1", port: 0 };
+cfg.server = { ...cfg.server, host: "127.0.0.1", port: 0 };
 cfg.openrouter.baseUrl = `${mock.url}/api/v1`;
 cfg.openrouter.apiKey = "sk-mock";
 cfg.ledger.path = join(home, "router.db");

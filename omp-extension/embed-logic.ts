@@ -80,22 +80,15 @@ export function deriveAgentdoxScope(cwd: string): string {
 }
 
 /**
- * Resolves the port the embedded router should serve on, in precedence order:
- * an explicit `AUTO_MODEL_ROUTER_PORT`, else the configured `server.port`, else
- * 0 (let the OS pick a free one).
+ * Resolves the desired bind port: an explicit `AUTO_MODEL_ROUTER_PORT` when set
+ * and valid, else 0 so the OS assigns a free ephemeral port.
  *
- * A STABLE port is what keeps omp's model resolution honest. omp resolves
- * `modelRoles.default` from `models.yml` during startup — BEFORE extensions
- * load, so before this session can bind and rewrite that file. With an
- * ephemeral port the block names the PREVIOUS session's port, which is dead
- * once that session exits, and every main-agent turn fails with "Unable to
- * connect" while utility calls (resolved later, from the live registration)
- * still work. A deterministic port makes the pre-bind block correct by
- * construction. Sessions sharing that port share one router, which is already
- * how subagents behave.
- *
- * `0` is still honoured when asked for explicitly, and remains the fallback
- * when the desired port is occupied by something that is not our router.
+ * Ephemeral is the DEFAULT ON PURPOSE: each interactive omp session gets its
+ * OWN router process, so sessions cannot interfere with one another and no
+ * session depends on another staying alive. `configuredPort` is honoured only
+ * when a deployment asks for a fixed port explicitly (env var, or `server.port`
+ * passed in by a caller that wants it), which is the shared/always-on shape
+ * `serve` uses for other harnesses.
  */
 export function resolveEmbedPort(envPort: string | undefined, configuredPort = 0): number {
 	if (envPort !== undefined && envPort !== "") {

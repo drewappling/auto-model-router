@@ -254,7 +254,7 @@ export async function startMockOpenRouter(fixturePath: string, port = 0): Promis
 
 	return {
 		url: `http://127.0.0.1:${server.port}`,
-		port: server.port,
+		port: server.port ?? 0,
 		control,
 		requests,
 		stop: async () => {

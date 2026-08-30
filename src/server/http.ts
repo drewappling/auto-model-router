@@ -247,7 +247,13 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	// upstream streams at once (each can run up to idleTimeout). Excess requests
 	// are rejected with 429 rather than queued, so a local flood cannot pile up
 	// unbounded upstream spend or memory.
-	const MAX_CONCURRENT_TURNS = 8;
+	//
+	// This budget is per ROUTER PROCESS, and since v0.2.23 one process serves
+	// every omp session on the machine (the port is deterministic, so peers
+	// reuse it). It therefore has to cover N interactive sessions plus their
+	// subagents, not one session — hence configurable, and defaulted higher
+	// than the 8 that used to be private to a single session.
+	const MAX_CONCURRENT_TURNS = cfg.server.maxConcurrentTurns;
 	let inFlightTurns = 0;
 	const acquireTurn = (): boolean => {
 		if (inFlightTurns >= MAX_CONCURRENT_TURNS) return false;

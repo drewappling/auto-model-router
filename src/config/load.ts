@@ -41,6 +41,20 @@ export function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
 }
 
 /**
+ * Recursive partial: `loadConfig` merges overrides key by key, so a caller may
+ * legitimately supply just `{ server: { host } }`. Typing the parameter as a
+ * flat `Partial<RouterConfig>` demanded a COMPLETE `ServerConfig` for that,
+ * which made honest call sites (the omp extension, the smoke tools) type
+ * errors — invisible ones, since those directories were outside the
+ * typechecked project until `tsconfig.all.json`.
+ */
+export type DeepPartial<T> = T extends readonly unknown[] | Date | RegExp
+	? T
+	: T extends object
+		? { [K in keyof T]?: DeepPartial<T[K]> }
+		: T;
+
+/**
  * Resolves the effective configuration:
  *   DEFAULT_CONFIG
  *   <- `$AUTO_MODEL_ROUTER_HOME/config.yml|config.yaml` (or `opts.path`)
@@ -52,7 +66,7 @@ export function deepMerge(base: RouterConfig, override: unknown): RouterConfig {
  * config work keyless; an embedded router warns at startup and completions
  * fail at dispatch time.
  */
-export function loadConfig(opts?: { path?: string; overrides?: Partial<RouterConfig> }): RouterConfig {
+export function loadConfig(opts?: { path?: string; overrides?: DeepPartial<RouterConfig> }): RouterConfig {
 	const home = resolveTilde(process.env.AUTO_MODEL_ROUTER_HOME ?? "~/.auto-model-router");
 
 	// Config file, when present.

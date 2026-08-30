@@ -40,6 +40,10 @@ const bridge = createContextBridge({
 	log,
 	maxStalenessMs: 900_000,
 	maxBlockChars: 24_000,
+	memoryLimit: 4,
+	docsLimit: 0,
+	sessionLimit: 6,
+	briefChars: 12_000,
 	recordTurns: true,
 	maxQueue: 64,
 });

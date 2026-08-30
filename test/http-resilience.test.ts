@@ -10,7 +10,7 @@ describe("HTTP server resilience against dead streams", () => {
 	beforeAll(() => {
 		const cfg: RouterConfig = {
 			...DEFAULT_CONFIG,
-			server: { host: "127.0.0.1", port: 0 },
+			server: { host: "127.0.0.1", port: 0, maxConcurrentTurns: 24 },
 			ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" },
 			context: { ...DEFAULT_CONFIG.context, enabled: false },
 			logLevel: "silent",

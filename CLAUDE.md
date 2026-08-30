@@ -141,4 +141,4 @@ A URL + token is enough to enable it; `GET /health` on the router confirms.
   guard, and `USER_VERSION` is bumped. `test/trust-attribution.test.ts` asserts the version.
 - **bun:sqlite named params must be written `$name`** in the bind object. Bare keys bind
   nothing and every column silently lands NULL.
-- Verify with `bunx tsc --noEmit` and `bun test` (406+ tests) before declaring done.
+- Verify with `bun run typecheck` (covers src, test, omp-extension, tools — the extension and tools dirs were UNCHECKED until tsconfig.all.json, which is how two port bugs shipped) and `bun test` (483 tests) before declaring done.

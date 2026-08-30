@@ -28,7 +28,7 @@ const home = mkdtempSync(join(tmpdir(), "verify-plan-persist-"));
 const mock = await startMockOpenRouter("test/fixtures/openrouter-models.json");
 
 const cfg = loadConfig({});
-cfg.server = { host: "127.0.0.1", port: 0 };
+cfg.server = { ...cfg.server, host: "127.0.0.1", port: 0 };
 cfg.openrouter.baseUrl = `${mock.url}/api/v1`;
 cfg.openrouter.apiKey = "sk-mock";
 cfg.ledger.path = join(home, "router.db");
@@ -100,8 +100,11 @@ for (let n = 1; n <= TURNS; n++) {
 	// same bytes. A dropped or altered edit rewrites the cached prefix.
 	for (const [i, content] of prev) {
 		const now = shrunk.get(i);
-		if (now === undefined) fail(`turn ${n}: edit at message ${i} was DROPPED (bytes re-inflated)`, { turn: n, i });
-		if (now !== content) fail(`turn ${n}: edit at message ${i} changed bytes`, { was: content.slice(0, 90), now: now.slice(0, 90) });
+		if (now === undefined) {
+			fail(`turn ${n}: edit at message ${i} was DROPPED (bytes re-inflated mid-prefix)`, { turn: n, i });
+		} else if (now !== content) {
+			fail(`turn ${n}: edit at message ${i} changed bytes`, { was: content.slice(0, 90), now: now.slice(0, 90) });
+		}
 	}
 
 	const added = [...shrunk.keys()].filter((i) => !prev.has(i));
@@ -122,6 +125,6 @@ console.log(`\nfloorRatio ${floorRatio}`);
 console.log(`PASS stability: no edit was ever dropped or rewritten across ${TURNS} turns`);
 console.log(`plan changes: ${changes} over ${planningTurns} compacting turns (${((changes / planningTurns) * 100).toFixed(0)}% of turns invalidate cache)`);
 
-app.stop(true);
+await app.stop();
 await mock.stop();
 process.exit(0);

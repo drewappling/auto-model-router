@@ -11,6 +11,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	server: {
 		host: "127.0.0.1",
 		port: 8788,
+		// One router process serves every omp session on this machine (the port
+		// is deterministic, so peers reuse it), so this covers N sessions plus
+		// their subagents. Was effectively 8 per session when each bound its own.
+		maxConcurrentTurns: 24,
 	},
 	openrouter: {
 		baseUrl: "https://openrouter.ai/api/v1",

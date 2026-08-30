@@ -96,7 +96,7 @@ describe("loadConfig", () => {
 
 	test("explicit overrides beat the environment", () => {
 		setEnv("AUTO_MODEL_ROUTER_PORT", "9999");
-		const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: 7777 } } });
+		const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: 7777, maxConcurrentTurns: 24 } } });
 		expect(cfg.server.port).toBe(7777);
 	});
 

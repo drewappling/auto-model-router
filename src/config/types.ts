@@ -38,6 +38,14 @@ export interface ServerConfig {
 	 * ⇒ no header (single-harness default).
 	 */
 	harnessId?: string;
+	/**
+	 * Concurrent in-flight turns this router process will accept; excess gets a
+	 * 429 rather than being queued, so a local flood cannot pile up unbounded
+	 * upstream spend. The budget is per PROCESS, and one process now serves
+	 * every omp session on the machine, so it must cover all live sessions plus
+	 * their subagents.
+	 */
+	maxConcurrentTurns: number;
 }
 
 export interface OpenRouterConfig {

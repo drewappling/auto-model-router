@@ -20,6 +20,7 @@ const server = z.strictObject({
 	port: z.number().int().min(0).max(65_535).optional(),
 	apiKey: z.string().optional(),
 	harnessId: z.string().optional(),
+	maxConcurrentTurns: z.number().int().positive().max(1_000).optional(),
 });
 
 const openrouter = z.strictObject({

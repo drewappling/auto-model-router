@@ -1,6 +1,6 @@
 {
   "name": "auto-model-router",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "private": false,
   "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
   "type": "module",
@@ -8,7 +8,8 @@
     "auto-model-router": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.all.json",
+    "typecheck:src": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run tools/smoke.ts",
     "version": "bun run tools/sync-marketplace-version.ts",

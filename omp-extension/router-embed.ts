@@ -104,11 +104,14 @@ export default function (pi: ExtensionAPI): void {
 			? join(homedir(), homeRaw.slice(1))
 			: homeRaw;
 	const portFile = embedPortPath(home);
-	// Load first WITHOUT a port override so `server.port` from config.yml is
-	// visible, then let it (or the env var) decide the bind port.
-	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1" } } });
-	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT, cfg.server.port);
-	cfg.server.port = requestedPort;
+	// Each interactive session binds its OWN router on an ephemeral port, so
+	// sessions stay independent: no shared process to contend over, and no
+	// session left broken because another one exited. `server.port` from
+	// config.yml is deliberately NOT used here — that port belongs to the
+	// standalone `serve` daemon, which may legitimately be running alongside.
+	// Set AUTO_MODEL_ROUTER_PORT to pin a fixed port on purpose.
+	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT);
+	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
 
 	let app: StartedServer | null = null;
 
@@ -141,15 +144,15 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 
-		// Main interactive session. The port is deterministic (see
-		// resolveEmbedPort), which matters because omp resolves
-		// `modelRoles.default` from models.yml BEFORE this extension loads: the
-		// URL that block names must be one this session will actually serve.
+		// Main interactive session: bind this session's OWN router, then register
+		// the provider against the exact bound port. Registration happens only
+		// here — never at factory load, where a stale shared port would be
+		// captured into omp's model registry and defeat the correct bound URL.
 		if (app) return;
 
-		// Another live session already serving this port? Share it rather than
-		// fighting over the socket — subagents already share one router, and the
-		// ledger and DB are shared regardless.
+		// A fixed port was asked for (env var) and a live router already answers
+		// there: share it rather than failing to bind. Ephemeral ports — the
+		// default — never take this path, so sessions stay independent.
 		if (requestedPort !== 0 && (await probeEmbed(requestedPort))) {
 			writeEmbedPort(portFile, requestedPort);
 			syncModelsYml(cfg, requestedPort);
@@ -158,10 +161,9 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 
-		// Bind the desired port; if something that is NOT our router holds it,
-		// fall back to an ephemeral port rather than leaving the session with no
-		// provider at all. models.yml is rewritten either way, so headless runs
-		// and subagents still resolve.
+		// Bind. If a FIXED port was requested and something else holds it, fall
+		// back to an ephemeral one rather than leaving this session with no
+		// provider at all. An ephemeral request that fails is a real error.
 		let started: StartedServer;
 		try {
 			started = startServer(cfg);
@@ -174,38 +176,40 @@ export default function (pi: ExtensionAPI): void {
 		if (actualPort === undefined) return;
 		app = started;
 
-		// Publish the shared port; subagents and the toast read it from here.
+		// Publish the port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
-
-		// What omp resolved `modelRoles.default` against at STARTUP, before this
-		// extension loaded. If it names a different port than we serve, this
-		// session's main-model handle points at a socket we are not listening on
-		// and every real turn fails with "Unable to connect" while utility calls
-		// (resolved later, from the registration below) still work. Nothing here
-		// can rebuild that handle, so say so plainly instead of leaving the user
-		// to diagnose it.
-		const advertised = modelsYmlPort(readModelsYml());
-		if (advertised !== null && advertised !== actualPort) {
-			pi.setLabel(`auto-model-router: RESTART NEEDED — omp resolved :${advertised}, router serves :${actualPort}`);
-			console.warn(
-				`[auto-model-router] models.yml advertised port ${advertised} at startup but this router serves ${actualPort}. ` +
-					`omp resolves the default model before extensions load, so this session's main model still points at ${advertised}. ` +
-					`models.yml has been corrected — restart omp once and it will be right.`,
-			);
-		}
 
 		// Keep models.yml pointing at this port. Headless runs (`-p`) and
 		// subagent processes resolve models from models.yml in a FRESH registry
 		// — extension registration does not reach them — so without this they
 		// fail with "Model not found" when no interactive session is live
 		// (the print-mode gap the external benchmark hit).
+		const advertised = modelsYmlPort(readModelsYml());
 		const syncAction = syncModelsYml(cfg, actualPort);
-		if (syncAction !== null && advertised === actualPort) pi.setLabel(`auto-model-router embed (models.yml ${syncAction})`);
+
+		// Register BEFORE any await: everything omp resolves after this point
+		// picks up the live URL, so the registration must not sit behind I/O.
 		registerRouterProvider(pi, actualPort, cfg, sessionId);
+		pi.setLabel(`auto-model-router embed :${actualPort}${syncAction === null ? "" : ` (models.yml ${syncAction})`}`);
 
 		pi.on("session_shutdown", () => {
 			void app?.stop().catch(() => {});
 			app = null;
 		});
+
+		// Diagnostic, not a guess. "provider error: Unable to connect" on real
+		// turns while utility calls keep working means omp dialled an address
+		// this router does not serve — and that text is Bun's fetch error, which
+		// names no URL. Log the facts that distinguish the cases: the port bound,
+		// the port models.yml advertised BEFORE the sync above, and whether our
+		// own socket answers.
+		const selfProbeOk = await probeEmbed(actualPort);
+		console.info(
+			`[auto-model-router] embed ready: serving :${actualPort}` +
+				` | models.yml advertised :${advertised ?? "none"} at startup` +
+				` | self-probe ${selfProbeOk ? "ok" : "FAILED"}` +
+				` | session ${sessionId}`,
+		);
+		if (!selfProbeOk) pi.setLabel(`auto-model-router: BOUND :${actualPort} BUT NOT ANSWERING`);
 	});
 }

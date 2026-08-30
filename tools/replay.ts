@@ -54,7 +54,7 @@
 import { Database } from "bun:sqlite";
 
 import { createCatalog } from "../src/catalog/openrouter-catalog.ts";
-import type { CatalogModel } from "../src/catalog/types.ts";
+import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { computeCost } from "../src/cost/forecast.ts";
@@ -207,6 +207,9 @@ function stateOf(row: Row, prior: PriorTurn | undefined): ConversationState {
 		cacheWarmAtMs: prior?.atMs ?? 0,
 		contextVersion: null,
 		contextFetchedAtMs: 0,
+		// Compaction cannot be replanned offline (messages are not recorded), so
+		// replay carries no plan: forced off in the config it replays under.
+		compactionPlan: null,
 		updatedAtMs: prior?.atMs ?? 0,
 	};
 }
@@ -256,6 +259,7 @@ if (snapshot === null) {
 	console.error(`no cached catalog in ${dbPath}; run the router once so it populates catalog_cache`);
 	process.exit(2);
 }
+const catalogSnapshot: CatalogSnapshot = snapshot;
 const bySlug = new Map(snapshot.models.map((m) => [m.slug, m]));
 const ledger = createLedger(db, cfgA);
 
@@ -302,7 +306,7 @@ function run(cfg: RouterConfig, row: Row, usage: UsageCounts, prior: PriorTurn |
 		classification: scoreHeuristic(f, cfg),
 		profile: profileOf(cfg, row.requested_model),
 		state: stateOf(row, prior),
-		snapshot,
+		snapshot: catalogSnapshot,
 		ledger,
 		cfg,
 		nowMs: Date.now(),
