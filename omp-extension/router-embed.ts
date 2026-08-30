@@ -23,7 +23,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ompModelsPath, syncModelsYml } from "../src/cli/config-cmd.ts";
+import { ompModelsPath } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
 import type { StartedServer } from "../src/server/http.ts";
@@ -207,20 +207,39 @@ export default function (pi: ExtensionAPI): void {
 		// default — never take this path, so sessions stay independent.
 		if (requestedPort !== 0 && (await probeEmbed(requestedPort))) {
 			writeEmbedPort(portFile, requestedPort);
-			syncModelsYml(cfg, requestedPort);
 			registerRouterProvider(pi, requestedPort, cfg, sessionId);
 			pi.setLabel(`auto-model-router embed (shared :${requestedPort})`);
 			return;
 		}
 
-		// Bind. If a FIXED port was requested and something else holds it, fall
-		// back to an ephemeral one rather than leaving this session with no
-		// provider at all. An ephemeral request that fails is a real error.
+		// ADOPT THE ADVERTISED PORT. This is the fix for "provider error: Unable
+		// to connect" on every real turn while utility calls kept working.
+		//
+		// omp resolves `modelRoles.default` (auto-model-router/auto) from
+		// models.yml during STARTUP — before this extension loads, so before we
+		// can bind or register anything. That resolved handle is a SNAPSHOT: a
+		// later registerProvider replaces the registry entry but cannot rewrite
+		// a handle omp already built. models.yml names the port of the LAST
+		// session that wrote it, which after a normal restart is the session the
+		// user just closed — a dead socket. Utility calls (title generation,
+		// auto-thinking) resolve AFTER our registration and so hit the live port,
+		// which is exactly the asymmetry that made this look like a router fault.
+		// Measured in the field via embed.log:
+		//   embed ready pid=61872 port=54985 models.yml-advertised=50596
+		//
+		// So bind the port omp already resolved against, whenever nothing holds
+		// it. Each session still runs its OWN router — this only chooses which
+		// port that router listens on. A live peer holding it means the handle
+		// works anyway (that peer serves it), and we fall back to ephemeral.
+		const advertised = modelsYmlPort(readModelsYml());
+		if (requestedPort === 0 && advertised !== null) cfg.server.port = advertised;
+
+		// Fall back to an ephemeral port when the preferred one is taken, rather
+		// than leaving this session with no provider at all.
 		let started: StartedServer;
 		try {
 			started = startServer(cfg);
-		} catch (err) {
-			if (requestedPort === 0) throw err;
+		} catch {
 			cfg.server.port = 0;
 			started = startServer(cfg);
 		}
@@ -232,18 +251,23 @@ export default function (pi: ExtensionAPI): void {
 		// Publish the port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
 
-		// Keep models.yml pointing at this port. Headless runs (`-p`) and
-		// subagent processes resolve models from models.yml in a FRESH registry
-		// — extension registration does not reach them — so without this they
-		// fail with "Model not found" when no interactive session is live
-		// (the print-mode gap the external benchmark hit).
-		const advertised = modelsYmlPort(readModelsYml());
-		const syncAction = syncModelsYml(cfg, actualPort);
+		// models.yml is deliberately NOT written. The port belongs to THIS
+		// process and changes every launch, so persisting it into a file omp
+		// reads at STARTUP — before this extension loads — makes a dead port
+		// authoritative for the next session's `modelRoles.default`, and that
+		// handle is a snapshot no later registration can repair. That is the
+		// regression this whole class of failure came from. The provider is
+		// registered dynamically below instead, which is what worked before the
+		// file was ever written.
+		//
+		// `auto-model-router config --write` still exists for anyone who wants a
+		// static block on purpose; the adoption above keeps such a block
+		// harmless by binding whatever port it names when that port is free.
 
 		// Register BEFORE any await: everything omp resolves after this point
 		// picks up the live URL, so the registration must not sit behind I/O.
 		registerRouterProvider(pi, actualPort, cfg, sessionId);
-		pi.setLabel(`auto-model-router embed :${actualPort}${syncAction === null ? "" : ` (models.yml ${syncAction})`}`);
+		pi.setLabel(`auto-model-router embed :${actualPort}`);
 
 		// NO `session_shutdown` teardown. That event is emitted from session
 		// DISPOSAL — including omp's provider-refresh / extension-reload path,
@@ -259,7 +283,7 @@ export default function (pi: ExtensionAPI): void {
 		writeEmbedLog(
 			`embed ready pid=${process.pid} port=${actualPort}` +
 				` models.yml-advertised=${advertised ?? "none"}` +
-				` sync=${syncAction ?? "current"}` +
+				` models.yml-untouched` +
 				` self-probe=${(await probeEmbed(actualPort)) ? "ok" : "FAILED"}` +
 				` session=${sessionId}`,
 		);
