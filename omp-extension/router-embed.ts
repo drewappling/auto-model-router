@@ -19,7 +19,7 @@
  *     - /path/to/auto-model-router/omp-extension/router-toast.ts
  */
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -49,6 +49,39 @@ function readModelsYml(): string {
 		return readFileSync(ompModelsPath(), "utf8");
 	} catch {
 		return "";
+	}
+}
+
+/**
+ * Appends one line to `$AUTO_MODEL_ROUTER_HOME/embed.log`.
+ *
+ * A FILE, deliberately: `console.*` from an extension does not reach omp's
+ * session log, so the first attempt at this diagnostic left no trace anywhere
+ * and the port lifecycle had to be reconstructed from netstat and mtimes. Best
+ * effort — a logging failure must never break a session.
+ */
+function writeEmbedLog(line: string): void {
+	try {
+		appendFileSync(join(routerHome(), "embed.log"), `${new Date().toISOString()} ${line}\n`, "utf8");
+	} catch {
+		// Unwritable home: the router still works, we just lose the breadcrumb.
+	}
+}
+
+/**
+ * Stops the router when the PROCESS ends — never when a session does.
+ * Idempotent: registered once, however many sessions this process hosts.
+ */
+let exitHooked = false;
+function trackProcessExit(): void {
+	if (exitHooked) return;
+	exitHooked = true;
+	// `exit` cannot await, and does not need to: the OS reclaims the socket.
+	// The signal hooks exist so a Ctrl-C releases the port promptly.
+	for (const signal of ["SIGINT", "SIGTERM"] as const) {
+		process.once(signal, () => {
+			void app?.stop().catch(() => {});
+		});
 	}
 }
 
@@ -94,16 +127,29 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 	});
 }
 
+/**
+ * The router bound by THIS PROCESS, and the port it serves.
+ *
+ * Module scope on purpose: Bun caches the module per process, so when omp loads
+ * the extension into a second host (its provider-refresh / reload path does
+ * exactly that) these stay visible. A second host then REUSES this router
+ * instead of binding another port and orphaning every model handle omp already
+ * resolved against the first one.
+ */
+let app: StartedServer | null = null;
+let boundPort: number | null = null;
+
+/** `$AUTO_MODEL_ROUTER_HOME`, tilde-expanded, defaulting to ~/.auto-model-router. */
+function routerHome(): string {
+	const raw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
+	return raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
+}
+
 export default function (pi: ExtensionAPI): void {
 	pi.setLabel("auto-model-router embed");
 
 	// Shared port file, written only by the main session's router.
-	const homeRaw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
-	const home =
-		homeRaw === "~" || homeRaw.startsWith("~/") || homeRaw.startsWith("~\\")
-			? join(homedir(), homeRaw.slice(1))
-			: homeRaw;
-	const portFile = embedPortPath(home);
+	const portFile = embedPortPath(routerHome());
 	// Each interactive session binds its OWN router on an ephemeral port, so
 	// sessions stay independent: no shared process to contend over, and no
 	// session left broken because another one exited. `server.port` from
@@ -113,12 +159,22 @@ export default function (pi: ExtensionAPI): void {
 	const requestedPort = resolveEmbedPort(process.env.AUTO_MODEL_ROUTER_PORT);
 	const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: requestedPort } } });
 
-	let app: StartedServer | null = null;
-
 	pi.on("session_start", async (_event, ctx) => {
 		// The omp UI session id tags every request so the toast can scope its
 		// notifications to that exact session (see router-toast.ts).
 		const sessionId = ctx.sessionManager.getSessionId();
+
+		// This module is cached per PROCESS, so `app` and `boundPort` are
+		// process-global even when omp loads the extension into more than one
+		// host. A router already bound in this process is therefore reusable:
+		// re-register it for the new session id and return. Never rebind — a
+		// second bind would take a different port and orphan every model handle
+		// omp already resolved against the first one.
+		if (app !== null && boundPort !== null) {
+			registerRouterProvider(pi, boundPort, cfg, sessionId);
+			return;
+		}
+
 		if (!ctx.hasUI) {
 			// Subagents and headless (-p) sessions prefer the main session's
 			// shared router: one process, one ledger, one place to inspect.
@@ -136,11 +192,8 @@ export default function (pi: ExtensionAPI): void {
 			const started = startServer(cfg);
 			if (started.server.port === undefined) return;
 			app = started;
-			registerRouterProvider(pi, started.server.port, cfg, sessionId);
-			pi.on("session_shutdown", () => {
-				void app?.stop().catch(() => {});
-				app = null;
-			});
+			boundPort = started.server.port;
+			registerRouterProvider(pi, boundPort, cfg, sessionId);
 			return;
 		}
 
@@ -148,7 +201,6 @@ export default function (pi: ExtensionAPI): void {
 		// the provider against the exact bound port. Registration happens only
 		// here — never at factory load, where a stale shared port would be
 		// captured into omp's model registry and defeat the correct bound URL.
-		if (app) return;
 
 		// A fixed port was asked for (env var) and a live router already answers
 		// there: share it rather than failing to bind. Ephemeral ports — the
@@ -175,6 +227,7 @@ export default function (pi: ExtensionAPI): void {
 		const actualPort = started.server.port;
 		if (actualPort === undefined) return;
 		app = started;
+		boundPort = actualPort;
 
 		// Publish the port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
@@ -192,24 +245,23 @@ export default function (pi: ExtensionAPI): void {
 		registerRouterProvider(pi, actualPort, cfg, sessionId);
 		pi.setLabel(`auto-model-router embed :${actualPort}${syncAction === null ? "" : ` (models.yml ${syncAction})`}`);
 
-		pi.on("session_shutdown", () => {
-			void app?.stop().catch(() => {});
-			app = null;
-		});
+		// NO `session_shutdown` teardown. That event is emitted from session
+		// DISPOSAL — including omp's provider-refresh / extension-reload path,
+		// which runs in a throwaway extension host while the real session keeps
+		// going. Because this module is cached per process, such a handler stops
+		// the LIVE router: every subsequent turn then fails with Bun's
+		// "Unable to connect", while utility calls that resolve after a later
+		// rebind still work — the exact asymmetry observed in the field. The
+		// router's lifetime is the PROCESS, and the OS reclaims the socket when
+		// the process exits.
+		trackProcessExit();
 
-		// Diagnostic, not a guess. "provider error: Unable to connect" on real
-		// turns while utility calls keep working means omp dialled an address
-		// this router does not serve — and that text is Bun's fetch error, which
-		// names no URL. Log the facts that distinguish the cases: the port bound,
-		// the port models.yml advertised BEFORE the sync above, and whether our
-		// own socket answers.
-		const selfProbeOk = await probeEmbed(actualPort);
-		console.info(
-			`[auto-model-router] embed ready: serving :${actualPort}` +
-				` | models.yml advertised :${advertised ?? "none"} at startup` +
-				` | self-probe ${selfProbeOk ? "ok" : "FAILED"}` +
-				` | session ${sessionId}`,
+		writeEmbedLog(
+			`embed ready pid=${process.pid} port=${actualPort}` +
+				` models.yml-advertised=${advertised ?? "none"}` +
+				` sync=${syncAction ?? "current"}` +
+				` self-probe=${(await probeEmbed(actualPort)) ? "ok" : "FAILED"}` +
+				` session=${sessionId}`,
 		);
-		if (!selfProbeOk) pi.setLabel(`auto-model-router: BOUND :${actualPort} BUT NOT ANSWERING`);
 	});
 }
