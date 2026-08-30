@@ -119,8 +119,9 @@ read/write client is `src/context/agentdox.ts` (assemble / createSession / appen
 Beyond consuming agentdox as an agent, `src/context/` is the **router↔agentdox bridge**: it
 injects shared project context into every routed turn and records turns back, attributed to
 the model that served them. See `docs/AGENTDOX-BRIDGE.md` for the current state, how to run
-it, and the open issue. Design rationale lives in
-`E:/projects/agentdox/docs/architecture/router-context-bridge.md`.
+it, and the open issue. Design rationale is the **decision log in the agentdox project brief**
+for scope `omp-router` (read it with `context_brief`) — the bridge decisions and the evidence
+behind them are recorded there as they are made.
 
 Turning the bridge on for the router itself (distinct from the MCP wiring above):
 

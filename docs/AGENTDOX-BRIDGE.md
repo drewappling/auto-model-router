@@ -1,10 +1,11 @@
 # agentdox bridge — handoff
 
-**Status:** implemented, typechecks clean, 439 tests pass, injection verified end-to-end
+**Status:** implemented, typechecks clean, 502 tests pass, injection verified end-to-end
 through omp. The write-back faults in §5 and §6 are **fixed**; `context.recordTurns` is on.
 
-Design rationale (why it is built this way):
-`E:/projects/agentdox/docs/architecture/router-context-bridge.md`.
+Design rationale (why it is built this way) is the decision log in the agentdox project
+brief for scope `omp-router` — read it with `context_brief`. The agentdox server itself:
+[github.com/drewappling/agentdox](https://github.com/drewappling/agentdox).
 
 ---
 
