@@ -22,6 +22,7 @@ import type { BlendedRate, Ledger, LedgerEntry, ModelLatency, ModelTrust, UsageC
 
 /** Estimates below this many samples are noise; the default ratio is better. */
 const MIN_CALIBRATION_SAMPLES = 20;
+const DAY_MS = 86_400_000;
 
 // Row shapes below are fixed by our own schema in util/sqlite.ts.
 interface LedgerRow {
@@ -243,9 +244,12 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const spendSinceHarnessStmt = db.query(
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND harness_id = ?",
 	);
-	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ?`);
-	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ?`);
-	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger GROUP BY slug`);
+	// `created_at_ms > ?` is always present, with a cutoff of 0 meaning all-time.
+	// One statement shape rather than two keeps the plan (and the index it uses,
+	// idx_ledger_slug_created) identical whether or not a window is configured.
+	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND created_at_ms > ?`);
+	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ? AND created_at_ms > ?`);
+	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger WHERE created_at_ms > ? GROUP BY slug`);
 	const latencyStmt = db.query(
 		`SELECT ${LATENCY_SELECT} FROM (SELECT * FROM ledger WHERE slug = ? ORDER BY created_at_ms DESC LIMIT ${LATENCY_WINDOW_ROWS})`,
 	);
@@ -349,16 +353,21 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		},
 
 		trust(slug: string, harnessId?: string): ModelTrust | null {
+			// Read the window at CALL time, not at construction: hot reload mutates
+			// the shared config object in place, so a pinned value would ignore an
+			// edit until restart. 0 => cutoff 0 => every row qualifies.
+			const cutoff = cfg.filters.trustWindowDays > 0 ? Date.now() - cfg.filters.trustWindowDays * DAY_MS : 0;
 			const row =
 				harnessId !== undefined && harnessId !== ""
-					? (trustHarnessStmt.get(slug, harnessId) as TrustRow | null)
-					: (trustStmt.get(slug) as TrustRow | null);
+					? (trustHarnessStmt.get(slug, harnessId, cutoff) as TrustRow | null)
+					: (trustStmt.get(slug, cutoff) as TrustRow | null);
 			if (row === null || row.attempts === 0) return null;
 			return toTrust(slug, row);
 		},
 
 		allTrust(): ModelTrust[] {
-			const rows = allTrustStmt.all() as (TrustRow & { slug: string })[];
+			const cutoff = cfg.filters.trustWindowDays > 0 ? Date.now() - cfg.filters.trustWindowDays * DAY_MS : 0;
+			const rows = allTrustStmt.all(cutoff) as (TrustRow & { slug: string })[];
 			return rows.map((row) => toTrust(row.slug, row));
 		},
 

@@ -168,6 +168,22 @@ export interface FilterConfig {
 	 */
 	trustScopedByHarness: boolean;
 	/**
+	 * Only count ledger rows from the last N days toward model trust. 0 (the
+	 * default) keeps the all-time behaviour.
+	 *
+	 * Trust is deliberately all-time: reliability is slow-moving, and a wide
+	 * sample keeps the demotion guard stable. The cost is that the per-slug
+	 * trust aggregate scans every row a model ever had, and that runs for each
+	 * candidate on every turn — measured on a real ledger it grows from 0.8 ms at
+	 * 9k rows to 11.6 ms at 75k, i.e. it becomes a per-turn latency tax as
+	 * history accumulates. A window bounds that scan.
+	 *
+	 * Setting it CHANGES ROUTING (smaller denominators move success rates), so
+	 * price it on the ledger with `bun tools/replay.ts --set
+	 * filters.trustWindowDays=N` before enabling.
+	 */
+	trustWindowDays: number;
+	/**
 	 * Headroom multiplier applied to estimated prompt tokens when checking a
 	 * model's context window, absorbing token-estimate error and the response.
 	 */

@@ -71,6 +71,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Shared trust by default: more samples, demotion guard stays effective
 		// even with a tiny guardrail-narrowed catalog.
 		trustScopedByHarness: false,
+		// 0 = all-time, the shipped behaviour. Reliability is slow-moving, so a
+		// wide sample is right on the merits; a window exists to bound the
+		// per-slug scan once history is large, and it changes routing, so it is
+		// opt-in after a replay run prices it.
+		trustWindowDays: 0,
 		contextHeadroom: 1.25,
 		// Latency scoring is off by default (weight 0): opt in after establishing a
 		// baseline. Expected total wait (TTFT + expected completion / throughput)

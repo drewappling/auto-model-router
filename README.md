@@ -684,13 +684,13 @@ and brief:
 ```bash
 export AGENTDOX_URL=http://localhost:3003
 export AGENTDOX_TOKEN=<pat with read+write on the scope>
-export AGENTDOX_SCOPE=ashlands        # fallback only; see below
+export AGENTDOX_SCOPE=myproject       # fallback only; see below
 ```
 
 Setting a URL and a token is enough to turn it on.
 
 The scope is **derived per workspace** from the directory basename
-(`E:/projects/ashlands` → `ashlands`), and that derivation wins. `AGENTDOX_SCOPE` /
+(`E:/projects/myproject` → `myproject`), and that derivation wins. `AGENTDOX_SCOPE` /
 `context.defaultScope` is only a fallback for workspaces it cannot resolve, because one router
 install serves every project on the machine — a slug pinned there would be sent for all of
 them, injecting one project's context into another's work. A single configured token also

@@ -218,12 +218,24 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		log.warn("initial catalog fetch failed", { error: err instanceof Error ? err.message : String(err) });
 	});
 
+	// One housekeeping timer for both tables. `unref`'d so it never holds the
+	// process open.
 	const pruneTimer = setInterval(() => {
 		try {
 			const dropped = conversations.prune(cfg.ledger.conversationTtlMs);
 			if (dropped > 0) log.debug("pruned stale conversations", { dropped });
 		} catch (err) {
 			log.warn("conversation prune failed", { error: err instanceof Error ? err.message : String(err) });
+		}
+		try {
+			// Past the staleness TTL every pin refreshes anyway, so an unreferenced
+			// block of that age has no future reader. Nothing else reclaims these:
+			// blocks are content-addressed and shared, so they accumulated for the
+			// life of the install (measured: 220 rows / 2.7 MB, 68 unreferenced).
+			const dropped = context.pruneBlocks(cfg.context.maxStalenessMs);
+			if (dropped > 0) log.debug("pruned unreferenced context blocks", { dropped });
+		} catch (err) {
+			log.warn("context block prune failed", { error: err instanceof Error ? err.message : String(err) });
 		}
 	}, 60_000);
 	pruneTimer.unref();

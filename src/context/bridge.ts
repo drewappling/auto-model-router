@@ -212,6 +212,10 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			await queue;
 		},
 
+		pruneBlocks(maxAgeMs: number) {
+			return store.prune(maxAgeMs);
+		},
+
 		close() {
 			closed = true;
 			pending.clear();
@@ -226,6 +230,7 @@ export function createDisabledBridge(): ContextBridge {
 		resolve: async () => null,
 		recordTurn: () => {},
 		flush: async () => {},
+		pruneBlocks: () => 0,
 		close: () => {},
 	};
 }

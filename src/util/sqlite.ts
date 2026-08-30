@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 13;
+const USER_VERSION = 14;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS idx_ledger_conversation ON ledger (conversation_key);
 CREATE INDEX IF NOT EXISTS idx_ledger_created ON ledger (created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_ledger_slug ON ledger (slug);
+-- Per-slug newest-first reads: the latency window (newest N rows for one slug)
+-- and any windowed trust. With only idx_ledger_slug those sorted every row the
+-- slug ever had; measured on a real ledger, the latency statement went from
+-- 5-10ms and RISING with history to a flat 0.04-0.08ms.
+CREATE INDEX IF NOT EXISTS idx_ledger_slug_created ON ledger (slug, created_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS token_calibration (
   tokenizer TEXT PRIMARY KEY,
@@ -229,6 +234,11 @@ ALTER TABLE conversations ADD COLUMN compaction_plan TEXT;
 // (src/eval), a `local`-source feed applied only when benchmarks.useLocalScores
 // is on. Another new table via the idempotent MIGRATIONS block; version bump
 // only, no ALTER guard.
+
+// v14: idx_ledger_slug_created (slug, created_at_ms DESC) serves the per-slug
+// newest-first reads — the latency window, and trust when filters.trustWindowDays
+// is set. Created idempotently by the MIGRATIONS block above, so the version bump
+// alone records it; no ALTER guard needed.
 
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.

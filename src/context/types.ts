@@ -77,6 +77,13 @@ export interface ContextBridge {
 	recordTurn(rec: TurnRecord): void;
 	/** Drains the write queue. For tests and shutdown. */
 	flush(): Promise<void>;
+	/**
+	 * Housekeeping: drops stored blocks older than `maxAgeMs` that no
+	 * conversation still pins, returning the count removed. Blocks are
+	 * content-addressed and shared, so nothing else reclaims them — without this
+	 * the table grows for the life of the install.
+	 */
+	pruneBlocks(maxAgeMs: number): number;
 	close(): void;
 }
 
@@ -87,5 +94,11 @@ export interface ContextBlockStore {
 	/** agentdox session id previously opened for a conversation. */
 	sessionFor(conversationKey: string): string | null;
 	bindSession(conversationKey: string, scope: string, sessionId: string): void;
+	/**
+	 * Drops blocks older than `maxAgeMs` that NO conversation still pins.
+	 * Returns the number removed. Referenced blocks are kept regardless of age:
+	 * deleting one would force a live conversation to refetch and re-inject
+	 * different bytes, turning housekeeping into a prompt-cache miss.
+	 */
 	prune(maxAgeMs: number): number;
 }

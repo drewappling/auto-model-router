@@ -45,7 +45,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",
@@ -583,6 +583,7 @@ describe("agentdox write-back sees the shape of the turn", () => {
 					records.push(rec);
 				},
 				flush: () => Promise.resolve(),
+				pruneBlocks: () => 0,
 				close: () => {},
 			},
 		};

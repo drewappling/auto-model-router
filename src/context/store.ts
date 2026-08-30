@@ -42,7 +42,16 @@ export function createContextStore(db: Database): ContextBlockStore {
 		VALUES ($key, $scope, $sessionId, $createdAtMs)
 		ON CONFLICT(conversation_key) DO UPDATE SET session_id = excluded.session_id
 	`);
-	const deleteStale: Statement<unknown, [number]> = db.query("DELETE FROM context_blocks WHERE fetched_at_ms < ?");
+	// Age alone is the wrong test: a block older than the staleness TTL may still
+	// be PINNED by a live conversation, and deleting it forces that conversation
+	// to refetch and re-inject different bytes — a prompt-cache miss caused by
+	// housekeeping. Blocks are content-addressed and shared, so the safe set is
+	// "old AND referenced by no conversation".
+	const deleteStale: Statement<unknown, [number]> = db.query(`
+		DELETE FROM context_blocks
+		WHERE fetched_at_ms < ?
+		  AND version NOT IN (SELECT context_version FROM conversations WHERE context_version IS NOT NULL)
+	`);
 
 	return {
 		get(version) {
