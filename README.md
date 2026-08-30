@@ -677,7 +677,7 @@ has none of the project knowledge the last one built up. Because every harness
 routes through this one provider, the router is the single place that can fix
 that for all of them at once.
 
-Point it at an [agentdox](https://github.com/…/agentdox) server and every turn —
+Point it at an [agentdox](https://github.com/drewappling/agentdox) server and every turn —
 whatever model wins the routing decision — carries the same project memory, docs,
 and brief:
 
@@ -744,8 +744,9 @@ not a dependency. If it is unreachable the turn routes and dispatches normally,
 and a pinned block keeps being served.
 
 `GET /health` reports the bridge's URL, default scope, and `recordTurns` — never
-the token. Design notes: `docs/architecture/router-context-bridge.md` in the
-agentdox repo. Live check: `bun tools/agentdox-e2e.ts`.
+the token. Design notes: [`docs/AGENTDOX-BRIDGE.md`](docs/AGENTDOX-BRIDGE.md).
+Server side: the [agentdox repo](https://github.com/drewappling/agentdox).
+Live check: `bun tools/agentdox-e2e.ts`.
 
 ---
 
