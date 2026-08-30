@@ -51,17 +51,23 @@ check("an explicit env port still wins", resolveEmbedPort("8812", configured) ==
 check("an explicit env 0 still requests an ephemeral port", resolveEmbedPort("0", configured) === 0);
 
 // 2. First session binds it; a second must see it healthy (=> reuse, no bind war).
-cfg1.server.port = portA;
+//    Uses a DISCOVERED free port, not the machine's configured one: a real
+//    router may already be serving 8788 here, and this check must be hermetic.
+const scout = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("scout") });
+const freePort = scout.port as number;
+scout.stop(true);
+cfg1.server.port = freePort;
+
 let first: StartedServer | null = null;
 try {
 	first = startServer(cfg1);
 } catch (err) {
-	check("first session can bind the deterministic port", false, String(err));
+	check("first session can bind its chosen port", false, String(err));
 }
 
 if (first !== null) {
-	check("first session bound the deterministic port", first.server.port === portA, { bound: first.server.port, wanted: portA });
-	check("router answers /health there (so a peer session reuses it)", await probeEmbed(portA), { port: portA });
+	check("first session bound the port it asked for", first.server.port === freePort, { bound: first.server.port, wanted: freePort });
+	check("router answers /health there (so a peer session reuses it)", await probeEmbed(freePort), { port: freePort });
 
 	// 3. A non-router occupant must not be mistaken for our router.
 	const squatter = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("not a router", { status: 404 }) });

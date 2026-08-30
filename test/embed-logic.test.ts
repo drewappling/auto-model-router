@@ -9,6 +9,7 @@ import {
 	EMBED_PORT_FILE,
 	EMBED_PROVIDER_ID,
 	embedPortPath,
+	modelsYmlPort,
 	readEmbedPort,
 	resolveEmbedPort,
 	writeEmbedPort,
@@ -52,6 +53,46 @@ describe("resolveEmbedPort", () => {
 		expect(resolveEmbedPort(undefined, 0)).toBe(0);
 		expect(resolveEmbedPort(undefined, -5)).toBe(0);
 		expect(resolveEmbedPort(undefined, 70_000)).toBe(0);
+	});
+});
+
+describe("modelsYmlPort", () => {
+	// This is the port omp resolves modelRoles.default against at STARTUP,
+	// before the extension loads. A disagreement with the served port means
+	// every main-agent turn in that session fails with "Unable to connect"
+	// while utility calls still work, so the extension has to detect it.
+	const REAL = `providers:
+    # BEGIN auto-model-router
+    auto-model-router:
+      baseUrl: http://127.0.0.1:58724/v1
+      api: openai-completions
+      auth: none
+      models:
+        - id: auto
+          name: Auto (auto-model-router)
+`;
+
+	test("reads the advertised port out of a real block", () => {
+		expect(modelsYmlPort(REAL)).toBe(58724);
+	});
+
+	test("returns null when our provider block is absent", () => {
+		expect(modelsYmlPort("providers:\n    openrouter:\n      baseUrl: https://openrouter.ai/api/v1\n")).toBeNull();
+		expect(modelsYmlPort("")).toBeNull();
+	});
+
+	test("is not fooled by another provider's baseUrl appearing first", () => {
+		const mixed = `providers:
+    llama.cpp:
+      baseUrl: http://127.0.0.1:8080/v1
+    auto-model-router:
+      baseUrl: http://127.0.0.1:8788/v1
+`;
+		expect(modelsYmlPort(mixed)).toBe(8788);
+	});
+
+	test("returns null when the block carries no parseable url", () => {
+		expect(modelsYmlPort("providers:\n    auto-model-router:\n      api: openai-completions\n")).toBeNull();
 	});
 });
 

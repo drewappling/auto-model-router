@@ -107,6 +107,27 @@ export function resolveEmbedPort(envPort: string | undefined, configuredPort = 0
 }
 
 /**
+ * The port omp's `models.yml` currently advertises for our provider, or null
+ * when the block is absent or unparseable.
+ *
+ * This is the port omp resolves `modelRoles.default` against DURING STARTUP,
+ * before this extension loads. If it disagrees with the port we end up serving,
+ * this session's main-model handle points somewhere we are not listening, and
+ * only a restart can rebuild it — there is no API to re-resolve an already
+ * built handle. Detecting the mismatch is what turns a baffling
+ * "Unable to connect" on every real turn into a message that names the cause.
+ */
+export function modelsYmlPort(text: string): number | null {
+	const block = /^\s*auto-model-router:\s*$/m.exec(text);
+	if (block === null) return null;
+	const rest = text.slice(block.index);
+	const url = /baseUrl:\s*http:\/\/[^\s:]+:(\d+)/.exec(rest);
+	if (url === null) return null;
+	const port = Number.parseInt(url[1] ?? "", 10);
+	return Number.isInteger(port) ? port : null;
+}
+
+/**
  * Absolute path of the shared embed port file under a router home directory.
  */
 export function embedPortPath(homeDir: string): string {

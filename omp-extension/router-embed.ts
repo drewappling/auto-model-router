@@ -19,10 +19,11 @@
  *     - /path/to/auto-model-router/omp-extension/router-toast.ts
  */
 
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { syncModelsYml } from "../src/cli/config-cmd.ts";
+import { ompModelsPath, syncModelsYml } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
 import type { StartedServer } from "../src/server/http.ts";
@@ -36,10 +37,20 @@ import {
 	EMBED_PROVIDER_ID,
 	embedPortPath,
 	readEmbedPort,
+	modelsYmlPort,
 	probeEmbed,
 	resolveEmbedPort,
 	writeEmbedPort,
 } from "./embed-logic.ts";
+
+/** omp's models.yml as text, or "" when it does not exist / cannot be read. */
+function readModelsYml(): string {
+	try {
+		return readFileSync(ompModelsPath(), "utf8");
+	} catch {
+		return "";
+	}
+}
 
 /**
  * Registers the auto-model-router provider (and its virtual models) into omp's model
@@ -166,13 +177,30 @@ export default function (pi: ExtensionAPI): void {
 		// Publish the shared port; subagents and the toast read it from here.
 		writeEmbedPort(portFile, actualPort);
 
+		// What omp resolved `modelRoles.default` against at STARTUP, before this
+		// extension loaded. If it names a different port than we serve, this
+		// session's main-model handle points at a socket we are not listening on
+		// and every real turn fails with "Unable to connect" while utility calls
+		// (resolved later, from the registration below) still work. Nothing here
+		// can rebuild that handle, so say so plainly instead of leaving the user
+		// to diagnose it.
+		const advertised = modelsYmlPort(readModelsYml());
+		if (advertised !== null && advertised !== actualPort) {
+			pi.setLabel(`auto-model-router: RESTART NEEDED — omp resolved :${advertised}, router serves :${actualPort}`);
+			console.warn(
+				`[auto-model-router] models.yml advertised port ${advertised} at startup but this router serves ${actualPort}. ` +
+					`omp resolves the default model before extensions load, so this session's main model still points at ${advertised}. ` +
+					`models.yml has been corrected — restart omp once and it will be right.`,
+			);
+		}
+
 		// Keep models.yml pointing at this port. Headless runs (`-p`) and
 		// subagent processes resolve models from models.yml in a FRESH registry
 		// — extension registration does not reach them — so without this they
 		// fail with "Model not found" when no interactive session is live
 		// (the print-mode gap the external benchmark hit).
 		const syncAction = syncModelsYml(cfg, actualPort);
-		if (syncAction !== null) pi.setLabel(`auto-model-router embed (models.yml ${syncAction})`);
+		if (syncAction !== null && advertised === actualPort) pi.setLabel(`auto-model-router embed (models.yml ${syncAction})`);
 		registerRouterProvider(pi, actualPort, cfg, sessionId);
 
 		pi.on("session_shutdown", () => {
