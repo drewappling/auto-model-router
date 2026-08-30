@@ -743,3 +743,81 @@ describe("context compaction", () => {
 		expect(tight.promptTokensSaved).toBeGreaterThan(loose.promptTokensSaved);
 	});
 });
+
+describe("hysteresis.breakHoldOnMechanical", () => {
+	// A hold bets the next turn resembles the one that armed it. A tool-result
+	// continuation the classifier has already docked, scoring below the held
+	// tier, is evidence against that bet. Measured on 24h of live traffic: 37 of
+	// 44 sticky `hard` dispatches were exactly that shape — one scoring 0.154
+	// (trivial) yet served by claude-opus-5 — $2.66 billed against $0.05 for the
+	// same tokens on the moderate pick.
+	function continuation(): NormRequest {
+		return parseChatRequest(
+			{
+				model: "auto",
+				tools: TOOLS,
+				messages: [
+					{ role: "system", content: "You are a coding agent." },
+					{ role: "user", content: "read the file" },
+					{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: '{"path":"a.ts"}' } }] },
+					{ role: "tool", tool_call_id: "c1", content: "export const x = 1;" },
+				],
+			},
+			new Headers(),
+		);
+	}
+
+	const held = state({ currentTier: "hard", currentSlug: "x-ai/grok-4.6", stickyUntilTurn: 9, turn: 1 });
+
+	function decide(req: NormRequest, breakHold: boolean) {
+		const cfg: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, breakHoldOnMechanical: breakHold } };
+		const features = extractFeatures(req, 4_000);
+		return { d: select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: held, snapshot: SNAPSHOT, ledger: null, cfg, nowMs: Date.now() }), features };
+	}
+
+	test("off by default, so a hold still pins the tier", () => {
+		expect(BASE.hysteresis.breakHoldOnMechanical).toBe(false);
+		const { d, features } = decide(continuation(), false);
+		expect(features.isToolResultContinuation).toBe(true);
+		expect(d.tier).toBe("hard");
+		expect(d.classification.source).toBe("sticky");
+	});
+
+	test("on, a mechanical continuation escapes the hold", () => {
+		const { d } = decide(continuation(), true);
+		expect(d.tier).not.toBe("hard");
+		expect(d.classification.source).not.toBe("sticky");
+		expect(d.reasons.some((r) => /hold hard broken/.test(r))).toBe(true);
+	});
+
+	test("a NON-mechanical turn still gets the hold, so flap protection survives", () => {
+		// This is the case hysteresis exists for: fresh user work mid-conversation
+		// must not bounce the model and cold-start its cache.
+		const { d, features } = decide(request("now refactor the retry helper"), true);
+		expect(features.isToolResultContinuation).toBe(false);
+		expect(d.tier).toBe("hard");
+		expect(d.classification.source).toBe("sticky");
+	});
+
+	test("the downgrade clamp still applies, so quality steps rather than falls", () => {
+		const cfg: RouterConfig = {
+			...BASE,
+			hysteresis: { ...BASE.hysteresis, breakHoldOnMechanical: true, maxDowngradePerTurn: 1 },
+		};
+		const req = continuation();
+		const features = extractFeatures(req, 4_000);
+		// Force the fresh classification far below the hold to exercise the clamp.
+		const d = select({
+			req,
+			features,
+			classification: { ...scoreHeuristic(features, cfg), tier: "trivial" },
+			profile: PROFILE,
+			state: held,
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg,
+			nowMs: Date.now(),
+		});
+		expect(d.tier).toBe("moderate");
+	});
+});

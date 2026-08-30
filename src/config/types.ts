@@ -287,6 +287,25 @@ export interface HysteresisConfig {
 	cacheWarmTtlMs: number;
 	/** Downgrade at most this many tiers per turn, so quality never falls off a cliff. */
 	maxDowngradePerTurn: number;
+	/**
+	 * Let a mechanical tool-result continuation escape a hold that sits above its
+	 * own classification.
+	 *
+	 * A hold bets that the next turn resembles the one that armed it, and it is
+	 * usually right — flapping cold-starts prompt caches. But a continuation the
+	 * classifier has already docked for being a mechanical next step, and whose
+	 * score lands below the held tier, is evidence against that bet. Measured on
+	 * 24h of live traffic: 37 of 44 sticky `hard` dispatches were exactly that,
+	 * one scoring 0.154 (trivial) yet served by claude-opus-5 — $2.66 billed
+	 * against $0.05 for the identical tokens on the moderate pick.
+	 *
+	 * Off by default: breaking a hold means a model switch, and switching costs a
+	 * cache write. Worth it when the held tier is expensive, not obviously worth
+	 * it when the tiers are close, so it is opt-in per deployment.
+	 * `maxDowngradePerTurn` still applies, so quality steps down rather than
+	 * falling off a cliff.
+	 */
+	breakHoldOnMechanical: boolean;
 }
 
 /**

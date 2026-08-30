@@ -117,10 +117,23 @@ export function select(args: SelectArgs): Decision {
 
 	// 2. Hysteresis: while the sticky window is open, never route below the
 	//    held tier — per-turn flapping would repeatedly cold-start prompt caches.
+	//
+	//    Exception, when `breakHoldOnMechanical` is on: a hold is a bet that the
+	//    NEXT turn resembles the one that armed it. A tool-result continuation
+	//    whose own score lands below the held tier is direct evidence against
+	//    that bet — the classifier already docks it for being a mechanical next
+	//    step — so paying the held tier for it buys nothing. Measured on 24h of
+	//    live traffic: 37 of 44 sticky `hard` dispatches were exactly this shape,
+	//    one scoring 0.154 (trivial) yet served by claude-opus-5; $2.66 billed
+	//    against $0.05 for the identical tokens on the moderate pick.
 	let cls = classification;
+	const mechanicalOverride =
+		cfg.hysteresis.breakHoldOnMechanical && features.isToolResultContinuation && tierIdx(effective) < tierIdx(clampTier(state.currentTier ?? effective));
 	if (state.stickyUntilTurn > state.turn && state.currentTier !== null && tierIdx(state.currentTier) >= tierIdx(effective)) {
 		const held = clampTier(state.currentTier);
-		if (held !== effective) {
+		if (mechanicalOverride) {
+			reasons.push(`hysteresis hold ${held} broken: mechanical tool-result continuation classified ${effective}`);
+		} else if (held !== effective) {
 			reasons.push(`hysteresis: holding ${held} until turn ${state.stickyUntilTurn} (classified ${effective})`);
 			cls = {
 				...classification,

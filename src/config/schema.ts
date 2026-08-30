@@ -111,6 +111,7 @@ const hysteresis = z.strictObject({
 	switchMargin: z.number().positive().optional(),
 	cacheWarmTtlMs: z.number().nonnegative().optional(),
 	maxDowngradePerTurn: z.number().int().nonnegative().optional(),
+	breakHoldOnMechanical: z.boolean().optional(),
 });
 
 const exploration = z.strictObject({

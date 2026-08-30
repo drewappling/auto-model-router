@@ -135,6 +135,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// OpenRouter sticky sessions expire in 5-10 minutes.
 		cacheWarmTtlMs: 300_000,
 		maxDowngradePerTurn: 1,
+		// Off: breaking a hold means a model switch, which costs a cache write.
+		// Enable where the held tier is expensive; see HysteresisConfig.
+		breakHoldOnMechanical: false,
 	},
 	exploration: {
 		// Opt-in. Exploration knowingly routes some turns below the tier that
