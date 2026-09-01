@@ -391,6 +391,26 @@ replaces it.
 The embedded router reports the key source via its in-process `GET /health`
 (`config` | `env` | `omp-auth-store` | `none`) — never the key itself.
 
+### Available models & guardrails
+
+The router never ships a hand-curated model list. With a key configured it
+fetches the **key-scoped catalog** (`GET /models/user`) — the exact set of
+models that key is *entitled to* under your account's active
+[OpenRouter guardrails](https://openrouter.ai/docs/guides/features/guardrails),
+provider preferences, and data policies — and routes only within it. Keyless, it
+falls back to the public `/models` for pricing and capability discovery, but
+dispatch still needs a key.
+
+Your OpenRouter guardrails — model and provider allowlists, budget limits,
+Zero-Data-Retention and privacy rules — are therefore the router's outer
+boundary: a model your key cannot reach is never a routing candidate. The
+catalog is refetched in the background every `catalogRefreshMs` (default 5 min),
+so tightening or relaxing a guardrail is picked up without a restart. If a
+guardrail narrows the eligible set below a tier's quality floor,
+`adaptiveTierFloors` (on by default) relaxes that tier to the best available
+models rather than leaving it empty — see [Adaptive tier floors](#adaptive-tier-floors)
+and [Tier rescue](#tier-rescue) below.
+
 ---
 
 ## How it runs
