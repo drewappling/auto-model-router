@@ -298,6 +298,7 @@ const configBody = `<h2>Configuration reference</h2>
   <dt>filters.minTrust / minTrustSamples</dt><dd>Demote models whose measured reliability falls below the floor once enough samples exist. <span class="default">Default: 0.7 over 12 samples.</span></dd>
   <dt>filters.contextHeadroom</dt><dd>Require a context window this multiple of the estimated prompt. <span class="default">Default: 1.25.</span></dd>
   <dt>filters.latencyWeight</dt><dd>Inflate a model's effective cost by expected wait (TTFT + completion time). <span class="default">Default: 0 (off) \u2014 opt in after establishing a baseline.</span></dd>
+  <dt>filters.maxExpectedWaitMs</dt><dd>Absolute expected-wait ceiling: a hard drop for models <em>proven</em> slower than this (≥ latencyMinSamples), regardless of price \u2014 the soft penalty above is multiplicative and capped, so it cannot demote a slow-but-cheap model. New models keep their cold-start turns. <span class="default">Default: unset (off).</span></dd>
 </dl>
 
 <h3>escalation \u2014 mid-stream recovery</h3>

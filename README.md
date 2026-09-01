@@ -577,6 +577,9 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `minTrustSamples` | `12` | Attempts before trust is enforced. |
 | `trustScopedByHarness` | `false` | `true` = each harness reads only its own trust rows. |
 | `contextHeadroom` | `1.25` | Fraction of context kept free (a model must fit prompt × this). |
+| `latencyWeight` | `0` | How hard to penalise slow models in scoring (soft multiplier on effective cost). `0` disables it. |
+| `latencyMinSamples` | `20` | Streamed samples before latency is judged against a model. |
+| `maxExpectedWaitMs` | unset | Absolute expected-wait ceiling (ms): a hard drop for models *proven* slower (≥ `latencyMinSamples`), regardless of price. The soft penalty is multiplicative and capped, so it cannot demote a slow-but-cheap model — this can. New models keep their cold-start turns; relaxed with trust in tier rescue. Undefined ⇒ off. |
 
 ### `classifier` — complexity adjudication
 

@@ -71,6 +71,12 @@ const UNMEASURED_TRUST = 0.9;
 /** Excess-ratio cap so one very slow model cannot be penalised into oblivion. */
 const LATENCY_EXCESS_CAP = 3;
 
+/** Expected total wait: time to first token plus streaming the expected completion at measured throughput. */
+function expectedWaitMs(latency: ModelLatency, expectedCompletionTokens: number): number {
+	const streamMs = latency.tokensPerSec > 0 ? (expectedCompletionTokens / latency.tokensPerSec) * 1000 : 0;
+	return latency.ttftMs + streamMs;
+}
+
 /**
  * Latency penalty as a multiplier on effective cost (>= 1; 1 = no penalty).
  *
@@ -81,13 +87,15 @@ const LATENCY_EXCESS_CAP = 3;
  * model of equal quality and price outranks a sluggish one. Capturing throughput,
  * not just TTFT, is what catches a model that starts fast but streams slowly
  * (deepseek-v4-flash: ~2s TTFT yet ~20 tok/s → ~38s total). Inert when the weight
- * is 0 or the model has too few streamed samples to judge; when throughput is
- * unmeasured it degrades to a TTFT-only comparison against the reference wait.
+ * is 0 or the model has too few streamed samples to judge.
+ *
+ * The penalty CANNOT discipline a slow-but-cheap model: it is multiplicative on a
+ * tiny cost and capped at LATENCY_EXCESS_CAP, so the model stays cheapest. That is
+ * `filters.maxExpectedWaitMs`'s job — a hard drop, applied in buildCandidates.
  */
 function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig, expectedCompletionTokens: number): number {
 	if (latency === null || filters.latencyWeight <= 0 || latency.samples < filters.latencyMinSamples) return 1;
-	const streamMs = latency.tokensPerSec > 0 ? (expectedCompletionTokens / latency.tokensPerSec) * 1000 : 0;
-	const waitMs = latency.ttftMs + streamMs;
+	const waitMs = expectedWaitMs(latency, expectedCompletionTokens);
 	const refWaitMs = filters.latencyReferenceMs + (expectedCompletionTokens / filters.latencyReferenceTokensPerSec) * 1000;
 	const excess = refWaitMs > 0 ? Math.max(0, (waitMs - refWaitMs) / refWaitMs) : 0;
 	return 1 + filters.latencyWeight * Math.min(excess, LATENCY_EXCESS_CAP);
@@ -233,6 +241,33 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
+		// Fetch latency ONCE for both the ceiling gate here and the scoring
+		// multiplier below. Absolute latency ceiling: a hard drop, mirroring the
+		// price ceiling, for models PROVEN slow (>= latencyMinSamples). The penalty
+		// alone cannot demote a slow-but-cheap model (see latencyMultiplier); this
+		// gate can. Only measured models are dropped, so a new model still gets its
+		// cold-start turns to accumulate samples. Relaxed with trust in rescue.
+		const needLatency = filters.latencyWeight > 0 || filters.maxExpectedWaitMs !== undefined;
+		const latency = needLatency
+			? (ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null)
+			: null;
+		if (
+			!relaxTrust &&
+			filters.maxExpectedWaitMs !== undefined &&
+			latency !== null &&
+			latency.samples >= filters.latencyMinSamples
+		) {
+			const waitMs = expectedWaitMs(latency, expectedCompletionTokens);
+			if (waitMs > filters.maxExpectedWaitMs) {
+				rejected.push({
+					slug,
+					reason: "over_latency_ceiling",
+					detail: `expected wait ${Math.round(waitMs)}ms > ceiling ${filters.maxExpectedWaitMs}ms (ttft ${Math.round(latency.ttftMs)}ms, ${latency.tokensPerSec.toFixed(0)} tok/s over ${latency.samples} samples)`,
+				});
+				continue;
+			}
+		}
+
 		// Every candidate is priced COLD, deliberately, and this has been measured
 		// rather than assumed. Two reasons:
 		//  1. `coldUsd` feeds the budget guard in select.ts, and a budget must
@@ -259,10 +294,6 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// 20% of the time really costs ~25% more in retries. Latency does the same
 		// for slowness (TTFT over the reference). qualityExponent 0 makes this
 		// "cheapest above the floor"; the floor does the quality work.
-		const latency =
-			filters.latencyWeight > 0
-				? (ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null)
-				: null;
 		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens);
 		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5)) * latencyMult;
 		// Score is assigned in a SECOND PASS below: both qualityNormalization and

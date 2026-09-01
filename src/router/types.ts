@@ -127,6 +127,7 @@ export type RejectionReason =
 	| "no_image_support"
 	| "below_quality_floor"
 	| "over_price_ceiling"
+	| "over_latency_ceiling"
 	| "over_budget"
 	| "denylisted"
 	| "not_allowlisted"

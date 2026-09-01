@@ -594,6 +594,31 @@ describe("latency scoring", () => {
 		const d = run({ tier: "simple", cfg: withWeight(2), ledger });
 		expect(d.slug).not.toBe(slow);
 	});
+
+	const withCeiling = (maxExpectedWaitMs: number, latencyWeight = 0): RouterConfig => ({
+		...BASE,
+		filters: { ...BASE.filters, latencyWeight, latencyReferenceMs: 5000, latencyMinSamples: 20, maxExpectedWaitMs },
+	});
+
+	test("ceiling hard-drops a proven-slow model the penalty cannot, even at weight 0", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
+		// latencyWeight 0 → the multiplier is inert; only the hard ceiling can act.
+		const d = run({ tier: "simple", cfg: withCeiling(20_000), ledger });
+		expect(d.slug).not.toBe(slow);
+	});
+
+	test("ceiling spares an under-sampled slow model (cold-start grace)", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 5 } });
+		expect(run({ tier: "simple", cfg: withCeiling(20_000), ledger }).slug).toBe(slow);
+	});
+
+	test("ceiling unset ⇒ no latency gate (proven-slow model still wins on price)", () => {
+		const slow = run({ tier: "simple" }).slug;
+		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
+		expect(run({ tier: "simple", cfg: withWeight(0), ledger }).slug).toBe(slow);
+	});
 });
 
 describe("context compaction", () => {

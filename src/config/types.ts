@@ -206,6 +206,19 @@ export interface FilterConfig {
 	latencyReferenceTokensPerSec: number;
 	/** Streamed samples required before latency is scored against a model. */
 	latencyMinSamples: number;
+	/**
+	 * Absolute expected-wait ceiling (ms). A hard drop, mirroring the price
+	 * ceiling: any model whose expected total wait (TTFT + streaming the expected
+	 * completion at its measured throughput) exceeds this is rejected outright,
+	 * regardless of tier or price. This is the gate the latency *penalty* cannot
+	 * be — the penalty is multiplicative on cost and capped, so on an ultra-cheap
+	 * model even the capped multiple leaves it cheapest; a slow-but-cheap model is
+	 * never demoted by scoring alone. Only models with at least `latencyMinSamples`
+	 * observations are dropped, so a new model still gets its cold-start turns.
+	 * Relaxed alongside trust in tier rescue so a narrowed catalog never 500s.
+	 * Undefined ⇒ off (the default).
+	 */
+	maxExpectedWaitMs?: number;
 }
 
 export interface ClassifierConfig {

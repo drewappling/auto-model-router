@@ -73,6 +73,7 @@ const filters = z.strictObject({
 	latencyReferenceMs: z.number().positive().optional(),
 	latencyReferenceTokensPerSec: z.number().positive().optional(),
 	latencyMinSamples: z.number().int().nonnegative().optional(),
+	maxExpectedWaitMs: z.number().positive().optional(),
 });
 
 const classifier = z.strictObject({
