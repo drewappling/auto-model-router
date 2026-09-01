@@ -20,6 +20,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		baseUrl: "https://openrouter.ai/api/v1",
 		// May stay empty: catalog and `config` work keyless; only dispatch fails.
 		apiKey: "",
+		// App attribution for OpenRouter's Activity/Apps ranking. `title` is the
+		// display name; `referer` is the identity OpenRouter groups requests by.
+		referer: "https://github.com/drewappling/auto-model-router",
 		title: "auto-model-router",
 		// Agent turns are long; a frontier model with tools can stream for minutes.
 		timeoutMs: 600_000,
