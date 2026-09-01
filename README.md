@@ -1,5 +1,7 @@
 # auto-model-router
 
+**[Website & benchmarks →](https://drewappling.github.io/auto-model-router/)**
+
 A local model router for [Oh My Pi](https://github.com/oh-my-pi). It presents
 itself as one keyless OpenAI-compatible provider, then picks a concrete
 OpenRouter model **per turn** based on measured price and estimated task
