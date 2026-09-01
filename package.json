@@ -12,6 +12,8 @@
     "typecheck:src": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run tools/smoke.ts",
+    "site": "bun run tools/build-site.ts",
+    "site:data": "bun run tools/export-benchmarks.ts",
     "version": "bun run tools/sync-marketplace-version.ts",
     "release": "npm version $1 && git push --follow-tags"
   },

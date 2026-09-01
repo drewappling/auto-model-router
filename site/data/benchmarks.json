@@ -1,0 +1,139 @@
+{
+  "generatedAt": "2026-08-29",
+  "baseline": "claude-opus-5",
+  "headline": {
+    "coreCostMultiple": "26.5×",
+    "coreCostMultipleLabel": "cheaper at identical correctness",
+    "realWorldMultiple": "≈15×",
+    "realWorldSavedPct": "~93%"
+  },
+  "suites": {
+    "core": {
+      "title": "Core suite — 10 coding tasks × 3 trials",
+      "note": "Both engines solved everything, so this measures cost at equal correctness. 26.5× cheaper — in fewer turns, fewer tool calls, and 19 minutes less wall clock. The one regression is time to first token: a routed turn pays for classification and dispatch before anything streams.",
+      "columns": [
+        "",
+        "auto-model-router",
+        "Claude Opus 5"
+      ],
+      "rows": [
+        [
+          "Tasks solved",
+          "30 / 30",
+          "30 / 30"
+        ],
+        [
+          "Total cost",
+          "$0.63",
+          "$16.61"
+        ],
+        [
+          "Cost per solved task",
+          "$0.0209",
+          "$0.5538"
+        ],
+        [
+          "Turns to finish",
+          "278",
+          "303"
+        ],
+        [
+          "Tool calls",
+          "265",
+          "337"
+        ],
+        [
+          "Wall clock",
+          "2 057 s",
+          "3 185 s"
+        ],
+        [
+          "Median time to first token",
+          "5 776 ms",
+          "1 490 ms"
+        ]
+      ],
+      "winnerCol": 1
+    },
+    "ladder": {
+      "title": "Difficulty ladder — 7 rungs, run twice",
+      "note": "A second suite of deliberately escalating difficulty, ending in npm semver range semantics and a minimal diff with a specified tie-break. At the top of the ladder the engines separate.",
+      "columns": [
+        "",
+        "auto-model-router",
+        "Claude Opus 5"
+      ],
+      "rows": [
+        [
+          "Run 1",
+          "5 / 7 · $0.30",
+          "5 / 7 · $6.25"
+        ],
+        [
+          "Run 2",
+          "5 / 7 · $0.46",
+          "6 / 7 · $6.60"
+        ]
+      ],
+      "winnerCol": 1
+    },
+    "routed": {
+      "title": "What it routed to",
+      "note": "Across 464 routed turns in all five runs. Tier escalation converts to a costlier model roughly one-for-one; the escalation target is chosen live from trust and latency history, so it differs between runs on the same catalog.",
+      "columns": [
+        "Model",
+        "Turns",
+        "Input price",
+        "Role"
+      ],
+      "rows": [
+        [
+          "z-ai/glm-5.3-flash",
+          "389 (84%)",
+          "$0.07 / MTok",
+          "default"
+        ],
+        [
+          "google/gemini-3.7-flash",
+          "56 (12%)",
+          "$0.75 / MTok",
+          "escalation target"
+        ],
+        [
+          "x-ai/grok-4.6",
+          "18 (4%)",
+          "$2.00 / MTok",
+          "escalation target"
+        ]
+      ]
+    },
+    "realWorld": {
+      "title": "Real-world — a week on the live ledger",
+      "note": "6 918 billed turns across 299 conversations, 7 days, 410:1 input-to-output, 68% cache hit — the identical token stream repriced against a single Opus 5 model with its own cache namespace. ≈15× cheaper, ~93% saved: a four-figure monthly bill becomes a three-figure one.",
+      "columns": [
+        "",
+        "auto-model-router",
+        "Claude Opus 5 (single-model)"
+      ],
+      "rows": [
+        [
+          "Spend over the week",
+          "$61.69",
+          "$921.20"
+        ],
+        [
+          "Per turn",
+          "$0.0089",
+          "$0.133"
+        ],
+        [
+          "Extrapolated / month",
+          "$263",
+          "$3 932"
+        ]
+      ],
+      "winnerCol": 1
+    }
+  },
+  "ledgerSnapshot": null
+}
