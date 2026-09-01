@@ -249,6 +249,13 @@ pi install git:github.com/drewappling/auto-model-router</code></pre>
 <p>There is exactly one OpenRouter key on the machine, owned by omp. Once you have run <code>/login openrouter</code> inside omp, auto-model-router borrows that key with no config and no second copy to rotate or leak. Alternatively set <code>OPENROUTER_API_KEY</code> in the environment, or <code>openrouter.apiKey</code> in <code>config.yml</code>.</p>
 <p class="note">The catalog and the <code>config</code> command work keyless; only dispatch needs a key.</p>
 
+<h2>Available models &amp; guardrails</h2>
+<p>The router never ships a hand-curated model list. When an OpenRouter key is configured it fetches the key-scoped catalog (<code>GET /models/user</code>) \u2014 the exact set of models that key is <strong>entitled to</strong> under your account's active <a href="https://openrouter.ai/docs/guides/features/guardrails">guardrails</a>, provider preferences, and data policies \u2014 and routes only within it. Keyless, it falls back to the public catalog for pricing and capability discovery, but dispatch still needs a key.</p>
+<p>This means your OpenRouter <a href="https://openrouter.ai/docs/guides/features/guardrails">guardrails</a> \u2014 model and provider allowlists, budget limits, Zero-Data-Retention and privacy rules \u2014 are the router's outer boundary: a model your key cannot reach is never a routing candidate. The catalog is refetched in the background every few minutes, so tightening or relaxing a guardrail is picked up without a restart.</p>
+<div class="card">
+  <p class="note"><strong>Narrow guardrails still route.</strong> If a guardrail shrinks the eligible set so far that a complexity tier's quality floor admits nothing, <code>adaptiveTierFloors</code> (on by default) relaxes that tier's economic envelope to the best available models rather than leaving it empty \u2014 so the router keeps working on a tightly restricted key instead of stalling on the cheapest tier.</p>
+</div>
+
 <h2>Activating it</h2>
 <p>After installing, <strong>restart the omp session</strong> (extensions load at session start), then run <code>/model</code> and pick <code>auto-model-router/auto</code>.</p>
 <div class="card">
@@ -268,7 +275,7 @@ const configBody = `<h2>Configuration reference</h2>
 
 <h3>openrouter \u2014 upstream &amp; attribution</h3>
 <dl class="knobs">
-  <dt>openrouter.apiKey</dt><dd>OpenRouter key. <span class="default">Default: empty \u2014 borrowed from omp's credential store, or <code>OPENROUTER_API_KEY</code>.</span></dd>
+  <dt>openrouter.apiKey</dt><dd>OpenRouter key. The router routes only within the models this key is entitled to under your <a href="https://openrouter.ai/docs/guides/features/guardrails">OpenRouter guardrails</a> (fetched via <code>/models/user</code>). <span class="default">Default: empty \u2014 borrowed from omp's credential store, or <code>OPENROUTER_API_KEY</code>.</span></dd>
   <dt>openrouter.title / openrouter.referer</dt><dd>App attribution for OpenRouter's Activity/Apps ranking. <code>title</code> is the display name; <code>referer</code> is the identity requests are grouped by. <span class="default">Default: <code>auto-model-router</code> and the project URL.</span></dd>
   <dt>openrouter.timeoutMs</dt><dd>Per-request timeout. Agent turns are long. <span class="default">Default: 600000 (10 min).</span></dd>
 </dl>
