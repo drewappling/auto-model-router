@@ -243,6 +243,13 @@ export interface ClassifierConfig {
 	/** Tool-loop depth above which the agentic axis takes over. */
 	agenticLoopDepth: number;
 	/**
+	 * Fraction of the failed-tool weight that survives when the turn is a
+	 * mechanical tool-result continuation. A retry after a failed tool call is
+	 * the most mechanical turn there is; the flat weight let automated retry
+	 * loops buy the hard tier. 1 preserves the shipped behaviour.
+	 */
+	mechanicalRetryFactor: number;
+	/**
 	 * Score added when the CLIENT asks for a reasoning effort, per level. The
 	 * premise is that asking for reasoning states expected difficulty directly.
 	 *

@@ -118,7 +118,21 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 		Math.max(f.trivialityKeywords.length * W_TRIVIALITY_KEYWORD, CAP_TRIVIALITY),
 		`triviality keywords [${f.trivialityKeywords.join(", ")}]`,
 	);
-	if (f.lastToolFailed) add(W_TOOL_FAILED, "last tool result failed");
+	if (f.lastToolFailed) {
+		// A retry after a failed tool call is the MOST mechanical turn there is:
+		// no new user intent, same prompt prefix, the harness just re-asks. The
+		// flat +0.26 let an automated retry loop buy the hard tier ($7.02 of one
+		// measured day vs $0.19 for the same rows as moderate picks). A
+		// continuation keeps only a small nudge; a genuine user-visible failure
+		// (NOT a tool-result continuation) keeps the full weight.
+		const failed = f.isToolResultContinuation ? W_TOOL_FAILED * cfg.classifier.mechanicalRetryFactor : W_TOOL_FAILED;
+		add(
+			failed,
+			f.isToolResultContinuation
+				? `last tool result failed (mechanical retry, damped x${cfg.classifier.mechanicalRetryFactor})`
+				: "last tool result failed",
+		);
+	}
 	if (f.circularToolCall) add(W_CIRCULAR_LOOP, "circular tool call (re-issued a prior call; stuck)");
 	const rw = reasoningWeight(f.requestedReasoning, cfg);
 	if (rw > 0) add(rw, `client requested reasoning=${f.requestedReasoning ?? ""}`);

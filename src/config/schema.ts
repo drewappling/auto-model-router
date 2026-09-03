@@ -86,6 +86,7 @@ const classifier = z.strictObject({
 	toolAxis: qualityAxis.optional(),
 	chatAxis: qualityAxis.optional(),
 	agenticLoopDepth: z.number().int().nonnegative().optional(),
+	mechanicalRetryFactor: z.number().min(0).max(1).optional(),
 	reasoningWeights: z
 		.strictObject({
 			medium: z.number().nonnegative().optional(),

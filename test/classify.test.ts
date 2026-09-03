@@ -269,9 +269,30 @@ describe("scoreHeuristic", () => {
 		expect(deepCircular.tier).toBe("hard");
 	});
 
-	test("a failing tool result on a deep loop is at least moderate", () => {
+	test("a failing tool result on a deep loop is at least simple", () => {
+		// Was 'at least moderate' before the mechanical-retry damp: the flat
+		// +0.26 pushed deep mechanical retry loops into hard. A damped retry
+		// still clears trivial.
 		const deepAndFailing = scoreHeuristic(contFeatures(20, { lastToolFailed: true }), BASE);
-		expect(tierIdx(deepAndFailing.tier)).toBeGreaterThanOrEqual(tierIdx("moderate"));
+		expect(tierIdx(deepAndFailing.tier)).toBeGreaterThanOrEqual(tierIdx("simple"));
+	});
+
+	test("a failed-tool retry on a mechanical continuation is damped, not hard", () => {
+		// A retry after a failed tool call is the most mechanical turn there is;
+		// the flat +0.26 let automated retry loops buy the hard tier ($7.02 of one
+		// measured day vs $0.19 for the same rows as moderate picks). The
+		// continuation keeps only mechanicalRetryFactor of the weight.
+		const retry = scoreHeuristic(contFeatures(20, { lastToolFailed: true }), BASE);
+		const quiet = scoreHeuristic(contFeatures(20), BASE);
+		expect(tierIdx(retry.tier)).toBeLessThan(tierIdx("hard"));
+		expect(retry.score - quiet.score).toBeCloseTo(
+			BASE.classifier.mechanicalRetryFactor * 0.26,
+			5,
+		);
+		// A failure the USER sees (not a tool-result continuation) keeps the full
+		// weight: that genuinely changes what the turn needs.
+		const userSeen = scoreHeuristic(contFeatures(2, { isToolResultContinuation: false, lastToolFailed: true }), BASE);
+		expect(userSeen.score - scoreHeuristic(contFeatures(2, { isToolResultContinuation: false }), BASE).score).toBeCloseTo(0.26, 5);
 	});
 });
 
