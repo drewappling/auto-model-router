@@ -183,6 +183,11 @@ export interface ModelLatency {
 	tokensPerSec: number;
 }
 
+export interface LedgerSignals {
+	trust: ModelTrust | null;
+	latency: ModelLatency | null;
+}
+
 export interface Ledger {
 	record(entry: LedgerEntry): void;
 	/** Total reported (or predicted, when reported is null) spend for a conversation. */
@@ -203,6 +208,8 @@ export interface Ledger {
 	 * how fast the body streams once it starts.
 	 */
 	latency(slug: string, harnessId?: string): ModelLatency | null;
+	/** Batch trust and latency for one candidate set; one query per signal kind. Optional — callers can fall back to per-slug calls. */
+	signals?(slugs: readonly string[], harnessId?: string): Map<string, LedgerSignals>;
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];

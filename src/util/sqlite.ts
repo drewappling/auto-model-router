@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 14;
+const USER_VERSION = 15;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -76,6 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_ledger_slug ON ledger (slug);
 -- slug ever had; measured on a real ledger, the latency statement went from
 -- 5-10ms and RISING with history to a flat 0.04-0.08ms.
 CREATE INDEX IF NOT EXISTS idx_ledger_slug_created ON ledger (slug, created_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_harness_created ON ledger (harness_id, created_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_slug_harness_created ON ledger (slug, harness_id, created_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS token_calibration (
   tokenizer TEXT PRIMARY KEY,
@@ -239,6 +241,10 @@ ALTER TABLE conversations ADD COLUMN compaction_plan TEXT;
 // newest-first reads — the latency window, and trust when filters.trustWindowDays
 // is set. Created idempotently by the MIGRATIONS block above, so the version bump
 // alone records it; no ALTER guard needed.
+
+// v15: idx_ledger_harness_created and idx_ledger_slug_harness_created serve
+// harness-scoped daily spend, trust, and latency windows. Created idempotently
+// by MIGRATIONS; no ALTER guard needed.
 
 export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.

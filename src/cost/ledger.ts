@@ -18,7 +18,7 @@ import type { RouterConfig } from "../config/types.ts";
 import { consumePendingEstimate } from "../tokens/estimate.ts";
 import { computeBlendedRate } from "./blended.ts";
 import { computeCost } from "./forecast.ts";
-import type { BlendedRate, Ledger, LedgerEntry, ModelLatency, ModelTrust, UsageCounts } from "./types.ts";
+import type { BlendedRate, Ledger, LedgerEntry, LedgerSignals, ModelLatency, ModelTrust, UsageCounts } from "./types.ts";
 
 /** Estimates below this many samples are noise; the default ratio is better. */
 const MIN_CALIBRATION_SAMPLES = 20;
@@ -378,6 +378,24 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 					: (latencyStmt.get(slug) as LatencyRow | null);
 			if (row === null) return null;
 			return toLatency(slug, row);
+		},
+		signals(slugs: readonly string[], harnessId?: string): Map<string, LedgerSignals> {
+			const cutoff = cfg.filters.trustWindowDays > 0 ? Date.now() - cfg.filters.trustWindowDays * DAY_MS : 0;
+			const hasHarness = harnessId !== undefined && harnessId !== "";
+			const out = new Map<string, LedgerSignals>();
+			for (const slug of slugs) {
+				const trustRow = hasHarness
+					? (trustHarnessStmt.get(slug, harnessId, cutoff) as TrustRow | null)
+					: (trustStmt.get(slug, cutoff) as TrustRow | null);
+				const latencyRow = hasHarness
+					? (latencyHarnessStmt.get(slug, harnessId) as LatencyRow | null)
+					: (latencyStmt.get(slug) as LatencyRow | null);
+				out.set(slug, {
+					trust: trustRow === null || trustRow.attempts === 0 ? null : toTrust(slug, trustRow),
+					latency: latencyRow === null ? null : toLatency(slug, latencyRow),
+				});
+			}
+			return out;
 		},
 
 		tokenRatio(tokenizer: string): number | null {

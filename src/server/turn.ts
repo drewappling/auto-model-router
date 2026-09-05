@@ -36,6 +36,23 @@ import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk } from "../w
  */
 const MAX_SAME_TIER_FAILOVERS = 2;
 
+/**
+ * Probe signals that indict the PROVIDER rather than the tier: an empty
+ * stream, a refusal, or an error finish says nothing about whether the work
+ * needed a stronger model. Measured on 7 days of live traffic, 49 of 71
+ * escalations re-dispatched the very slug that had just failed, one tier up,
+ * paying the tier premium for a provider hiccup. These signals get the same
+ * same-tier failover an HTTP 5xx gets, and only then step up a tier. Structural
+ * signals (malformed arguments, a repeated call) still escalate directly — a
+ * stronger model is the remedy there.
+ */
+const PROVIDER_SIGNALS: ReadonlySet<string> = new Set(["empty_completion", "refusal", "upstream_error"]);
+
+/** A client hang-up: the request signal fired, or the transport reported the abort. */
+function isClientAbort(err: unknown, signal: AbortSignal): boolean {
+	return signal.aborted || (err instanceof UpstreamError && err.kind === "aborted");
+}
+
 export interface TurnDeps {
 	config: RouterConfig;
 	router: Router;
@@ -239,6 +256,28 @@ export async function runTurn(
 			conversations.accrue(req.conversationKey, { spentUsd: reportedUsd ?? decision.forecast.expectedUsd });
 		};
 
+		// Same-tier failover: re-route with every failed slug excluded and accept
+		// the result only if it stays in this tier on a different model. A
+		// 404/429/5xx, an empty stream, or a refusal indicts the slug, not the
+		// tier, so a sibling is tried before the tier is abandoned. Returns null
+		// when the bound is hit or the router widened tiers on its own; the
+		// caller then falls through to tier escalation.
+		const trySameTierFailover = async (why: string): Promise<Decision | null> => {
+			if (sameTierFailovers >= MAX_SAME_TIER_FAILOVERS) return null;
+			let failover: Decision | null = null;
+			try {
+				failover = await router.route(req, { attempt: attempt + 1, excludeSlugs: failedSlugs });
+			} catch {
+				// A routing failure here must not kill the turn; tier escalation
+				// may still find a model.
+				return null;
+			}
+			if (failover === null || failover.tier !== decision.tier || failedSlugs.includes(failover.slug)) return null;
+			sameTierFailovers++;
+			failover.reasons = [...failover.reasons, `failover: ${decision.slug} ${why}; retrying ${failover.slug} in ${failover.tier}`];
+			return failover;
+		};
+
 		// "retry" re-enters the attempt loop; "done" means the turn is settled
 		// (client told, or client gone) and runTurn must return.
 		const onUpstreamError = async (err: unknown): Promise<"retry" | "done"> => {
@@ -261,30 +300,15 @@ export async function runTurn(
 			}
 			if (uerr.retryable && attempt + 1 < maxAttempts) {
 				failedSlugs.push(decision.slug);
-				if (sameTierFailovers < MAX_SAME_TIER_FAILOVERS) {
-					// Before jumping a tier, try a DIFFERENT model in the same
-					// tier: a 404/429/5xx indicts the slug, not the tier.
-					let failover: Decision | null = null;
-					try {
-						failover = await router.route(req, { attempt: attempt + 1, excludeSlugs: failedSlugs });
-					} catch {
-						// A routing failure here must not kill the turn; tier
-						// escalation below may still find a model.
-						failover = null;
-					}
-					if (failover !== null && failover.tier === decision.tier && !failedSlugs.includes(failover.slug)) {
-						sameTierFailovers++;
-						failover.reasons = [
-							...failover.reasons,
-							`failover: ${decision.slug} returned ${uerr.kind}; retrying ${failover.slug} in ${failover.tier}`,
-						];
-						pendingDecision = failover;
-						await writeEntry({ wasted: true, escalationSignal: null, error: `${uerr.kind}: ${uerr.message}` });
-						return "retry";
-					}
-					// No different candidate at this tier — the router widened on
-					// its own or only the failed slug qualifies. Fall through to
-					// tier escalation.
+				// Before jumping a tier, try a DIFFERENT model in the same tier:
+				// a 404/429/5xx indicts the slug, not the tier. Null means no other
+				// candidate at this tier — the router widened on its own or only
+				// the failed slug qualifies — so fall through to tier escalation.
+				const failover = await trySameTierFailover(`returned ${uerr.kind}`);
+				if (failover !== null) {
+					pendingDecision = failover;
+					await writeEntry({ wasted: true, escalationSignal: null, error: `${uerr.kind}: ${uerr.message}` });
+					return "retry";
 				}
 				const topTier = TIER_ORDER[TIER_ORDER.length - 1];
 				if (decision.tier !== topTier) {
@@ -307,6 +331,11 @@ export async function runTurn(
 		let escalateVerdict: Extract<ProbeVerdict, { action: "escalate" }> | null = null;
 		let streamError: unknown = null;
 		let sinkDied = false;
+		// The upstream generation ran to its end — either the stream closed
+		// normally, or the client hung up after the finish event had already
+		// arrived. Both are settled generations; only the second used to be
+		// recorded as an error.
+		let streamEnded = false;
 
 		try {
 			dispatch = await upstream.dispatch({ body, sessionId: decision.sessionId, signal: attemptSignal });
@@ -374,27 +403,42 @@ export async function runTurn(
 					attemptAbort.abort();
 					break;
 				}
-				if (!committed && escalateVerdict === null) {
-					const verdict = probe.verdictOnEnd();
-					if (verdict.action === "commit") {
-						committed = true;
-						for (const heldChunk of probe.held()) await emit(heldChunk);
-					} else {
-						escalateVerdict = verdict;
-						attemptAbort.abort();
-					}
-				}
+				if (escalateVerdict === null) streamEnded = true;
 			} catch (err) {
 				if (escalateVerdict !== null || attemptAbort.signal.aborted) {
 					// Teardown noise from our own abort; the escalate path owns the outcome.
 				} else if (err instanceof SinkError) {
 					sinkDied = true;
+				} else if (finishReason !== null && isClientAbort(err, signal)) {
+					// The client closed the connection AFTER the finish event: the
+					// generation is complete and billed, the client already has its
+					// answer, only the trailing `[DONE]` went unread. Measured live:
+					// 1,842 of 2,068 "request aborted" rows carried a finish reason
+					// and full usage, and every one skipped the state save below —
+					// stale hysteresis, cache-warmth, and compaction state on 12% of
+					// turns. A settled generation is settled however the socket
+					// closed.
+					streamEnded = true;
 				} else {
 					streamError = err;
 				}
 			} finally {
 				// Never leak the upstream connection, whatever happened above.
 				attemptAbort.abort();
+			}
+			if (streamEnded && !committed && escalateVerdict === null) {
+				const verdict = probe.verdictOnEnd();
+				if (verdict.action === "commit") {
+					committed = true;
+					try {
+						for (const heldChunk of probe.held()) await emit(heldChunk);
+					} catch (err) {
+						if (err instanceof SinkError) sinkDied = true;
+						else streamError = err;
+					}
+				} else {
+					escalateVerdict = verdict;
+				}
 			}
 		}
 
@@ -408,6 +452,26 @@ export async function runTurn(
 		}
 
 		if (escalateVerdict !== null) {
+			// The model that produced the rejected output must not serve the
+			// retry, at this tier or the next: without this, 49 of 71 measured
+			// escalations re-dispatched the same slug one tier up.
+			failedSlugs.push(decision.slug);
+			if (PROVIDER_SIGNALS.has(escalateVerdict.signal) && attempt + 1 < maxAttempts) {
+				const failover = await trySameTierFailover(`${escalateVerdict.signal} (${escalateVerdict.reason})`);
+				if (failover !== null) {
+					pendingDecision = failover;
+					await writeEntry({ wasted: true, escalationSignal: escalateVerdict.signal, error: null });
+					log.info("same-tier failover", {
+						signal: escalateVerdict.signal,
+						reason: escalateVerdict.reason,
+						from: decision.slug,
+						to: failover.slug,
+						tier: decision.tier,
+						attempt,
+					});
+					continue;
+				}
+			}
 			const hasRunway = attempt + 1 < maxAttempts && decision.probe.escalateTo !== null;
 			if (hasRunway) {
 				escalations++;

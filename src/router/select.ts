@@ -268,6 +268,12 @@ export function select(args: SelectArgs): Decision {
 	// The task type selects the quality axis and capability filters; the tier
 	// still bounds cost (task selects, tier budgets).
 	const warmSlug = cacheWarm ? state.cacheWarmSlug : null;
+	// Pre-fetch trust/latency signals for all candidate slugs in one batch
+	// query per signal kind, instead of per-model individual lookups.
+	const candidateSignals =
+		ledger !== null && snapshot.models.length > 0
+			? ledger.signals?.(snapshot.models.map((m) => m.slug), cfg.filters.trustScopedByHarness ? req.harnessId : undefined)
+			: undefined;
 	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,
@@ -281,12 +287,12 @@ export function select(args: SelectArgs): Decision {
 			warmSlug,
 			relaxLevel,
 			...(args.excludeSlugs === undefined ? {} : { excludeSlugs: args.excludeSlugs }),
+			...(candidateSignals === undefined ? {} : { signals: candidateSignals }),
 		});
 	let chosenTier = effective;
 	let built: { candidates: Candidate[]; rejected: Rejection[] } | null = null;
 	// Relax level the tier rescue used (0 = no rescue). The budget downgrade
 	// search must rebuild at the same level, or it re-applies the strict config
-	// that excluded every model and throws instead of downgrading.
 	let rescuedRelax = 0;
 	for (const t of wideningOrder(effective, profile.minTier, profile.maxTier)) {
 		const b = build(t);
@@ -377,6 +383,7 @@ export function select(args: SelectArgs): Decision {
 		perDayUsd: profile.budget?.perDayUsd ?? cfg.budget.perDayUsd,
 		onExceeded: profile.budget?.onExceeded ?? cfg.budget.onExceeded,
 	};
+	const daySpend = budget.perDayUsd !== undefined ? (ledger?.spendSince(nowMs - DAY_MS, req.harnessId) ?? 0) : 0;
 	const breach = (c: Candidate): string | null => {
 		if (budget.perTurnUsd !== undefined && c.forecast.coldUsd > budget.perTurnUsd) {
 			return `cold forecast $${c.forecast.coldUsd.toFixed(4)} > per-turn budget $${budget.perTurnUsd}`;
@@ -388,7 +395,6 @@ export function select(args: SelectArgs): Decision {
 			// Scope the rolling 24h ceiling to the requesting harness when it
 			// identifies itself, so multiple harnesses sharing one router each get
 			// their own daily budget instead of one exhausting it for the others.
-			const daySpend = ledger?.spendSince(nowMs - DAY_MS, req.harnessId) ?? 0;
 			if (daySpend + c.forecast.coldUsd > budget.perDayUsd) {
 				return `24h spend $${daySpend.toFixed(4)} + cold forecast > per-day budget $${budget.perDayUsd}`;
 			}

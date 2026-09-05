@@ -281,6 +281,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		try {
 			normReq = parseChatRequest(await req.json(), req.headers);
 		} catch (err) {
+			// The slot was acquired before parsing; a rejected body never reaches
+			// runTurn's `finally`, so it must be released here or every malformed
+			// request permanently consumes one of maxConcurrentTurns.
+			releaseTurn();
 			if (err instanceof WireErrorException) return wireErrorResponse(err.wireError);
 			return wireErrorResponse({
 				status: 400,

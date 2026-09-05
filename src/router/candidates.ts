@@ -7,12 +7,14 @@
 import type { CatalogModel, CatalogSnapshot } from "../catalog/types.ts";
 import type { FilterConfig, QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
-import type { Ledger, ModelLatency } from "../cost/types.ts";
+import type { Ledger, LedgerSignals, ModelLatency } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
 import { effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
 import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
 
 export interface BuildCandidatesArgs {
+	/** Pre-fetched trust/latency signals for all candidate slugs. When provided, buildCandidates uses these instead of per-slug ledger calls. */
+	signals?: Map<string, LedgerSignals>;
 	req: NormRequest;
 	features: Features;
 	tier: Tier;
@@ -230,8 +232,14 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
+		// Use pre-fetched signals when available (batch lookup, one query per
+		// signal kind for the entire candidate set instead of one per model).
+		// Falls back to per-slug calls when signals is not provided (e.g. tests).
+		const signals = args.signals;
 		const trust =
-			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null;
+			signals?.get(slug)?.trust ??
+			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ??
+			null;
 		if (!relaxTrust && trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
 			rejected.push({
 				slug,
@@ -249,7 +257,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// cold-start turns to accumulate samples. Relaxed with trust in rescue.
 		const needLatency = filters.latencyWeight > 0 || filters.maxExpectedWaitMs !== undefined;
 		const latency = needLatency
-			? (ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ?? null)
+			? (signals?.get(slug)?.latency ??
+				ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ??
+				null)
 			: null;
 		if (
 			!relaxTrust &&
