@@ -133,7 +133,23 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 				: "last tool result failed",
 		);
 	}
-	if (f.circularToolCall) add(W_CIRCULAR_LOOP, "circular tool call (re-issued a prior call; stuck)");
+	if (f.circularToolCall) {
+		// Same logic as the failed-tool clamp above, measured separately: a hard
+		// escalation driven by a circular call NEVER shortened the loop (chains
+		// starting at hard: mean 5.74 turns; chains starting at moderate: mean
+		// 5.74 — identical). The loop ends when the underlying state changes,
+		// not because a pricier model re-read the same tool result. On a
+		// mechanical continuation the circular flag is a stuck retry, not novel
+		// difficulty, so it takes the same damping as the failed-tool bonus;
+		// off a continuation (fresh user turn) it keeps full weight.
+		const circ = f.isToolResultContinuation ? W_CIRCULAR_LOOP * cfg.classifier.mechanicalRetryFactor : W_CIRCULAR_LOOP;
+		add(
+			circ,
+			f.isToolResultContinuation
+				? `circular tool call (mechanical retry, damped x${cfg.classifier.mechanicalRetryFactor})`
+				: "circular tool call (re-issued a prior call; stuck)",
+		);
+	}
 	const rw = reasoningWeight(f.requestedReasoning, cfg);
 	if (rw > 0) add(rw, `client requested reasoning=${f.requestedReasoning ?? ""}`);
 	if (f.isTerseInstruction) add(W_TERSE, "terse instruction");

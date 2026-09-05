@@ -263,10 +263,24 @@ describe("scoreHeuristic", () => {
 		expect(scoreHeuristic(contFeatures(400), BASE).tier).toBe("moderate");
 	});
 
-	test("a circular tool call on a deep loop escalates to hard", () => {
-		// The stuck signal raw depth misses: a prior call re-issued verbatim.
-		const deepCircular = scoreHeuristic(contFeatures(90, { circularToolCall: true }), BASE);
+	test("a circular tool call on a FRESH turn escalates to hard", () => {
+		// Off a continuation the stuck signal keeps full weight: the user is
+		// watching a live loop and a pricier model may actually break it.
+		const deepCircular = scoreHeuristic(
+			{ ...contFeatures(90, { circularToolCall: true }), isToolResultContinuation: false },
+			BASE,
+		);
 		expect(deepCircular.tier).toBe("hard");
+	});
+
+	test("a circular tool call on a mechanical continuation is damped, not hard", () => {
+		// Measured: hard escalations on circular calls never shortened the loop
+		// (chain means identical, 5.74 turns, hard vs moderate). 22 of 27 such
+		// hard turns were mechanical continuations paying up to 6x for nothing.
+		const retry = scoreHeuristic(contFeatures(90, { circularToolCall: true }), BASE);
+		const plain = scoreHeuristic(contFeatures(90), BASE);
+		expect(tierIdx(retry.tier)).toBeLessThanOrEqual(tierIdx("moderate"));
+		expect(retry.score).toBeLessThan(plain.score + 0.24);
 	});
 
 	test("a failing tool result on a deep loop is at least simple", () => {
