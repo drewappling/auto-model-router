@@ -333,7 +333,11 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			filters.escalationCostWeight > 0 && args.escalationUsdPerPromptToken !== undefined
 				? filters.escalationCostWeight * escalationRate * args.escalationUsdPerPromptToken * features.promptTokens
 				: 0;
-		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5) + escalationUsd) * latencyMult;
+		// Provider bias: an Ollama plan's included credits are money already
+		// spent, so an operator may value them below list price in ranking. The
+		// ledger still records list price.
+		const providerBias = model.provider === "ollama" ? cfg.ollama.costBias : 1;
+		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5) + escalationUsd) * latencyMult * providerBias;
 		// Score is assigned in a SECOND PASS below: both qualityNormalization and
 		// capabilityFloorUsd are properties of the candidate SET, not of one
 		// model, so no per-model value can be computed here. Placeholder only.
@@ -351,6 +355,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		if (escalationUsd > 0) {
 			reasons.push(`escalation risk +$${escalationUsd.toFixed(6)} (rate ${(escalationRate * 100).toFixed(2)}% × measured retry cost)`);
 		}
+		if (providerBias !== 1) reasons.push(`provider bias ×${providerBias} (ollama.costBias)`);
 		if (latencyMult > 1 && latency !== null) {
 			reasons.push(
 				`latency penalty ×${latencyMult.toFixed(2)} (ttft ${Math.round(latency.ttftMs)}ms, ${latency.tokensPerSec.toFixed(0)} tok/s over ${latency.samples} samples)`,

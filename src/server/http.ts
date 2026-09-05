@@ -1,13 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Server } from "bun";
-import { createCatalog } from "../catalog/openrouter-catalog.ts";
+import { createProviders } from "./providers.ts";
 import { createBridgeFromConfig } from "../context/index.ts";
 import { createLedger } from "../cost/ledger.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
-import { createOpenRouterClient } from "../upstream/openrouter.ts";
 import { UpstreamError } from "../upstream/types.ts";
 import { apiKeySource } from "../config/load.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
@@ -172,8 +171,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
-	const upstream = createOpenRouterClient(cfg);
-	const catalog = createCatalog(cfg, upstream, db);
+	const { upstream, catalog, ollama } = createProviders(cfg, db, log);
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
@@ -189,7 +187,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		routerConfigPath(),
 		cfg,
 		pinned,
-		["server", "openrouter", "context", "ledger"],
+		["server", "openrouter", "ollama", "context", "ledger"],
 		{
 			onReload: ({ changed }) => {
 				log.info("config reloaded", { changed: changed.join(", ") });
@@ -210,6 +208,13 @@ export function startServer(cfg: RouterConfig): StartedServer {
 
 	if (cfg.openrouter.apiKey === "") {
 		log.warn("OPENROUTER_API_KEY is not set; /v1/chat/completions will fail at dispatch time");
+	}
+	if (ollama !== null) {
+		log.info("ollama cloud upstream enabled", {
+			baseUrl: cfg.ollama.baseUrl,
+			apiKey: cfg.ollama.apiKey === "" ? "none (daemon sign-in)" : "configured",
+			costBias: cfg.ollama.costBias,
+		});
 	}
 
 	// Warm the catalog without blocking listen; the first request may race it,
@@ -379,6 +384,18 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						agentdox: context.enabled
 							? { url: cfg.context.baseUrl, defaultScope: cfg.context.defaultScope, recordTurns: cfg.context.recordTurns }
 							: null,
+						// Never the key. `available` is the circuit breaker: false while a
+						// 402/429 cooldown routes every turn around Ollama.
+						ollama:
+							ollama === null
+								? null
+								: {
+										baseUrl: cfg.ollama.baseUrl,
+										models: catalog.ollamaModels?.().length ?? 0,
+										available: ollama.available(),
+										cooldownUntilMs: ollama.cooldownUntilMs(),
+										lastTrip: ollama.lastTrip(),
+									},
 						catalog: snap === null
 							? null
 							: {

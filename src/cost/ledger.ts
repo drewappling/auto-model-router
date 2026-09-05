@@ -115,7 +115,9 @@ interface CalibrationRow {
  * unclassifiable legacy row and stays attributable, preserving the old,
  * stricter behaviour rather than silently forgiving it.
  */
-const UNATTRIBUTABLE_KINDS = "('aborted', 'auth', 'moderation', 'model_unavailable')";
+// `quota` joins the list for the same reason as `auth`: an exhausted plan
+// allowance is a fact about the account, identical for every model behind it.
+const UNATTRIBUTABLE_KINDS = "('aborted', 'auth', 'moderation', 'model_unavailable', 'quota')";
 
 const ATTRIBUTABLE_ERROR = `error IS NOT NULL AND (error_kind IS NULL OR error_kind NOT IN ${UNATTRIBUTABLE_KINDS})`;
 

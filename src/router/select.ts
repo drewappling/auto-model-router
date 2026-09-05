@@ -467,6 +467,9 @@ export function select(args: SelectArgs): Decision {
 	const fallbacks: string[] = [];
 	for (const c of candidates) {
 		if (c.model.slug === chosen.model.slug) continue;
+		// The cascade is served by ONE upstream: an OpenRouter `models[]` array
+		// cannot name an Ollama model and vice versa.
+		if (c.model.provider !== chosen.model.provider) continue;
 		fallbacks.push(c.model.slug);
 		if (fallbacks.length >= 2) break;
 	}

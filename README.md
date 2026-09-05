@@ -545,6 +545,28 @@ what each one does. All values are optional; omit a key to use its default.
 | `catalogTtlMs` | `21600000` (6 h) | How long the model catalog is cached before a forced refetch. |
 | `catalogRefreshMs` | `300000` (5 min) | Background catalog refetch interval; `0` disables it. |
 
+### `ollama` — Ollama Cloud as a second upstream
+
+Off by default. When enabled, Ollama Cloud models join the same catalog as
+OpenRouter's under `ollama/<id>` slugs and are ranked on the same economics:
+a turn picks whichever provider's model is cheapest above the tier's floor,
+and same-tier failover crosses providers (a 402 or 429 from Ollama retries on
+an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch. |
+| `baseUrl` | `http://127.0.0.1:11434/v1` | A local daemon (proxies `:cloud` models under its sign-in) or `https://ollama.com/v1`. |
+| `apiKey` | unset | Bearer for ollama.com; also read from `OLLAMA_API_KEY`. The daemon needs none. |
+| `timeoutMs` | `600000` | Per-request timeout. |
+| `catalogTtlMs` | `300000` | Re-list models when the last listing is older than this. |
+| `includeLocal` | `false` | Also expose the daemon's local models (only those named in `prices`). |
+| `prices` | `{}` | USD per million tokens by bare cloud name (`{input, cachedInput?, output}`); overrides or extends the shipped snapshot. |
+| `twins` | `{}` | Bare cloud name → OpenRouter slug, to pin a quality-score twin the name match misses. |
+| `costBias` | `1` | Multiplier on Ollama models' effective cost in ranking; below 1 prefers Ollama. The ledger still records list price. |
+| `quotaCooldownMs` | `900000` | Route around Ollama this long after a 402 (credits exhausted). |
+| `rateLimitCooldownMs` | `60000` | Route around Ollama this long after a 429 (concurrency cap). |
+
 ### `tiers` — per-tier economic envelope
 
 Each tier (`trivial`, `simple`, `moderate`, `hard`) is a `tierConfig`:
@@ -699,6 +721,52 @@ Each profile is a complete entry (arrays replace wholesale):
 | --- | --- | --- |
 | `adaptiveTierFloors` | `true` | Relax a tier's quality floor to a catalog-derived band when fewer than three available models meet the configured floor (never raising it). A floor that three or more models meet stands as written. |
 | `logLevel` | `info` | `silent`/`error`/`warn`/`info`/`debug`. |
+
+## Ollama Cloud
+
+[Ollama Cloud](https://ollama.com/cloud) hosts open models behind Ollama's own
+OpenAI-compatible endpoint and bills them per token against a plan's monthly
+credits. The router can treat it as a second upstream next to OpenRouter:
+
+```yaml
+ollama:
+  enabled: true
+  # default: the local daemon, which proxies `:cloud` models under whatever
+  # account `ollama signin` used. For ollama.com directly:
+  # baseUrl: https://ollama.com/v1
+  # apiKey: <from https://ollama.com/settings/keys, or OLLAMA_API_KEY>
+```
+
+What happens once it is on:
+
+- **One catalog.** Every cloud model Ollama lists becomes `ollama/<id>` (for
+  example `ollama/glm-5.3-flash:cloud` through the daemon, `ollama/glm-5.3-flash`
+  on ollama.com) with the context length and capabilities Ollama publishes
+  (`/api/tags` on the daemon, `/api/show` on ollama.com).
+- **Prices come from a shipped table**, because no Ollama endpoint publishes
+  them: the rates on [ollama.com/pricing](https://ollama.com/pricing) as of
+  2026-09-05 (`src/catalog/ollama-prices.ts`). `ollama.prices` overrides or
+  extends it; a model with no rate from either is left out, on the same rule
+  that drops unpriced OpenRouter models.
+- **Quality scores come from the OpenRouter twin.** Ollama publishes none, so
+  `glm-5.3-flash` inherits `z-ai/glm-5.3-flash`'s indices by name match, which
+  is what lets it serve `simple` and above. `ollama.twins` pins a match the
+  name normaliser cannot make; an unmatched model is unscored and serves only
+  `trivial`.
+- **Same economics, same failover.** Candidates from both providers are ranked
+  together; `costBias` tilts the comparison if a plan's included credits would
+  otherwise go unused. A 402 (credits exhausted) or 429 (concurrency cap) from
+  Ollama fails the attempt over to an OpenRouter sibling in the same tier and
+  opens a breaker, so following turns route straight to OpenRouter without
+  paying a doomed dispatch first; `/health` shows `ollama.available` and the
+  cooldown.
+- **Ollama reports no cost per response**, so the ledger records the
+  predicted figure at list price for those rows.
+
+Ollama's compatibility layer differs from OpenRouter's in a few ways the
+router handles for you: no `models[]` fallback cascade, no `tool_choice`,
+`reasoning_effort` instead of the `reasoning` object, and no `cache_control`
+markers (they are stripped before dispatch).
 
 ## Multiple coding harnesses, one router
 

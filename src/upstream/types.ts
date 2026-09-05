@@ -11,6 +11,8 @@ import type { UpstreamChunk, WireError } from "../wire/types.ts";
 export type UpstreamErrorKind =
 	| "auth"
 	| "rate_limit"
+	/** Plan credits or a usage allowance exhausted (Ollama Cloud 402). Account-level, retryable elsewhere. */
+	| "quota"
 	| "context_length"
 	| "model_unavailable"
 	| "invalid_request"

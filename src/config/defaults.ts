@@ -31,6 +31,25 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// guardrail changes are picked up without waiting for traffic + TTL.
 		catalogRefreshMs: 5 * 60 * 1000,
 	},
+	ollama: {
+		// Off: a second upstream changes what every turn can route to.
+		enabled: false,
+		// The local daemon proxies `:cloud` models under the account it is signed
+		// in to and publishes their context/capabilities in `/api/tags`. Point at
+		// `https://ollama.com/v1` (with `apiKey`) to skip the daemon.
+		baseUrl: "http://127.0.0.1:11434/v1",
+		apiKey: "",
+		timeoutMs: 600_000,
+		catalogTtlMs: 5 * 60 * 1000,
+		includeLocal: false,
+		prices: {},
+		twins: {},
+		costBias: 1,
+		// Credits reset monthly; 15 minutes keeps a topped-up account from waiting long.
+		quotaCooldownMs: 15 * 60 * 1000,
+		// Concurrency caps clear as soon as an in-flight request finishes.
+		rateLimitCooldownMs: 60 * 1000,
+	},
 	benchmarks: {
 		// Keyless BenchLM alone fills real gaps, so this is on by default; the AA
 		// feed only actually fires once a key is present (config or env).

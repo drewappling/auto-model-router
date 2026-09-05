@@ -103,6 +103,10 @@ export function loadConfig(opts?: { path?: string; overrides?: DeepPartial<Route
 	if (envApiKey !== undefined && envApiKey !== "") putSection("openrouter", "apiKey", envApiKey);
 	const envAaKey = process.env.ARTIFICIAL_ANALYSIS_API_KEY;
 	if (envAaKey !== undefined && envAaKey !== "") putSection("benchmarks", "artificialAnalysisApiKey", envAaKey);
+	// Ollama's own convention for its cloud key. Only fills the key; enabling
+	// the upstream stays an explicit `ollama.enabled: true`.
+	const envOllamaKey = process.env.OLLAMA_API_KEY;
+	if (envOllamaKey !== undefined && envOllamaKey !== "") putSection("ollama", "apiKey", envOllamaKey);
 	const envPort = process.env.AUTO_MODEL_ROUTER_PORT;
 	if (envPort !== undefined && envPort !== "") {
 		const port = Number.parseInt(envPort, 10);

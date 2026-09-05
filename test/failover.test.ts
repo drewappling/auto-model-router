@@ -31,6 +31,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
 		server: { host: "127.0.0.1", port: 8787, maxConcurrentTurns: 24 },
 		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000, catalogRefreshMs: 0 },
+		ollama: { enabled: false, baseUrl: "http://127.0.0.1:11434/v1", apiKey: "", timeoutMs: 30_000, catalogTtlMs: 300_000, includeLocal: false, prices: {}, twins: {}, costBias: 1, quotaCooldownMs: 0, rateLimitCooldownMs: 0 },
 		benchmarks: { enabled: false, artificialAnalysisApiKey: "", benchlm: true, refreshMs: 86_400_000, timeoutMs: 30_000, useLocalScores: false },
 		tiers: {
 			trivial: { minQuality: 0, maxInputPerMtok: 0.3, qualityExponent: 0, pin: [] },

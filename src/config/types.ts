@@ -65,6 +65,49 @@ export interface OpenRouterConfig {
 }
 
 /**
+ * Ollama Cloud as a second upstream, ranked in the same catalog as OpenRouter.
+ *
+ * Off by default. Reached either through a local Ollama daemon (the default
+ * `baseUrl`; it proxies `:cloud` models under the signed-in account and lists
+ * their context length and capabilities) or directly at `https://ollama.com/v1`
+ * with an API key. Slugs are `ollama/<id>`.
+ *
+ * Ollama publishes no prices via API, so rates come from a shipped snapshot
+ * plus `prices`; a model with no rate is dropped. Quality scores come from the
+ * model's OpenRouter twin (matched by name, or pinned via `twins`), because
+ * Ollama publishes none — an unmatched model is unscored and serves only
+ * `trivial`. Ollama reports no cost per response, so the ledger's predicted
+ * figure is what gets recorded.
+ */
+export interface OllamaConfig {
+	enabled: boolean;
+	/** `http://127.0.0.1:11434/v1` (daemon) or `https://ollama.com/v1` (direct). */
+	baseUrl: string;
+	/** Resolved from config, then `OLLAMA_API_KEY`. Needed for ollama.com; the daemon uses its own sign-in. */
+	apiKey: string;
+	/** Per-request timeout, ms. */
+	timeoutMs: number;
+	/** Re-list models when the last listing is older than this, ms. */
+	catalogTtlMs: number;
+	/** Also expose the daemon's LOCAL models (unpriced unless `prices` names them). Off: cloud only. */
+	includeLocal: boolean;
+	/** USD per million tokens, keyed by bare cloud name; overrides/extends the shipped snapshot. */
+	prices: Record<string, { input: number; cachedInput?: number; output: number }>;
+	/** Bare cloud name → OpenRouter slug, when the name-based twin match is wrong or missing. */
+	twins: Record<string, string>;
+	/**
+	 * Multiplier on an Ollama model's effective cost in ranking, 1 = list price.
+	 * Below 1 prefers Ollama when a plan's included credits would otherwise go
+	 * unused; the ledger still records list price, so spend stays honest.
+	 */
+	costBias: number;
+	/** How long to route around Ollama after a 402 (credits exhausted), ms. */
+	quotaCooldownMs: number;
+	/** How long to route around Ollama after a 429 (concurrency cap), ms. */
+	rateLimitCooldownMs: number;
+}
+
+/**
  * External benchmark feeds that BACKFILL quality scores OpenRouter does not
  * publish. OpenRouter embeds Artificial Analysis scores for the models it has,
  * but returns many (GLM, MiniMax, smaller vendors) unscored — which strands
@@ -592,6 +635,7 @@ export interface CompactionConfig {
 export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
+	ollama: OllamaConfig;
 	benchmarks: BenchmarksConfig;
 	tiers: Record<Tier, TierConfig>;
 	tasks: Record<TaskType, TaskConfig>;

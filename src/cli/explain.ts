@@ -10,13 +10,12 @@
 
 import { existsSync } from "node:fs";
 
-import { createCatalog } from "../catalog/openrouter-catalog.ts";
+import { createProviders } from "../server/providers.ts";
 import { loadConfig } from "../config/load.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import type { Candidate, Decision, Features, Rejection } from "../router/types.ts";
-import { createOpenRouterClient } from "../upstream/openrouter.ts";
 import { openDb } from "../util/sqlite.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
 import { configOpts, flagString, type CliArgs } from "./args.ts";
@@ -133,8 +132,7 @@ export async function explainCommand(args: CliArgs): Promise<void> {
 	const db = openDb(cfg.ledger.path);
 	try {
 		const ledger = createLedger(db, cfg);
-		const upstream = createOpenRouterClient(cfg);
-		const catalog = createCatalog(cfg, upstream, db);
+		const { upstream, catalog } = createProviders(cfg, db);
 		const conversations = createConversationStore(db);
 		const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 
