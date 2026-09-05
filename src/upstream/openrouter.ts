@@ -23,6 +23,21 @@ import {
 const CONTEXT_LENGTH_RE =
 	/context[ _-]?length|context[ _-]?window|maximum context|too many tokens|reduce (?:the |your )?(?:length|prompt)|prompt is too long|token limit/i;
 
+// A 400 that names a MODEL limitation rather than a malformed request: the
+// same body is fine on a sibling. Seen live: "This model only supports single
+// tool-calls at once!" from a model handed history with parallel tool calls —
+// the catalog has no reliable flag for that (`parallel_tool_calls` is listed by
+// 8 of 347 models, including none of the ones that handle it), so it can only
+// be learned reactively. Retryable ⇒ same-tier failover with the slug
+// excluded; still an attributable error, so trust demotes a repeat offender.
+const MODEL_CAPABILITY_RE =
+	/only supports single tool[ -]?calls?|parallel tool[ -]?calls?|does not support (?:tools?|function|tool[ -]?calls?|images?|vision|system)|(?:tool|function)[ -]?call(?:s|ing)? (?:is|are) not supported|unsupported (?:tool|function|parameter|modality|image)/i;
+
+/** Exported for tests: the status/body → UpstreamError mapping. */
+export function classifyUpstreamStatus(status: number, body: unknown): UpstreamError {
+	return classifyStatus(status, body);
+}
+
 function asRec(v: unknown): Record<string, unknown> | null {
 	return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
@@ -46,7 +61,10 @@ function classifyStatus(status: number, body: unknown): UpstreamError {
 	if (status === 403) return fail("moderation", true);
 	if (status === 429) return fail("rate_limit", true);
 	if (status === 400) {
-		return CONTEXT_LENGTH_RE.test(message) ? fail("context_length", false) : fail("invalid_request", false);
+		if (CONTEXT_LENGTH_RE.test(message)) return fail("context_length", false);
+		// The model, not the request, is what cannot cope: let failover pick a sibling.
+		if (MODEL_CAPABILITY_RE.test(message)) return fail("invalid_request", true);
+		return fail("invalid_request", false);
 	}
 	// Provider routing may recover a missing model on the next attempt.
 	if (status === 404) return fail("model_unavailable", true);

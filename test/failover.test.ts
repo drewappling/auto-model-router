@@ -13,6 +13,7 @@ import type {
 	Tier,
 } from "../src/router/types.ts";
 import { runTurn } from "../src/server/turn.ts";
+import { classifyUpstreamStatus } from "../src/upstream/openrouter.ts";
 import { UpstreamError, type DispatchOptions, type UpstreamClient } from "../src/upstream/types.ts";
 import type {
 	FinishReason,
@@ -649,3 +650,43 @@ describe("same-tier failover", () => {
 	});
 
 });
+
+describe("400 classification (review 2026-09-05 follow-up)", () => {
+	test("a 400 naming a model capability limit is retryable, so failover picks a sibling", () => {
+		const e = classifyUpstreamStatus(400, { error: { message: "This model only supports single tool-calls at once!" } });
+		expect(e.kind).toBe("invalid_request");
+		expect(e.retryable).toBe(true);
+	});
+
+	test("a 400 for a malformed request stays non-retryable", () => {
+		const e = classifyUpstreamStatus(400, { error: { message: "messages[3].content: invalid type" } });
+		expect(e.kind).toBe("invalid_request");
+		expect(e.retryable).toBe(false);
+	});
+
+	test("a 400 for context overflow is still context_length", () => {
+		const e = classifyUpstreamStatus(400, { error: { message: "This endpoint's maximum context length is 131072 tokens" } });
+		expect(e.kind).toBe("context_length");
+		expect(e.retryable).toBe(false);
+	});
+
+	test("a capability 400 before commit fails over in the same tier, excluding the model", async () => {
+		const { router, calls } = mkRouter([mkDecision("trivial", "a/model"), mkDecision("trivial", "b/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: classifyUpstreamStatus(400, { error: { message: "This model only supports single tool-calls at once!" } }) },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+		expect(entries[0]!.error).toContain("invalid_request"); // attributable: trust learns the limitation
+		expect(finishes[0]!.servedSlug).toBe("b/model");
+	});
+});
+
