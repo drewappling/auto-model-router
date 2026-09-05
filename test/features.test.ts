@@ -271,3 +271,38 @@ describe("newest-content scoping", () => {
 		expect(f.isToolResultContinuation).toBe(true);
 	});
 });
+
+describe("user-visible tool failure (review 2026-09-05)", () => {
+	test("a failed tool run the user is now responding to still counts as failed", () => {
+		// The classifier keeps the FULL failed-tool weight when the failure is
+		// user-visible (not a mechanical continuation); that branch was dead
+		// while the scan ran only on tool-result tails.
+		const f = extractFeatures(
+			req([
+				SYSTEM,
+				{ role: "user", content: "build it" },
+				toolCall("c1", "bash", '{"command":"make"}'),
+				{ role: "tool", tool_call_id: "c1", content: "make: *** [all] Error 2" },
+				{ role: "user", content: "that failed, try a different approach" },
+			]),
+			100,
+		);
+		expect(f.isToolResultContinuation).toBe(false);
+		expect(f.lastToolFailed).toBe(true);
+	});
+
+	test("an assistant reply between the failed run and the user resets the failure signal", () => {
+		const f = extractFeatures(
+			req([
+				SYSTEM,
+				{ role: "user", content: "build it" },
+				toolCall("c1", "bash", '{"command":"make"}'),
+				{ role: "tool", tool_call_id: "c1", content: "make: *** [all] Error 2" },
+				{ role: "assistant", content: "The build failed because cc is missing." },
+				{ role: "user", content: "ok, install it" },
+			]),
+			100,
+		);
+		expect(f.lastToolFailed).toBe(false);
+	});
+});

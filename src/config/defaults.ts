@@ -89,6 +89,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// slow models (e.g. deepseek-v4-flash ~20 tok/s) fall under it.
 		latencyReferenceTokensPerSec: 30,
 		latencyMinSamples: 20,
+		// Off: pricing a model's measured escalation rate at what an escalated
+		// retry actually costs changes rankings, so it is opt-in after a replay
+		// run prices it. See FilterConfig.escalationCostWeight.
+		escalationCostWeight: 0,
 	},
 	classifier: {
 		ambiguityThreshold: 0.6,
@@ -138,6 +142,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		holdTurns: 2,
 		holdTurnsAfterEscalation: 4,
 		switchMargin: 1.3,
+		// 1 = the shipped one-turn comparison. Raise to amortise a switch over the
+		// turns that follow it; see HysteresisConfig.switchHorizonTurns.
+		switchHorizonTurns: 1,
 		// OpenRouter sticky sessions expire in 5-10 minutes.
 		cacheWarmTtlMs: 300_000,
 		maxDowngradePerTurn: 1,
@@ -229,6 +236,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// here — the same reason `enabled` is false. 0.75 is the recommended
 		// setting once a deployment has watched its own ledger.
 		floorRatio: 1,
+		// 1 = re-plan whenever the compacted prompt is over budget (the shipped
+		// behaviour). Above 1, a plan is only extended once the compacted prompt
+		// has grown by that factor since it was last planned; see
+		// CompactionConfig.replanGrowthRatio.
+		replanGrowthRatio: 1,
 		fitToWindow: true,
 		protectRecentTurns: 4,
 		maxToolResultBytes: 4_096,

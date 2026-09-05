@@ -178,6 +178,12 @@ export interface ConversationState {
 	 * the prompt cache and un-saves the tokens. Fresh planning only extends it.
 	 */
 	compactionPlan: CompactionEdit[] | null;
+	/**
+	 * Compacted prompt size (tokens) at which `compactionPlan` was last made.
+	 * Re-planning is rationed against growth from this point
+	 * (`compaction.replanGrowthRatio`). 0 / absent = unknown.
+	 */
+	compactionPlanTokens?: number;
 	/** When that block was fetched, for the staleness TTL. */
 	contextFetchedAtMs: number;
 	updatedAtMs: number;
@@ -247,6 +253,10 @@ export interface Decision {
 	compactionPlan: CompactionEdit[];
 	/** Estimated prompt tokens removed by `compactionPlan`, for the ledger. */
 	promptTokensSaved: number;
+	/** Prompt bytes `compactionPlan` removes; the dispatched size is `req.promptBytes` minus this (plus any context block). */
+	compactionSavedBytes: number;
+	/** Compacted prompt size the plan was (last) made at, persisted for re-plan rationing. */
+	compactionPlanTokens: number;
 	reasoning: ReasoningLevel | undefined;
 	maxTokens: number | undefined;
 	stripAssistantReasoning: boolean;

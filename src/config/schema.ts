@@ -74,6 +74,7 @@ const filters = z.strictObject({
 	latencyReferenceTokensPerSec: z.number().positive().optional(),
 	latencyMinSamples: z.number().int().nonnegative().optional(),
 	maxExpectedWaitMs: z.number().positive().optional(),
+	escalationCostWeight: z.number().min(0).max(1).optional(),
 });
 
 const classifier = z.strictObject({
@@ -111,6 +112,7 @@ const hysteresis = z.strictObject({
 	holdTurns: z.number().int().nonnegative().optional(),
 	holdTurnsAfterEscalation: z.number().int().nonnegative().optional(),
 	switchMargin: z.number().positive().optional(),
+	switchHorizonTurns: z.number().int().positive().optional(),
 	cacheWarmTtlMs: z.number().nonnegative().optional(),
 	maxDowngradePerTurn: z.number().int().nonnegative().optional(),
 	breakHoldOnMechanical: z.boolean().optional(),
@@ -165,6 +167,7 @@ const compaction = z.strictObject({
 	enabled: z.boolean().optional(),
 	budgetTokens: z.number().int().positive().optional(),
 	floorRatio: z.number().positive().max(1).optional(),
+	replanGrowthRatio: z.number().min(1).optional(),
 	fitToWindow: z.boolean().optional(),
 	protectRecentTurns: z.number().int().positive().optional(),
 	maxToolResultBytes: z.number().int().positive().optional(),

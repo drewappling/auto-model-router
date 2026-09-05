@@ -12,7 +12,25 @@ import type { Database } from "bun:sqlite";
 import type { RouterConfig } from "../config/types.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { createLogger } from "../util/log.ts";
-import type { CatalogModel, CatalogSnapshot, CatalogSource, Modality, Price, PriceTier, QualityScores } from "./types.ts";
+import type {
+	CatalogModel,
+	CatalogShrink,
+	CatalogSnapshot,
+	CatalogSource,
+	Modality,
+	Price,
+	PriceTier,
+	QualityScores,
+} from "./types.ts";
+
+/**
+ * A refresh that keeps fewer than this fraction of the previous snapshot's
+ * models is a "sharp shrink": logged at warn and surfaced on /health. Only
+ * judged once the previous snapshot is big enough for the ratio to mean
+ * anything (SHRINK_MIN_PREVIOUS).
+ */
+const SHRINK_KEEP_RATIO = 0.5;
+const SHRINK_MIN_PREVIOUS = 20;
 import { applyFeedScores, loadLocalScores, refreshFeedScores } from "./benchmark-feeds.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -259,6 +277,7 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 	let bySlug = new Map<string, CatalogModel>();
 	let hydrated = false;
 	let inflight: Promise<CatalogSnapshot> | null = null;
+	let lastShrink: CatalogShrink | null = null;
 	const readCache = db.query("SELECT payload, fetched_at_ms, etag, key_scoped FROM catalog_cache WHERE id = 1");
 	const writeCache = db.query(
 		`INSERT INTO catalog_cache (id, payload, fetched_at_ms, etag, key_scoped) VALUES (1, ?, ?, NULL, ?)
@@ -407,6 +426,21 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 			return snapshot;
 		}
 		const fetchedAtMs = Date.now();
+		// A sharp shrink is adopted — the key's guardrails are authoritative for
+		// what may be dispatched — but never silently. Measured once: the
+		// admitted set fell 352 → 8 for a day, the cheap default vanished, and a
+		// 10x model served every turn (~$32) with nothing in the log to say why.
+		if (snapshot !== null && snapshot.models.length >= SHRINK_MIN_PREVIOUS && models.length < snapshot.models.length * SHRINK_KEEP_RATIO) {
+			lastShrink = { fromModels: snapshot.models.length, toModels: models.length, atMs: fetchedAtMs };
+			log.warn("catalog shrank sharply; routing narrows to what the key now admits", {
+				from: snapshot.models.length,
+				to: models.length,
+				keyScoped,
+			});
+		} else if (lastShrink !== null && models.length >= lastShrink.fromModels) {
+			log.info("catalog recovered its pre-shrink size", { models: models.length, shrunkTo: lastShrink.toModels });
+			lastShrink = null;
+		}
 		// Persist the RAW payload: normalization improvements apply on the next
 		// boot without a network fetch. The client returns no headers, so no etag.
 		// Only persist the public fallback when keyless: a key-scoped run that fell
@@ -453,6 +487,9 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		find(slug: string): CatalogModel | undefined {
 			hydrate();
 			return bySlug.get(slug);
+		},
+		lastShrink(): CatalogShrink | null {
+			return lastShrink;
 		},
 	};
 }

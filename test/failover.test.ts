@@ -44,7 +44,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20, escalationCostWeight: 0 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",
@@ -68,11 +68,11 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			escalateOnLengthStop: false,
 			...escalation,
 		},
-		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false },
+		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
 		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, maxQueue: 64 },
-		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true },
+		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1 },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
@@ -147,6 +147,8 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		cacheBreakpointMessageIndices: [],
 		compactionPlan: [],
 		promptTokensSaved: 0,
+		compactionSavedBytes: 0,
+		compactionPlanTokens: 0,
 		reasoning: undefined,
 		maxTokens: undefined,
 		stripAssistantReasoning: false,
@@ -546,4 +548,104 @@ describe("same-tier failover", () => {
 		expect(finishes).toHaveLength(1);
 		expect(finishes[0]!.servedSlug).toBe("b/model");
 	});
+
+	test("an empty completion tries a different model in the SAME tier before escalating", async () => {
+		// An empty stream indicts the provider, not the tier. Measured: 49 of 71
+		// escalations in a week re-dispatched the very slug that had just
+		// failed, one tier up, paying the tier premium for a provider hiccup.
+		const { router, calls } = mkRouter([
+			mkDecision("trivial", "a/model", { escalateTo: "simple" }),
+			mkDecision("trivial", "b/model", { escalateTo: "simple" }),
+		]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("a/model"), finishChunk("stop")] },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, chunks, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(calls).toHaveLength(2);
+		expect(calls[0]).toEqual({ attempt: 0 });
+		// Same tier, the failed slug excluded, no escalateFrom.
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+
+		expect(entries).toHaveLength(2);
+		expect(entries[0]!.wasted).toBe(true);
+		expect(entries[0]!.escalationSignal).toBe("empty_completion"); // still counts against a/model's trust
+		expect(entries[0]!.error).toBeNull();
+		expect(entries[1]!.slug).toBe("b/model");
+		expect(entries[1]!.tier).toBe("trivial");
+		expect(entries[1]!.reasons.some((r) => r.startsWith("failover: a/model empty_completion"))).toBe(true);
+
+		expect(textOut(chunks)).toBe("done");
+		expect(finishes).toHaveLength(1);
+		expect(finishes[0]!.escalated).toBe(false);
+		expect(finishes[0]!.servedSlug).toBe("b/model");
+	});
+
+	test("a provider signal with no sibling at this tier escalates, still excluding the failed slug", async () => {
+		const { router, calls } = mkRouter([
+			mkDecision("trivial", "a/model", { escalateTo: "simple" }),
+			mkDecision("simple", "b/model", { escalateTo: "moderate" }), // failover probe: router widened (wrong tier)
+			mkDecision("simple", "b/model", { escalateTo: "moderate" }), // real escalation
+		]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("a/model"), finishChunk("stop")] },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(calls).toHaveLength(3);
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["a/model"] });
+		expect(calls[2]).toEqual({ attempt: 1, escalateFrom: "trivial", excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+		expect(entries).toHaveLength(2);
+		expect(entries[0]!.escalationSignal).toBe("empty_completion");
+		expect(entries[1]!.tier).toBe("simple");
+		expect(finishes[0]!.escalated).toBe(true);
+	});
+
+	test("a structural signal escalates a tier directly, with the failed slug excluded", async () => {
+		// Malformed tool arguments are the model's own doing; a stronger model
+		// is the remedy, so no same-tier probe — but the failing slug must not
+		// be the one that serves the escalated attempt.
+		const { router, calls } = mkRouter([
+			mkDecision("trivial", "a/model", { escalateTo: "simple" }),
+			mkDecision("simple", "b/model", { escalateTo: "moderate" }),
+		]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{
+				kind: "chunks",
+				chunks: [
+					startChunk("a/model"),
+					chunk([{ type: "tool_call", index: 0, id: "c1", name: "read", argsDelta: "{\"path\": " }]),
+					finishChunk("tool_calls"),
+				],
+			},
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ attempt: 1, escalateFrom: "trivial", excludeSlugs: ["a/model"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["a/model", "b/model"]);
+		expect(entries[0]!.escalationSignal).toBe("malformed_tool_args");
+		expect(finishes[0]!.escalated).toBe(true);
+	});
+
 });

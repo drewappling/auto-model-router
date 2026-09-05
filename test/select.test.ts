@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { ProfileConfig, RouterConfig } from "../src/config/types.ts";
 import type { Ledger } from "../src/cost/types.ts";
@@ -628,6 +629,7 @@ describe("context compaction", () => {
 			enabled: true,
 			budgetTokens: 1_000,
 			floorRatio: 1,
+			replanGrowthRatio: 1,
 			fitToWindow: false,
 			protectRecentTurns: 1,
 			maxToolResultBytes: 100,
@@ -801,7 +803,7 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 	}
 
 	test("off by default, so a hold still pins the tier", () => {
-		expect(BASE.hysteresis.breakHoldOnMechanical).toBe(false);
+		expect(DEFAULT_CONFIG.hysteresis.breakHoldOnMechanical).toBe(false); // SHIPPED default, not the live config.yml (machine-dependent)
 		const { d, features } = decide(continuation(), false);
 		expect(features.isToolResultContinuation).toBe(true);
 		expect(d.tier).toBe("hard");
@@ -846,3 +848,151 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 		expect(d.tier).toBe("moderate");
 	});
 });
+
+describe("hysteresis.switchHorizonTurns (review 2026-09-05 §4)", () => {
+	// Two moderate-eligible models built from raw catalog records: a kimi-shaped
+	// warm model (cheap to READ from cache, dear cold) and a gemini-shaped ranked
+	// winner (dear cold, cheap warm). With a one-turn horizon the cold write on
+	// the winner never pays for itself, so the dear model stays warm forever;
+	// over a run of turns the switch is obviously right.
+	function rawModel(id: string, coding: number, prompt: number, cacheRead: number, cacheWrite: number | null): Record<string, unknown> {
+		const pricing: Record<string, string> = {
+			prompt: String(prompt / 1e6),
+			completion: String((prompt * 4) / 1e6),
+			input_cache_read: String(cacheRead / 1e6),
+		};
+		if (cacheWrite !== null) pricing.input_cache_write = String(cacheWrite / 1e6);
+		return {
+			id,
+			canonical_slug: id,
+			name: id,
+			context_length: 1_000_000,
+			pricing,
+			supported_parameters: ["tools"],
+			architecture: { input_modalities: ["text"], tokenizer: "GPT" },
+			benchmarks: { artificial_analysis: { coding_index: coding, intelligence_index: coding, agentic_index: coding } },
+			created: 1_700_000_000,
+		};
+	}
+	const warmDear = normalizeCatalogModel(rawModel("test/warm-dear", 76.2, 2.55, 0.256, null))!;
+	const winner = normalizeCatalogModel(rawModel("test/winner", 76.0, 0.75, 0.075, 0.04))!;
+	const snap: CatalogSnapshot = { models: [warmDear, winner], fetchedAtMs: Date.now() };
+	const promptTokens = 100_000;
+
+	function decide(horizon: number) {
+		// BASE is the live config.yml, which may have exploration on; a
+		// deterministic exploration draw would route this turn down to `simple`,
+		// where the dear model is over the price ceiling and never compared.
+		const cfg: RouterConfig = {
+			...BASE,
+			exploration: { ...BASE.exploration, enabled: false },
+			hysteresis: { ...BASE.hysteresis, switchMargin: 1.3, switchHorizonTurns: horizon },
+		};
+		const req = request("keep going");
+		const features = extractFeatures(req, promptTokens);
+		return select({
+			req,
+			features,
+			classification: { ...scoreHeuristic(features, cfg), tier: "moderate" },
+			profile: PROFILE,
+			state: state({ currentSlug: "test/warm-dear", currentTier: "moderate", cacheWarmSlug: "test/warm-dear", cacheWarmAtMs: Date.now(), lastPromptTokens: promptTokens }),
+			snapshot: snap,
+			ledger: null,
+			cfg,
+			nowMs: Date.now(),
+		});
+	}
+
+	test("the ranked winner is the cheaper cold model", () => {
+		const d = decide(1);
+		expect(d.considered[0]!.model.slug).toBe("test/winner");
+	});
+
+	test("a one-turn horizon keeps the dear model warm (the shipped behaviour)", () => {
+		const d = decide(1);
+		expect(d.slug).toBe("test/warm-dear");
+		expect(d.sticky).toBe(true);
+		expect(d.reasons.some((r) => r.startsWith("cache: keeping warm test/warm-dear"))).toBe(true);
+	});
+
+	test("amortised over a run of turns, the switch is taken", () => {
+		const d = decide(8);
+		expect(d.slug).toBe("test/winner");
+		expect(d.sticky).toBe(false);
+		expect(d.reasons.some((r) => r.startsWith("cache: switch test/warm-dear → test/winner") && r.includes("over 8 turns"))).toBe(true);
+	});
+});
+
+describe("compaction.replanGrowthRatio (review 2026-09-05 §7)", () => {
+	const TOOL_RESULT = "y".repeat(3000);
+	function turn(n: number): NormRequest {
+		// n completed read/result/"continue" rounds; every result but the newest
+		// sits outside the protected window and is eligible for truncation.
+		const messages: unknown[] = [
+			{ role: "system", content: "You are a coding agent." },
+			{ role: "user", content: "read the files" },
+		];
+		for (let i = 0; i < n; i++) {
+			messages.push({ role: "assistant", content: null, tool_calls: [{ id: `c${i}`, type: "function", function: { name: "read", arguments: `{"path":"f${i}.ts"}` } }] });
+			messages.push({ role: "tool", tool_call_id: `c${i}`, content: TOOL_RESULT });
+			messages.push({ role: "user", content: "continue" });
+		}
+		return parseChatRequest({ model: "auto", tools: TOOLS, messages }, new Headers());
+	}
+	function cfgWith(ratio: number): RouterConfig {
+		return {
+			...BASE,
+			compaction: {
+				enabled: true,
+				budgetTokens: 100, // unreachable: every turn is over budget, as observed live
+				floorRatio: 1,
+				replanGrowthRatio: ratio,
+				fitToWindow: false,
+				protectRecentTurns: 2, // the newest result and its "continue" stay protected; older rounds are eligible
+				maxToolResultBytes: 100,
+				keepHeadBytes: 20,
+				keepTailBytes: 20,
+				elideSupersededReads: false,
+				collapseDuplicateResults: false,
+			},
+		};
+	}
+	function decide(req: NormRequest, cfg: RouterConfig, st: ConversationState, promptTokens: number) {
+		const features = extractFeatures(req, promptTokens);
+		return select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: st, snapshot: SNAPSHOT, ledger: null, cfg, nowMs: Date.now() });
+	}
+
+	test("the plan records the compacted size it was made at", () => {
+		const first = decide(turn(2), cfgWith(1), state(), 4_000);
+		expect(first.compactionPlan.length).toBe(1);
+		expect(first.compactionPlanTokens).toBe(4_000 - first.promptTokensSaved);
+		expect(first.compactionSavedBytes).toBeGreaterThan(0);
+	});
+
+	test("at 1 (shipped) a newly eligible result is compacted on the very next turn", () => {
+		const first = decide(turn(2), cfgWith(1), state(), 4_000);
+		const carried = state({ compactionPlan: first.compactionPlan, compactionPlanTokens: first.compactionPlanTokens });
+		// One more round: the prompt grew ~25%, one more result aged out.
+		const second = decide(turn(3), cfgWith(1), carried, 5_000);
+		expect(second.compactionPlan.length).toBe(2);
+		expect(second.reasons.some((r) => r.includes("(1 carried, 1 new)"))).toBe(true);
+	});
+
+	test("above 1, an existing plan holds until the compacted prompt has grown by the ratio", () => {
+		const first = decide(turn(2), cfgWith(2), state(), 4_000);
+		const carried = state({ compactionPlan: first.compactionPlan, compactionPlanTokens: first.compactionPlanTokens });
+		// The raw prompt grew 25% and the COMPACTED prompt ~60% (the carried
+		// edit saves a smaller share of a bigger prompt) — still under 2x, so
+		// the carried plan is re-applied verbatim and nothing new is added.
+		const held = decide(turn(3), cfgWith(2), carried, 5_000);
+		expect(held.compactionPlan).toEqual(first.compactionPlan);
+		expect(held.compactionPlanTokens).toBe(first.compactionPlanTokens); // growth still accrues against the original size
+		expect(held.reasons.some((r) => r.includes("(1 carried, 0 new)") && r.includes("[re-plan rationed]"))).toBe(true);
+		// Past 2x the plan is extended and the new size is recorded.
+		const grown = decide(turn(3), cfgWith(2), carried, 8_000);
+		expect(grown.compactionPlan.length).toBe(2);
+		expect(grown.compactionPlanTokens).toBe(8_000 - grown.promptTokensSaved);
+		expect(grown.reasons.some((r) => r.includes("[re-plan rationed]"))).toBe(false);
+	});
+});
+

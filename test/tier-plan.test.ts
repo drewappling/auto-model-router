@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { joinBenchmarks, normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
+import type { Ledger } from "../src/cost/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
-import { computeTierPlan, effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "../src/router/tier-plan.ts";
+import { computeTierPlan, countAdmitted, effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "../src/router/tier-plan.ts";
 import { TIER_ORDER } from "../src/router/types.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
@@ -449,3 +450,160 @@ describe("quality normalization and capability floor (benchmark findings 4/6)", 
 		expect(shipped.candidates.every((c) => !c.reasons.some((r) => r.includes("capability floor")))).toBe(true);
 	});
 });
+
+describe("thinness-gated relaxation (review 2026-09-05 §1)", () => {
+	// A WIDE catalog whose weak tail drags every quantile band far below the
+	// configured floors — the shape the key-admitted 347-model catalog has.
+	// Configured coding floors: simple 40, moderate 60, hard 72.
+	const wide = computeTierPlan(
+		models([
+			["w/1", 5, 0.02],
+			["w/2", 10, 0.02],
+			["w/3", 15, 0.03],
+			["w/4", 20, 0.03],
+			["w/5", 25, 0.05],
+			["w/6", 30, 0.05],
+			["w/7", 35, 0.1],
+			["w/8", 45, 0.1],
+			["w/9", 50, 0.2],
+			["w/10", 62, 0.5],
+			["w/11", 70, 0.7],
+			["w/12", 74, 1.0],
+			["w/13", 76, 2.0],
+			["w/14", 78, 5.0],
+		]),
+		BASE,
+	);
+
+	test("the bands sit below the configured floors on a wide catalog", () => {
+		// The premise the gate exists for: unconditional min() would relax here.
+		expect(wide.floors.coding.moderate).toBeLessThan(60);
+		expect(wide.floors.coding.hard).toBeLessThan(72);
+	});
+
+	test("a configured floor that three or more models meet stands as written", () => {
+		expect(effectiveQualityFloor(60, "moderate", "coding", wide)).toBe(60); // 62,70,74,76,78 meet it
+		expect(effectiveQualityFloor(72, "hard", "coding", wide)).toBe(72); // 74,76,78 meet it
+		expect(effectiveQualityFloor(40, "simple", "coding", wide)).toBe(40);
+	});
+
+	test("a floor fewer than three models meet is relaxed to the band", () => {
+		// Only 76 and 78 clear 75: thin, so the hard band applies.
+		expect(effectiveQualityFloor(75, "hard", "coding", wide)).toBe(Math.min(75, wide.floors.coding.hard));
+		// Nothing clears 90: relaxed as before.
+		expect(effectiveQualityFloor(90, "hard", "coding", wide)).toBe(wide.floors.coding.hard);
+	});
+
+	test("countAdmitted counts scores at or above the floor", () => {
+		expect(countAdmitted([10, 20, 30, 40], 25)).toBe(2);
+		expect(countAdmitted([10, 20, 30, 40], 40)).toBe(1);
+		expect(countAdmitted([10, 20, 30, 40], 41)).toBe(0);
+		expect(countAdmitted([10, 20, 30, 40], 0)).toBe(4);
+		expect(countAdmitted([], 0)).toBe(0);
+	});
+
+	test("in candidate selection the wide catalog keeps weak models out of moderate", () => {
+		const req = parseChatRequest(
+			{
+				model: "auto",
+				tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }],
+				messages: [{ role: "user", content: "refactor the auth module" }],
+			},
+			new Headers(),
+		);
+		const features = extractFeatures(req, 100);
+		const snap = snapshot(
+			models([
+				["w/8", 45, 0.1],
+				["w/9", 50, 0.2],
+				["w/10", 62, 0.5],
+				["w/11", 70, 0.7],
+				["w/12", 74, 1.0],
+			]),
+		);
+		const { candidates, rejected } = buildCandidates({
+			req,
+			features,
+			tier: "moderate",
+			task: "coding",
+			snapshot: snap,
+			ledger: null,
+			cfg: { ...BASE, adaptiveTierFloors: true },
+			expectedCompletionTokens: 512,
+			warmSlug: null,
+		});
+		// 62, 70 and 74 meet the configured 60, so 45 and 50 are excluded even
+		// though the adaptive band would have admitted them.
+		expect(candidates.map((c) => c.model.slug).sort()).toEqual(["w/10", "w/11", "w/12"]);
+		expect(rejected.filter((r) => r.reason === "below_quality_floor").map((r) => r.slug).sort()).toEqual(["w/8", "w/9"]);
+	});
+});
+
+describe("escalation-cost term (review 2026-09-05 §2)", () => {
+	const req = parseChatRequest(
+		{
+			model: "auto",
+			tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }],
+			messages: [{ role: "user", content: "rename the helper" }],
+		},
+		new Headers(),
+	);
+	const features = extractFeatures(req, 100_000);
+	// Identical price, quality AND success rate (so the trust divisor is
+	// neutral); only the escalation count tells them apart.
+	const snap = snapshot(
+		models([
+			["cheap/flaky", 50, 0.02],
+			["cheap/solid", 50, 0.02],
+		]),
+	);
+	const trustOf = (slug: string) =>
+		slug === "cheap/flaky"
+			? { slug, attempts: 100, escalations: 4, errors: 0, successRate: 0.96, meanCostError: 0 }
+			: { slug, attempts: 100, escalations: 0, errors: 4, successRate: 0.96, meanCostError: 0 };
+	const ledger: Ledger = {
+		record: () => {},
+		conversationSpend: () => 0,
+		spendSince: () => 0,
+		blendedRate: () => null,
+		trust: (slug) => trustOf(slug),
+		allTrust: () => [],
+		latency: () => null,
+		tokenRatio: () => null,
+		recentEntries: () => [],
+	};
+	function build(weight: number, usdPerPromptToken?: number) {
+		return buildCandidates({
+			req,
+			features,
+			tier: "trivial",
+			task: "coding",
+			snapshot: snap,
+			ledger,
+			cfg: { ...BASE, filters: { ...BASE.filters, escalationCostWeight: weight } },
+			expectedCompletionTokens: 512,
+			warmSlug: null,
+			...(usdPerPromptToken === undefined ? {} : { escalationUsdPerPromptToken: usdPerPromptToken }),
+		});
+	}
+
+	test("with the term off, nothing separates them and the tie falls lexically to the flaky model", () => {
+		const { candidates } = build(0, 1e-6);
+		// Same success rate, same trust divisor: escalations are invisible.
+		expect(candidates[0]!.model.slug).toBe("cheap/flaky");
+		expect(candidates[0]!.reasons.some((r) => r.startsWith("escalation risk"))).toBe(false);
+	});
+
+	test("priced at what an escalated retry actually bills, the flaky model loses", () => {
+		const { candidates } = build(1, 1e-6); // $1/Mtok of escalated-retry cost
+		expect(candidates[0]!.model.slug).toBe("cheap/solid");
+		const flaky = candidates.find((c) => c.model.slug === "cheap/flaky")!;
+		expect(flaky.reasons.some((r) => r.startsWith("escalation risk"))).toBe(true);
+	});
+
+	test("inert until the ledger can measure the retry cost", () => {
+		const { candidates } = build(1);
+		expect(candidates[0]!.model.slug).toBe("cheap/flaky");
+	});
+});
+

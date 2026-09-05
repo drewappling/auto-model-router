@@ -219,6 +219,24 @@ export interface FilterConfig {
 	 * Undefined ⇒ off (the default).
 	 */
 	maxExpectedWaitMs?: number;
+	/**
+	 * How much of a model's measured escalation risk to price into its effective
+	 * cost, 0-1. 0 (the default) disables the term.
+	 *
+	 * The trust divisor treats a failure as a proportional retry of the same
+	 * model, so a 4% escalation rate reads as a 4% surcharge. The real cost of
+	 * a probe escalation is a whole re-dispatch on the NEXT tier's model:
+	 * measured over a week, escalated attempts billed ~$0.08 each while the
+	 * cheap model that failed had billed ~$0.0006 — a 700x multiple, not 4%. A
+	 * cheap model with a 3.6% escalation rate therefore cost more than a
+	 * reliable one at 4x its price, and the divisor could never see it.
+	 *
+	 * At 1, `effectiveUsd += escalationRate × (this prompt × the ledger's
+	 * measured $/prompt-token of escalated attempts)`, so flakiness is priced
+	 * at what it actually costs. Inert until the ledger holds enough escalated
+	 * attempts to measure.
+	 */
+	escalationCostWeight: number;
 }
 
 export interface ClassifierConfig {
@@ -303,6 +321,19 @@ export interface HysteresisConfig {
 	 * discount by this multiple. 1.0 ⇒ break even; higher ⇒ stickier.
 	 */
 	switchMargin: number;
+	/**
+	 * Turns over which a model switch is amortised in the stay/switch decision.
+	 * 1 (the default) is the one-turn comparison: stay at the warm model's
+	 * cache-read price vs switch at the new model's cold price. That is right
+	 * for one turn and wrong for the run that follows: it kept a $2.55/Mtok
+	 * model warm for 33 consecutive `moderate` dispatches ("stay $0.0589 ≤
+	 * switch $0.1131 × 1.3") where the ranked winner would have been $0.003
+	 * per turn once ITS cache was warm. With a horizon H the comparison is
+	 * `H × stayWarm` against `switchCold + (H − 1) × newWarm`, so a switch that
+	 * pays for itself within H turns is taken. Deep loops average ~25
+	 * dispatches per user-visible turn, so single digits are conservative.
+	 */
+	switchHorizonTurns: number;
 	/** Assume a warm cache expires after this long. OpenRouter sticky sessions: 5-10 min. */
 	cacheWarmTtlMs: number;
 	/** Downgrade at most this many tiers per turn, so quality never falls off a cliff. */
@@ -524,6 +555,24 @@ export interface CompactionConfig {
 	 * already-cached prompt bytes, and a cold prompt costs ~4.3x a warm one.
 	 */
 	floorRatio: number;
+	/**
+	 * Only extend an existing plan once the compacted prompt has grown by this
+	 * factor since the plan was last made. 1 (the default) re-plans on every
+	 * over-budget turn.
+	 *
+	 * `floorRatio` rations re-planning only when the budget is reachable. On
+	 * the traffic actually observed it is not — compacted prompts sit at
+	 * 100–160k tokens against a 40k budget — so every turn is over budget and a
+	 * new edit is added the moment a tool result ages out of the protected
+	 * window. Measured over a week of same-model turns: the plan changed on
+	 * 1,031 dispatches at a 79.5% cache hit and $0.0120 each, against 92.6% and
+	 * $0.0067 when it held. At 1.1 a plan holds until the prompt is 10% larger
+	 * than when it was made — several turns in a deep loop — at the cost of
+	 * that much more stale tool output riding along in between. Fit-to-window
+	 * compaction is never rationed; a prompt that would overflow always
+	 * re-plans.
+	 */
+	replanGrowthRatio: number;
 	/** Also compact when the prompt would overflow the profile's context window. */
 	fitToWindow: boolean;
 	/** Never touch the last N user/assistant turns or the volatile tail. */
@@ -558,10 +607,13 @@ export interface RouterConfig {
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
 	/**
-	 * Derive each tier's quality floor from the models actually available at
-	 * every catalog refresh, relaxing (never tightening) the configured floors.
+	 * Relax a tier's quality floor to a catalog-derived band when the configured
+	 * floor is met by fewer than three available models (never tightening it).
 	 * Without this, a narrow OpenRouter guardrail leaves every tier above
 	 * `trivial` permanently empty and the router is stuck on the cheapest model.
+	 * A floor that at least three models meet stands exactly as configured, so
+	 * on a wide catalog this is a no-op — an earlier version relaxed
+	 * unconditionally and a wide catalog's weak tail dragged every floor down.
 	 */
 	adaptiveTierFloors: boolean;
 	/**

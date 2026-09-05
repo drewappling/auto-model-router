@@ -18,10 +18,26 @@ import type { RouterConfig } from "../config/types.ts";
 import { consumePendingEstimate } from "../tokens/estimate.ts";
 import { computeBlendedRate } from "./blended.ts";
 import { computeCost } from "./forecast.ts";
-import type { BlendedRate, Ledger, LedgerEntry, LedgerSignals, ModelLatency, ModelTrust, UsageCounts } from "./types.ts";
+import type {
+	BlendedRate,
+	EscalationCost,
+	Ledger,
+	LedgerEntry,
+	LedgerSignals,
+	ModelLatency,
+	ModelTrust,
+	UsageCounts,
+} from "./types.ts";
 
 /** Estimates below this many samples are noise; the default ratio is better. */
 const MIN_CALIBRATION_SAMPLES = 20;
+/** Calibration samples outside this bytes-per-token band are provider accounting quirks, not tokenizer facts. */
+const MIN_SANE_BYTES_PER_TOKEN = 1.5;
+const MAX_SANE_BYTES_PER_TOKEN = 8;
+/** Escalated attempts needed before their measured cost is trusted. */
+const MIN_ESCALATION_SAMPLES = 10;
+/** The escalation-cost aggregate scans a window of rows; memoised for this long. */
+const ESCALATION_COST_MEMO_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 // Row shapes below are fixed by our own schema in util/sqlite.ts.
@@ -258,6 +274,16 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
+	// What an escalated retry actually bills, per prompt token, over a window.
+	// attempt > 0 rows are the re-dispatches that followed a rejected attempt;
+	// errored ones carry no usage and are excluded.
+	const escalationCostStmt = db.query(
+		`SELECT COUNT(*) AS samples,
+			COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS usd,
+			COALESCE(SUM(json_extract(usage, '$.promptTokens')), 0) AS prompt_tokens
+		 FROM ledger WHERE attempt > 0 AND error IS NULL AND created_at_ms >= ?`,
+	);
+	let escalationMemo: { atMs: number; windowDays: number; value: EscalationCost | null } | null = null;
 	const cacheMetaStmt = db.query("SELECT fetched_at_ms FROM catalog_cache WHERE id = 1");
 	const cachePayloadStmt = db.query("SELECT payload FROM catalog_cache WHERE id = 1");
 
@@ -331,7 +357,15 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				// The SERVED model's tokenizer produced the billing; the estimate-time
 				// family is the fallback when the model is unknown to the catalog.
 				const tokenizer = (model?.tokenizer ?? pending.tokenizer).trim().toLowerCase();
-				calibrationStmt.run(tokenizer, pending.bytes, entry.usage.promptTokens);
+				// Reject samples no real tokenizer could produce. The rows are
+				// running sums, so one provider that reports inflated counts (seen:
+				// ~8x the bytes-implied tokens, i.e. 0.4 bytes/token) poisons a
+				// whole family for thousands of samples. Text tokenizers land
+				// between ~2 and ~5 bytes/token; the band is generous around that.
+				const bytesPerToken = pending.bytes / entry.usage.promptTokens;
+				if (bytesPerToken >= MIN_SANE_BYTES_PER_TOKEN && bytesPerToken <= MAX_SANE_BYTES_PER_TOKEN) {
+					calibrationStmt.run(tokenizer, pending.bytes, entry.usage.promptTokens);
+				}
 			}
 		},
 
@@ -396,6 +430,20 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				});
 			}
 			return out;
+		},
+
+		escalationCost(windowDays: number): EscalationCost | null {
+			const now = Date.now();
+			if (escalationMemo !== null && escalationMemo.windowDays === windowDays && now - escalationMemo.atMs < ESCALATION_COST_MEMO_MS) {
+				return escalationMemo.value;
+			}
+			const row = escalationCostStmt.get(now - windowDays * DAY_MS) as { samples: number; usd: number; prompt_tokens: number } | null;
+			const value: EscalationCost | null =
+				row === null || row.samples < MIN_ESCALATION_SAMPLES || row.prompt_tokens <= 0
+					? null
+					: { usdPerPromptToken: row.usd / row.prompt_tokens, samples: row.samples, windowDays };
+			escalationMemo = { atMs: now, windowDays, value };
+			return value;
 		},
 
 		tokenRatio(tokenizer: string): number | null {

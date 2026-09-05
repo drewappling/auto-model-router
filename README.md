@@ -405,7 +405,11 @@ Your OpenRouter guardrails — model and provider allowlists, budget limits,
 Zero-Data-Retention and privacy rules — are therefore the router's outer
 boundary: a model your key cannot reach is never a routing candidate. The
 catalog is refetched in the background every `catalogRefreshMs` (default 5 min),
-so tightening or relaxing a guardrail is picked up without a restart. If a
+so tightening or relaxing a guardrail is picked up without a restart. A refresh
+that keeps fewer than half the previous models is adopted (your guardrails are
+authoritative) but logged at `warn` and reported as `catalog.shrink` on
+`GET /health` until the catalog recovers, because a sharp shrink reroutes every
+turn onto whatever survived. If a
 guardrail narrows the eligible set below a tier's quality floor,
 `adaptiveTierFloors` (on by default) relaxes that tier to the best available
 models rather than leaving it empty — see [Adaptive tier floors](#adaptive-tier-floors)
@@ -580,6 +584,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `latencyWeight` | `0` | How hard to penalise slow models in scoring (soft multiplier on effective cost). `0` disables it. |
 | `latencyMinSamples` | `20` | Streamed samples before latency is judged against a model. |
 | `maxExpectedWaitMs` | unset | Absolute expected-wait ceiling (ms): a hard drop for models *proven* slower (≥ `latencyMinSamples`), regardless of price. The soft penalty is multiplicative and capped, so it cannot demote a slow-but-cheap model — this can. New models keep their cold-start turns; relaxed with trust in tier rescue. Undefined ⇒ off. |
+| `escalationCostWeight` | `0` | Price a model's measured escalation rate at what an escalated retry actually bills (the ledger's $/prompt-token of `attempt > 0` rows), 0–1. The trust divisor reads a 4% escalation rate as a 4% surcharge; the real cost is a whole re-dispatch on the next tier's model. `0` disables the term. |
 
 ### `classifier` — complexity adjudication
 
@@ -594,6 +599,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `toolAxis` | `coding` | Quality axis for tool-heavy turns. |
 | `chatAxis` | `intelligence` | Quality axis for chat turns. |
 | `agenticLoopDepth` | `3` | Tool-loop depth at which a turn is treated as agentic. |
+| `mechanicalRetryFactor` | `0.2` | Fraction of the failed-tool and circular-call weights kept on a tool-result continuation; `1` disables the damping. |
 
 ### `escalation` — mid-stream retry upward
 
@@ -607,6 +613,14 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `triggers` | 5 signals | `malformed_tool_args`, `refusal`, `empty_completion`, `repeat_tool_call`, `missing_expected_tool_call`. |
 | `escalateOnLengthStop` | `true` | Escalate on a `length` finish that truncated tool-call args. |
 
+The model that produced the rejected output never serves the retry, at this
+tier or the next. Signals that indict the *provider* rather than the tier —
+`empty_completion`, `refusal`, and an error finish — first try a different
+model in the **same** tier (bounded, like a 5xx failover) and only then step
+up; structural signals (`malformed_tool_args`, `repeat_tool_call`, a truncated
+tool call) escalate a tier directly. A client that hangs up after the finish
+event has already arrived is treated as a completed turn, not an error.
+
 ### `hysteresis` — cache-aware model stickiness
 
 | Key | Default | Meaning |
@@ -614,8 +628,30 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `holdTurns` | `2` | Hold a chosen model this many turns before it can downgrade. |
 | `holdTurnsAfterEscalation` | `4` | Hold longer after an escalation. |
 | `switchMargin` | `1.3` | Switching must beat the warm-cache discount by this factor. Lower = switch away from a warm model more readily. |
+| `switchHorizonTurns` | `1` | Turns the stay/switch comparison is amortised over: `H × stayWarm` vs `switchCold + (H − 1) × newWarm`. `1` is the one-turn comparison, which can keep a dear model warm indefinitely when the cheaper winner is itself dear cold; a small `H` lets a switch that pays for itself within a few turns go ahead. |
 | `cacheWarmTtlMs` | `300000` (5 min) | How long a model's prompt cache is considered warm. |
 | `maxDowngradePerTurn` | `1` | Max tiers a turn may drop in one step (avoids quality cliffs). |
+| `breakHoldOnMechanical` | `false` | Let a tool-result continuation that classifies *below* the held tier escape the hold (still bounded by `maxDowngradePerTurn`). Worth enabling when the held tier is expensive. |
+
+### `compaction` — shrink stale tool output before dispatch
+
+Off by default; see `docs/context-optimization.md`. Every edit shrinks one
+tool-result's content in place behind a re-run breadcrumb, never removes or
+reorders a message, and the plan is persisted per conversation so already
+shrunk results stay shrunk (rewriting them would break the prompt cache).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch. |
+| `budgetTokens` | `40000` | Compact when the (already compacted) prompt exceeds this many tokens. |
+| `floorRatio` | `1` | Once compaction fires, compact down to this fraction of the budget so the plan holds for several turns. |
+| `replanGrowthRatio` | `1` | Above 1, only extend an existing plan once the compacted prompt has grown by this factor since the plan was made. Rations plan churn when the budget is unreachable (every turn over budget); fit-to-window is never rationed. |
+| `fitToWindow` | `true` | Also compact when the prompt would overflow the profile's context window. |
+| `protectRecentTurns` | `4` | Never touch the last N user/assistant turns or the volatile tail. |
+| `maxToolResultBytes` | `4096` | Tool results larger than this (outside the protected window) are truncated. |
+| `keepHeadBytes` / `keepTailBytes` | `512` / `512` | Bytes kept around the elision breadcrumb. |
+| `elideSupersededReads` | `true` | Stub an older result when a newer call to the same resource supersedes it. |
+| `collapseDuplicateResults` | `true` | Collapse byte-identical repeated results to a single copy. |
 
 ### `cache` — prompt-cache breakpoints
 
@@ -661,7 +697,7 @@ Each profile is a complete entry (arrays replace wholesale):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `adaptiveTierFloors` | `true` | Derive tier floors from the models actually available (relaxing, never raising, the configured floors). |
+| `adaptiveTierFloors` | `true` | Relax a tier's quality floor to a catalog-derived band when fewer than three available models meet the configured floor (never raising it). A floor that three or more models meet stands as written. |
 | `logLevel` | `info` | `silent`/`error`/`warn`/`info`/`debug`. |
 
 ## Multiple coding harnesses, one router
@@ -863,12 +899,19 @@ absolute floor admits nothing and the router is trapped in the lowest tier.
 
 With `adaptiveTierFloors: true` (the default), every catalog refresh ranks the
 **available** scored models and splits them into four quantile bands, taking
-each band's lower bound as that tier's adaptive floor. The floor actually
-enforced is `min(configured, adaptive)`:
+each band's lower bound as that tier's adaptive floor. The band applies only
+when the configured floor leaves the tier **thin** — fewer than three available
+models meet it — in which case the floor enforced is `min(configured, adaptive)`:
 
-- a healthy catalog keeps the configured floors verbatim — no behaviour change;
+- a floor that three or more models meet stands exactly as configured — no
+  behaviour change on a healthy catalog;
 - a narrowed catalog falls back to the adaptive floor, so `hard` still gets the
   best quartile of what is available instead of nothing.
+
+The thinness gate matters: a wide catalog carries a long tail of weak scored
+models, so its quantile bands sit *below* the configured floors (measured on a
+347-model key-admitted catalog: coding p50 = 45.8 against `moderate`'s 60), and
+an unconditional `min` would quietly relax every tier.
 
 Relaxation is one-directional by design: an adaptive floor may only **lower** a
 tier floor, never raise one. Two things are deliberately exempt:
@@ -934,6 +977,10 @@ Known gaps:
 
 - The `pi-native` front end is designed for but not implemented; only the
   OpenAI-compatible wire exists today.
+- `escalation.maxHoldMs` is only enforced when a chunk arrives: a stream that
+  emits nothing at all holds the client until the upstream ends. Left as is on
+  purpose — a timer would escalate every turn whose first token lands after
+  8s, which on live traffic is most of glm-5.3-flash's.
 - Blended `cost` figures in `models.yml` are refreshed by re-running
   `auto-model-router config --write`, not automatically.
 

@@ -13,17 +13,26 @@
  *
  * The fix is to treat the floors as relative when the absolute ones cannot be
  * met. Rank the available scored models, split them into four quantile bands,
- * and take each band's lower bound as that tier's adaptive floor. The effective
- * floor is then `min(configured, adaptive)`:
+ * and take each band's lower bound as that tier's adaptive floor. The adaptive
+ * floor applies ONLY when the configured one leaves the tier thin:
  *
- *  - A healthy catalog keeps the configured floors verbatim (the adaptive floor
- *    sits above them, so `min` picks the configured value) — no behaviour change.
- *  - A narrowed catalog falls back to the adaptive floor, so `hard` still gets
- *    the best quartile of what is available instead of nothing at all.
+ *  - When at least `MIN_FLOOR_ADMITS` rankable models meet the configured
+ *    floor, the configured floor stands verbatim — no behaviour change.
+ *  - When fewer do (a narrowed catalog), the effective floor is
+ *    `min(configured, adaptive)`, so `hard` still gets the best quartile of
+ *    what is available instead of nothing at all.
  *
- * `min` is deliberate: adaptive floors may only RELAX a floor, never tighten
- * one. Tightening would let a rich catalog silently price us out of a tier the
- * operator explicitly configured.
+ * The thinness gate is load-bearing. An earlier version applied `min` always,
+ * on the assumption that a healthy catalog's bands sit above the configured
+ * floors. They do not: a wide catalog carries a long tail of weak scored models
+ * (measured on 347 key-admitted models: coding p50 = 45.8 against a configured
+ * `moderate` floor of 60, p75 = 59.9 against `hard`'s 72), so `min` silently
+ * relaxed every tier and a coding-50 model won `moderate` — then escalated 14x
+ * more often than the model the configured floor would have picked.
+ *
+ * Adaptive floors may only RELAX a floor, never tighten one. Tightening would
+ * let a rich catalog silently price us out of a tier the operator explicitly
+ * configured.
  *
  * Unscored models are never imputed a score (see `candidates.ts`), so a catalog
  * with no benchmarks at all yields all-zero floors: every tier admits every
@@ -46,9 +55,20 @@ export interface TierPlan {
 	floors: Record<QualityAxis, AxisFloors>;
 	/** How many available models carried a score on each axis. */
 	scoredCount: Record<QualityAxis, number>;
+	/** Rankable models' scores per axis, ascending — what the floors were cut from. */
+	scores: Record<QualityAxis, readonly number[]>;
 	/** Adaptive input-price ceiling ($/Mtok) per tier, from the catalog's price spread. */
 	priceCeilings: Record<Tier, number>;
 }
+
+/**
+ * Rankable models a configured floor must admit for it to stand as written.
+ * Below this the tier is "thin" and the adaptive band may relax the floor.
+ * Three, not one: a lone survivor leaves no same-tier failover and no
+ * meaningful cost ranking, which is the narrowed-catalog situation this whole
+ * module exists to escape.
+ */
+export const MIN_FLOOR_ADMITS = 3;
 
 /**
  * Models that could plausibly serve a turn, for ranking purposes: the built-in
@@ -121,6 +141,7 @@ function bandCeilings(ascending: readonly number[]): Record<Tier, number> {
 export function computeTierPlan(models: readonly CatalogModel[], cfg: RouterConfig): TierPlan {
 	const floors: Record<string, AxisFloors> = {};
 	const scoredCount: Record<string, number> = {};
+	const axisScores: Record<string, readonly number[]> = {};
 	const includeFree = cfg.filters.includeFree;
 
 	for (const axis of AXES) {
@@ -134,6 +155,7 @@ export function computeTierPlan(models: readonly CatalogModel[], cfg: RouterConf
 		scores.sort((a, b) => a - b);
 		floors[axis] = bandFloors(scores);
 		scoredCount[axis] = scores.length;
+		axisScores[axis] = scores;
 	}
 	// Input prices ($/Mtok) of the rankable models, ascending, for the ceilings.
 	const prices: number[] = [];
@@ -146,8 +168,22 @@ export function computeTierPlan(models: readonly CatalogModel[], cfg: RouterConf
 	return {
 		floors: floors as Record<QualityAxis, AxisFloors>,
 		scoredCount: scoredCount as Record<QualityAxis, number>,
+		scores: axisScores as Record<QualityAxis, readonly number[]>,
 		priceCeilings: bandCeilings(prices),
 	};
+}
+
+/** Rankable models scoring at least `floor` on an axis. `scores` is ascending. */
+export function countAdmitted(scores: readonly number[], floor: number): number {
+	// Binary search for the first score >= floor; everything after it qualifies.
+	let lo = 0;
+	let hi = scores.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if ((scores[mid] ?? 0) < floor) lo = mid + 1;
+		else hi = mid;
+	}
+	return scores.length - lo;
 }
 
 /**
@@ -173,8 +209,9 @@ export function tierPlanFor(snapshot: CatalogSnapshot, cfg: RouterConfig): TierP
 }
 
 /**
- * The floor to actually enforce for a tier on an axis. Never tightens the
- * configured floor; only relaxes it when the available catalog cannot meet it.
+ * The floor to actually enforce for a tier on an axis. The configured floor
+ * stands whenever at least MIN_FLOOR_ADMITS rankable models meet it; only a
+ * thin tier is relaxed to the adaptive band, and never tightened.
  */
 export function effectiveQualityFloor(
 	configured: number,
@@ -182,6 +219,7 @@ export function effectiveQualityFloor(
 	axis: QualityAxis,
 	plan: TierPlan,
 ): number {
+	if (countAdmitted(plan.scores[axis], configured) >= MIN_FLOOR_ADMITS) return configured;
 	const adaptive = plan.floors[axis][tier];
 	return Math.min(configured, adaptive);
 }

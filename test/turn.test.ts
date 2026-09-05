@@ -45,7 +45,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, latencyMinSamples: 20, escalationCostWeight: 0 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator",
@@ -69,11 +69,11 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			escalateOnLengthStop: false,
 			...escalation,
 		},
-		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false },
+		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
 		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, maxQueue: 64 },
-		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true },
+		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1 },
 		budget: { onExceeded: "downgrade" },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
@@ -148,6 +148,8 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		cacheBreakpointMessageIndices: [],
 		compactionPlan: [],
 		promptTokensSaved: 0,
+		compactionSavedBytes: 0,
+		compactionPlanTokens: 0,
 		reasoning: undefined,
 		maxTokens: undefined,
 		stripAssistantReasoning: false,
@@ -404,10 +406,13 @@ describe("runTurn", () => {
 		expect(entries[1]!.attempt).toBe(1);
 		expect(entries[1]!.slug).toBe("better/model");
 
-		// The escalated attempt re-routed one tier up.
-		expect(calls).toHaveLength(2);
+		// A refusal indicts the provider, so a same-tier sibling is probed first;
+		// this fake router only has the simple-tier decision left, which is the
+		// wrong tier, so the turn then escalates one tier up for real.
+		expect(calls).toHaveLength(3);
 		expect(calls[0]).toEqual({ attempt: 0 });
-		expect(calls[1]).toEqual({ attempt: 1, escalateFrom: "trivial" });
+		expect(calls[1]).toEqual({ attempt: 1 });
+		expect(calls[2]).toEqual({ attempt: 1, escalateFrom: "trivial" });
 
 		// The held refusal text never reached the client.
 		expect(textOut(chunks)).toBe("Here is the answer.");
@@ -730,4 +735,66 @@ describe("latency measurement covers the work the router actually does", () => {
 		expect(entries[0]?.ttftMs).not.toBeNull();
 		expect(entries[0]?.ttftMs ?? -1).toBeGreaterThanOrEqual(0);
 	});
+
+	test("a client hang-up AFTER the finish event is a completed turn, not an error", async () => {
+		// Measured live: 1,842 of 2,068 "request aborted" rows carried a finish
+		// reason and full usage — the generation had finished and the client
+		// closed before the trailing [DONE] was read. Recording that as an error
+		// skipped the state save on 12% of turns.
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" })]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "die",
+				chunks: [
+					startChunk("cheap/model"),
+					textChunk("all done here"),
+					finishChunk("stop"),
+					usageChunk({ promptTokens: 120, cachedTokens: 100, completionTokens: 4 }, 0.0004),
+				],
+				error: new UpstreamError("aborted", 0, "request aborted", false),
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store, map } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]!.error).toBeNull();
+		expect(entries[0]!.wasted).toBe(false);
+		expect(entries[0]!.finishReason).toBe("stop");
+		expect(entries[0]!.reportedUsd).toBe(0.0004);
+		// The turn settled: hysteresis, cache warmth and the turn counter advance.
+		const state = map.get("conv-test")!;
+		expect(state.turn).toBe(1);
+		expect(state.currentSlug).toBe("cheap/model");
+		expect(state.cacheWarmSlug).toBe("cheap/model");
+		expect(state.lastPromptTokens).toBe(120);
+		expect(finishes).toHaveLength(1);
+	});
+
+	test("a client hang-up BEFORE the finish event is still recorded as aborted", async () => {
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple", maxTokens: 1 })]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "die",
+				chunks: [startChunk("cheap/model"), textChunk("partial answer that committed")],
+				error: new UpstreamError("aborted", 0, "request aborted", false),
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store, map } = mkConversations();
+		const { sink, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(entries).toHaveLength(1);
+		expect(entries[0]!.error).toBe("request aborted");
+		expect(entries[0]!.finishReason).toBeNull();
+		expect(map.get("conv-test")!.turn).toBe(0);
+		expect(finishes).toHaveLength(0);
+	});
+
 });

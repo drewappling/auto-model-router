@@ -55,4 +55,28 @@ describe("HTTP server resilience against dead streams", () => {
 		const json = (await modelsRes.json()) as { data: unknown[] };
 		expect(Array.isArray(json.data)).toBe(true);
 	});
+
+	test("a malformed request body does not consume a concurrency slot", async () => {
+		// Regression: the slot was acquired before the body was parsed and only
+		// released in runTurn's finally, so every rejected body leaked one slot
+		// and 24 of them turned the router into a permanent 429.
+		for (let i = 0; i < 30; i++) {
+			const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "this is not json",
+			});
+			expect(res.status).toBe(400);
+		}
+		const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "auto", stream: false, messages: [{ role: "user", content: "hello" }] }),
+		});
+		// Anything but "too many concurrent turns"; with no API key the turn
+		// itself fails at dispatch, which is fine here.
+		expect(res.status).not.toBe(429);
+		await res.text();
+	});
+
 });

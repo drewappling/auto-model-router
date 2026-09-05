@@ -188,6 +188,13 @@ export interface LedgerSignals {
 	latency: ModelLatency | null;
 }
 
+/** Measured price of a probe escalation: what the retry billed per prompt token of the failed turn. */
+export interface EscalationCost {
+	usdPerPromptToken: number;
+	samples: number;
+	windowDays: number;
+}
+
 export interface Ledger {
 	record(entry: LedgerEntry): void;
 	/** Total reported (or predicted, when reported is null) spend for a conversation. */
@@ -210,6 +217,13 @@ export interface Ledger {
 	latency(slug: string, harnessId?: string): ModelLatency | null;
 	/** Batch trust and latency for one candidate set; one query per signal kind. Optional — callers can fall back to per-slug calls. */
 	signals?(slugs: readonly string[], harnessId?: string): Map<string, LedgerSignals>;
+	/**
+	 * What an escalated retry actually bills per prompt token, measured over
+	 * the last `windowDays` of attempt > 0 rows. Null until enough escalated
+	 * attempts exist to measure. Optional so fakes need not implement it; the
+	 * escalation-cost term in candidate scoring is inert without it.
+	 */
+	escalationCost?(windowDays: number): EscalationCost | null;
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];

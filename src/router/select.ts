@@ -183,6 +183,8 @@ export function select(args: SelectArgs): Decision {
 	//        Overshooting buys several byte-stable turns per plan change.
 	let compactionPlan: CompactionEdit[] = [];
 	let promptTokensSaved = 0;
+	let compactionSavedBytes = 0;
+	let compactionPlanTokens = state.compactionPlanTokens ?? 0;
 	let effFeatures = features;
 	if (cfg.compaction.enabled && req.promptBytes > 0 && features.promptTokens > 0) {
 		const bytesPerToken = req.promptBytes / features.promptTokens;
@@ -197,8 +199,19 @@ export function select(args: SelectArgs): Decision {
 		const overBudget = compactedTokens > cfg.compaction.budgetTokens;
 		const overWindow =
 			cfg.compaction.fitToWindow && compactedTokens * headroom + EXPECTED_COMPLETION_TOKENS > profile.contextWindow;
+		// Rationing: when the budget is unreachable (the observed case — compacted
+		// prompts of 100-160k against a 40k budget) `overBudget` is true on every
+		// turn, and a plan gains an edit the moment a tool result ages out of the
+		// protected window, so `floorRatio` never gets to hold a plan. Instead,
+		// extend an existing plan only once the compacted prompt has grown by
+		// `replanGrowthRatio` since it was made. Never rations the window fit.
+		const rationed =
+			cfg.compaction.replanGrowthRatio > 1 &&
+			carried.length > 0 &&
+			compactionPlanTokens > 0 &&
+			compactedTokens < compactionPlanTokens * cfg.compaction.replanGrowthRatio;
 		let plan: CompactionResult = { edits: carried, savedBytes: carriedSavedBytes };
-		if (overBudget || overWindow) {
+		if (overWindow || (overBudget && !rationed)) {
 			const targets: number[] = [];
 			// Overshoot the budget so the next re-plan is several turns away.
 			if (overBudget) targets.push(Math.max(1, Math.floor(cfg.compaction.budgetTokens * cfg.compaction.floorRatio)));
@@ -208,12 +221,18 @@ export function select(args: SelectArgs): Decision {
 		}
 		if (plan.edits.length > 0) {
 			compactionPlan = [...plan.edits];
+			compactionSavedBytes = plan.savedBytes;
 			promptTokensSaved = tokensOf(plan.savedBytes);
 			effFeatures = { ...features, promptTokens: features.promptTokens - promptTokensSaved };
 			const added = plan.edits.length - carried.length;
+			// A plan that gained edits was made at THIS compacted size; a carried
+			// plan keeps the size it was made at, so growth accrues against it.
+			if (added > 0 || compactionPlanTokens === 0) compactionPlanTokens = effFeatures.promptTokens;
 			reasons.push(
-				`compaction: ${plan.edits.length} tool result(s) shrunk (${carried.length} carried, ${added} new), ~${promptTokensSaved} tokens saved (prompt ${features.promptTokens}→${effFeatures.promptTokens})`,
+				`compaction: ${plan.edits.length} tool result(s) shrunk (${carried.length} carried, ${added} new), ~${promptTokensSaved} tokens saved (prompt ${features.promptTokens}→${effFeatures.promptTokens})${rationed ? " [re-plan rationed]" : ""}`,
 			);
+		} else {
+			compactionPlanTokens = 0;
 		}
 	}
 
@@ -274,6 +293,13 @@ export function select(args: SelectArgs): Decision {
 		ledger !== null && snapshot.models.length > 0
 			? ledger.signals?.(snapshot.models.map((m) => m.slug), cfg.filters.trustScopedByHarness ? req.harnessId : undefined)
 			: undefined;
+	// What an escalated retry has actually been billing per prompt token, for
+	// the escalation-cost term in candidate scoring. Read once per turn; null
+	// (term inert) when the weight is 0 or the ledger has too few samples.
+	const escalationUsdPerPromptToken =
+		cfg.filters.escalationCostWeight > 0
+			? (ledger?.escalationCost?.(cfg.ledger.blendWindowDays)?.usdPerPromptToken ?? null)
+			: null;
 	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,
@@ -288,6 +314,7 @@ export function select(args: SelectArgs): Decision {
 			relaxLevel,
 			...(args.excludeSlugs === undefined ? {} : { excludeSlugs: args.excludeSlugs }),
 			...(candidateSignals === undefined ? {} : { signals: candidateSignals }),
+			...(escalationUsdPerPromptToken === null ? {} : { escalationUsdPerPromptToken }),
 		});
 	let chosenTier = effective;
 	let built: { candidates: Candidate[]; rejected: Rejection[] } | null = null;
@@ -360,17 +387,26 @@ export function select(args: SelectArgs): Decision {
 		if (warm !== undefined) {
 			const warmPrice = priceAt(warm.model, Math.max(1, state.lastPromptTokens));
 			const newPrice = priceAt(chosen.model, Math.max(1, effFeatures.promptTokens));
-			const stayCost = state.lastPromptTokens * (warmPrice.cacheRead ?? warmPrice.prompt);
-			const switchCost = effFeatures.promptTokens * (newPrice.prompt + (newPrice.cacheWrite ?? 0));
+			const stayWarm = state.lastPromptTokens * (warmPrice.cacheRead ?? warmPrice.prompt);
+			const switchCold = effFeatures.promptTokens * (newPrice.prompt + (newPrice.cacheWrite ?? 0));
+			const newWarm = effFeatures.promptTokens * (newPrice.cacheRead ?? newPrice.prompt);
+			// Amortise over the horizon: H turns of staying warm against one cold
+			// switch plus H−1 turns warm on the new model. H = 1 is the one-turn
+			// comparison, which kept a 25x-priced model warm for a 33-dispatch run
+			// because no single turn could recoup the cold write on its own.
+			const horizon = Math.max(1, cfg.hysteresis.switchHorizonTurns);
+			const stayCost = horizon * stayWarm;
+			const switchCost = switchCold + (horizon - 1) * newWarm;
+			const over = horizon > 1 ? ` over ${horizon} turns` : "";
 			if (stayCost > switchCost * cfg.hysteresis.switchMargin) {
 				reasons.push(
-					`cache: switch ${warmSlug} → ${chosen.model.slug} (stay $${stayCost.toFixed(4)} > switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin})`,
+					`cache: switch ${warmSlug} → ${chosen.model.slug} (stay $${stayCost.toFixed(4)} > switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over})`,
 				);
 			} else {
 				chosen = warm;
 				sticky = true;
 				reasons.push(
-					`cache: keeping warm ${warmSlug} (stay $${stayCost.toFixed(4)} ≤ switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin})`,
+					`cache: keeping warm ${warmSlug} (stay $${stayCost.toFixed(4)} ≤ switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over})`,
 				);
 			}
 		}
@@ -481,6 +517,8 @@ export function select(args: SelectArgs): Decision {
 		cacheBreakpointMessageIndices,
 		compactionPlan,
 		promptTokensSaved,
+		compactionSavedBytes,
+		compactionPlanTokens,
 		reasoning,
 		maxTokens,
 		stripAssistantReasoning,

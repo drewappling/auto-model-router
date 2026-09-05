@@ -66,6 +66,22 @@ export function estimatePromptTokens(req: NormRequest, tokenizer: string, ledger
 	return tokens;
 }
 
+/**
+ * Replaces the byte count the pending estimate will be calibrated against.
+ *
+ * The estimate is taken from the RAW request, but what the upstream bills is
+ * the prompt after compaction shrank it and the context block was appended.
+ * Pairing raw bytes with billed tokens taught every family a ratio that had
+ * compaction baked in (measured: the compacted estimate ran 33% under the
+ * billed count). The turn orchestrator calls this with the dispatched size
+ * once it knows it, so the ratio describes the tokenizer and nothing else.
+ */
+export function adjustPendingEstimate(conversationKey: string, dispatchedBytes: number): void {
+	const pending = pendingEstimates.get(conversationKey);
+	if (pending === undefined || dispatchedBytes <= 0) return;
+	pending.bytes = dispatchedBytes;
+}
+
 /** Internal: called by cost/ledger.ts when recording a turn. */
 export function consumePendingEstimate(conversationKey: string): { tokenizer: string; bytes: number } | null {
 	const pending = pendingEstimates.get(conversationKey) ?? null;

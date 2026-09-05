@@ -280,7 +280,8 @@ describe("scoreHeuristic", () => {
 		const retry = scoreHeuristic(contFeatures(90, { circularToolCall: true }), BASE);
 		const plain = scoreHeuristic(contFeatures(90), BASE);
 		expect(tierIdx(retry.tier)).toBeLessThanOrEqual(tierIdx("moderate"));
-		expect(retry.score).toBeLessThan(plain.score + 0.24);
+		// Exactly the damped weight, not merely "less than the full one".
+		expect(retry.score - plain.score).toBeCloseTo(BASE.classifier.mechanicalRetryFactor * 0.24, 5);
 	});
 
 	test("a failing tool result on a deep loop is at least simple", () => {

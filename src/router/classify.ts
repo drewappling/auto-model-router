@@ -23,7 +23,11 @@ import type { Classification, Features, TaskType, Tier } from "./types.ts";
  *  - Failure signals cost money twice: a cheap model that flounders gets
  *    escalated and the turn is paid for twice. So a failed tool result, a
  *    repeated tool call, complexity keywords, and an explicit reasoning
- *    request carry the dominant POSITIVE weights.
+ *    request carry the dominant POSITIVE weights — on a FRESH turn. On a
+ *    tool-result continuation the failed-tool and circular-call weights are
+ *    damped by `classifier.mechanicalRetryFactor` (0.2 shipped), because a
+ *    mechanical retry loop was buying the hard tier for work that never
+ *    needed it; there they are a nudge, not a driver.
  */
 const BASE = 0.3;
 const W_TOOL_CONTINUATION = -0.28; // dominant negative
@@ -31,8 +35,8 @@ const W_COMPLEXITY_KEYWORD = 0.1;
 const CAP_COMPLEXITY = 0.3;
 const W_TRIVIALITY_KEYWORD = -0.09;
 const CAP_TRIVIALITY = -0.27;
-const W_TOOL_FAILED = 0.26; // dominant positive: retry loops are expensive
-const W_CIRCULAR_LOOP = 0.24; // a re-issued (circular) tool call: the model is stuck
+const W_TOOL_FAILED = 0.26; // dominant positive on a fresh turn; damped on continuations
+const W_CIRCULAR_LOOP = 0.24; // a re-issued (circular) tool call: the model is stuck; damped on continuations
 const W_TERSE = -0.1;
 const W_CODE_BLOCK = 0.04;
 const CAP_CODE = 0.08;
@@ -118,37 +122,24 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 		Math.max(f.trivialityKeywords.length * W_TRIVIALITY_KEYWORD, CAP_TRIVIALITY),
 		`triviality keywords [${f.trivialityKeywords.join(", ")}]`,
 	);
-	if (f.lastToolFailed) {
-		// A retry after a failed tool call is the MOST mechanical turn there is:
-		// no new user intent, same prompt prefix, the harness just re-asks. The
-		// flat +0.26 let an automated retry loop buy the hard tier ($7.02 of one
-		// measured day vs $0.19 for the same rows as moderate picks). A
-		// continuation keeps only a small nudge; a genuine user-visible failure
-		// (NOT a tool-result continuation) keeps the full weight.
-		const failed = f.isToolResultContinuation ? W_TOOL_FAILED * cfg.classifier.mechanicalRetryFactor : W_TOOL_FAILED;
-		add(
-			failed,
-			f.isToolResultContinuation
-				? `last tool result failed (mechanical retry, damped x${cfg.classifier.mechanicalRetryFactor})`
-				: "last tool result failed",
-		);
-	}
+	// Stuck-loop signals on a tool-result continuation are damped: a retry after
+	// a failed call is the MOST mechanical turn there is (no new user intent,
+	// same prompt prefix, the harness just re-asks), and the flat weight let an
+	// automated retry loop buy the hard tier ($7.02 of one measured day vs $0.19
+	// for the same rows as moderate picks). A circular call measured the same
+	// way: hard escalations driven by it NEVER shortened the loop (chains from
+	// hard and from moderate both averaged 5.74 turns) — the loop ends when the
+	// underlying state changes, not because a pricier model re-read the same
+	// result. Off a continuation (a fresh user turn, the failure the human just
+	// saw) both keep their full weight: that genuinely changes what the turn
+	// needs.
+	const factor = cfg.classifier.mechanicalRetryFactor;
+	const damped = f.isToolResultContinuation && factor < 1;
+	const damp = (w: number): number => (damped ? w * factor : w);
+	const dampNote = damped ? ` (mechanical retry, damped x${factor})` : "";
+	if (f.lastToolFailed) add(damp(W_TOOL_FAILED), `last tool result failed${dampNote}`);
 	if (f.circularToolCall) {
-		// Same logic as the failed-tool clamp above, measured separately: a hard
-		// escalation driven by a circular call NEVER shortened the loop (chains
-		// starting at hard: mean 5.74 turns; chains starting at moderate: mean
-		// 5.74 — identical). The loop ends when the underlying state changes,
-		// not because a pricier model re-read the same tool result. On a
-		// mechanical continuation the circular flag is a stuck retry, not novel
-		// difficulty, so it takes the same damping as the failed-tool bonus;
-		// off a continuation (fresh user turn) it keeps full weight.
-		const circ = f.isToolResultContinuation ? W_CIRCULAR_LOOP * cfg.classifier.mechanicalRetryFactor : W_CIRCULAR_LOOP;
-		add(
-			circ,
-			f.isToolResultContinuation
-				? `circular tool call (mechanical retry, damped x${cfg.classifier.mechanicalRetryFactor})`
-				: "circular tool call (re-issued a prior call; stuck)",
-		);
+		add(damp(W_CIRCULAR_LOOP), damped ? `circular tool call${dampNote}` : "circular tool call (re-issued a prior call; stuck)");
 	}
 	const rw = reasoningWeight(f.requestedReasoning, cfg);
 	if (rw > 0) add(rw, `client requested reasoning=${f.requestedReasoning ?? ""}`);
@@ -167,7 +158,13 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 			`autonomous loop depth ${f.toolLoopDepth} (sustained task)`,
 		);
 	}
-	if (f.hasImages) add(W_IMAGES, "image input");
+	// Only an image the human JUST supplied is visual work. A screenshot that
+	// entered the conversation long ago rides along in every later mechanical
+	// continuation (measured: 5,603 of ~9,000 heuristic rows in a week carried
+	// one, and 339 of them sat a tier higher on this +0.04 alone). Capability —
+	// the served model must still accept image input — is enforced separately
+	// on `req.hasImages` in candidate selection, exactly as `classifyTask` does.
+	if (f.hasNewImage) add(W_IMAGES, "new image input");
 	if (f.toolCount > 0) add(W_TOOLS_OFFERED, `${f.toolCount} tools offered`);
 
 	score = Math.min(1, Math.max(0, score));

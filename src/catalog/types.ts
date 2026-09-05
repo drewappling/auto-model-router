@@ -92,6 +92,19 @@ export interface CatalogSnapshot {
 	etag?: string;
 }
 
+/**
+ * A refresh that dropped most of the catalog. Recorded, not resisted: the
+ * router routes over whatever the key admits, but a collapse from hundreds of
+ * models to a handful reroutes every turn onto whatever survived — measured
+ * once at ~$32 in a day when the cheap default vanished and a 10x model served
+ * everything — so it must be visible on `/health` and in the log.
+ */
+export interface CatalogShrink {
+	fromModels: number;
+	toModels: number;
+	atMs: number;
+}
+
 export interface CatalogSource {
 	/** Returns a snapshot, refreshing from upstream when the cached one is older than the TTL. */
 	get(): Promise<CatalogSnapshot>;
@@ -101,4 +114,10 @@ export interface CatalogSource {
 	peek(): CatalogSnapshot | null;
 	/** Slug lookup against the current snapshot. */
 	find(slug: string): CatalogModel | undefined;
+	/**
+	 * The most recent sharp shrink this process observed, or null. Cleared once
+	 * a later refresh restores at least the pre-shrink size. Optional so fakes
+	 * and older sources need not implement it.
+	 */
+	lastShrink?(): CatalogShrink | null;
 }

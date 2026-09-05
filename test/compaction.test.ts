@@ -9,6 +9,7 @@ const CFG: CompactionConfig = {
 	enabled: true,
 	budgetTokens: 1,
 	floorRatio: 1,
+	replanGrowthRatio: 1,
 	fitToWindow: false,
 	protectRecentTurns: 2,
 	maxToolResultBytes: 50,

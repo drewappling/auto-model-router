@@ -386,6 +386,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 									fetchedAtMs: snap.fetchedAtMs,
 									ageMs: Date.now() - snap.fetchedAtMs,
 									keyScoped: snap.keyScoped === true,
+									// Non-null after a refresh kept < half the previous models;
+									// the one signal that the key narrowed (or upstream blipped)
+									// and routing is now on whatever survived.
+									shrink: catalog.lastShrink?.() ?? null,
 								},
 					});
 				}

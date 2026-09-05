@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config/load.ts";
 import { createLedger } from "../src/cost/ledger.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
-import { DEFAULT_BYTES_PER_TOKEN, estimatePromptTokens, estimateTokens } from "../src/tokens/estimate.ts";
+import { adjustPendingEstimate, DEFAULT_BYTES_PER_TOKEN, estimatePromptTokens, estimateTokens } from "../src/tokens/estimate.ts";
 import { openDb } from "../src/util/sqlite.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
@@ -167,3 +167,73 @@ describe("estimatePromptTokens", () => {
 		expect(estimatePromptTokens(withImage, "gpt", null)).toBeGreaterThan(estimatePromptTokens(text, "gpt", null) + 500);
 	});
 });
+
+describe("calibration hygiene (review 2026-09-05 §8)", () => {
+	function requestOf(text: string) {
+		return parseChatRequest({ model: "auto", messages: [{ role: "user", content: text }] }, new Headers());
+	}
+
+	test("a provider reporting impossible token counts never calibrates its family", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			const req = requestOf("x".repeat(10_000));
+			for (let i = 0; i < 30; i++) {
+				estimatePromptTokens(req, "qwen3", ledger);
+				// 0.4 bytes/token: ~8x what the bytes imply (seen live from one provider).
+				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 0.4) } }));
+			}
+			expect(ledger.tokenRatio("qwen3")).toBeNull();
+			for (let i = 0; i < 30; i++) {
+				estimatePromptTokens(req, "qwen3", ledger);
+				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 3.2) } }));
+			}
+			expect(ledger.tokenRatio("qwen3")).toBeCloseTo(3.2, 1);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("adjustPendingEstimate calibrates against the dispatched bytes, not the raw request", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			const req = requestOf("y".repeat(10_000));
+			for (let i = 0; i < 30; i++) {
+				estimatePromptTokens(req, "grok", ledger);
+				// Compaction halved the prompt before dispatch; the upstream billed the half.
+				adjustPendingEstimate(req.conversationKey, req.promptBytes / 2);
+				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 2 / 3.5) } }));
+			}
+			// Paired with the raw bytes this would have learned 7.0; the dispatched bytes give the true 3.5.
+			expect(ledger.tokenRatio("grok")).toBeCloseTo(3.5, 1);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("ledger.escalationCost", () => {
+	test("measures what escalated retries bill per prompt token, once enough exist", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			for (let i = 0; i < 9; i++) {
+				ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
+			}
+			expect(ledger.escalationCost?.(7)).toBeNull(); // 9 < the sample floor
+			ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
+			// Errored retries carry no usage and are excluded.
+			ledger.record(entry({ attempt: 1, reportedUsd: null, error: "upstream_error: boom", usage: EMPTY_USAGE }));
+			// Memoised: a fresh ledger reads through.
+			const fresh = createLedger(db, cfg);
+			const cost = fresh.escalationCost?.(7);
+			expect(cost).not.toBeNull();
+			expect(cost!.samples).toBe(10);
+			expect(cost!.usdPerPromptToken).toBeCloseTo(0.02 / 1_000, 8);
+		} finally {
+			db.close();
+		}
+	});
+});
+

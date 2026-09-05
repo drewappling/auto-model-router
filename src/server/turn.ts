@@ -14,6 +14,7 @@ import type { RouterConfig } from "../config/types.ts";
 import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
 import { resolveHoldTurns } from "../router/explore.ts";
+import { adjustPendingEstimate } from "../tokens/estimate.ts";
 import {
 	TIER_ORDER,
 	type ConversationStore,
@@ -186,6 +187,14 @@ export async function runTurn(
 			...(contextBlock === undefined ? {} : { contextBlock }),
 			...(decision.compactionPlan.length > 0 ? { compactionPlan: decision.compactionPlan } : {}),
 		});
+
+		// Calibrate the token estimate against the bytes that actually go out —
+		// after compaction shrank the prompt and the context block was appended
+		// — not the raw request the estimate was taken from.
+		adjustPendingEstimate(
+			req.conversationKey,
+			req.promptBytes - decision.compactionSavedBytes + (contextBlock === undefined ? 0 : Buffer.byteLength(contextBlock)),
+		);
 
 		// Our own abort composes with the client's: escalation teardown and
 		// client disconnect both kill the upstream connection.
@@ -525,6 +534,7 @@ export async function runTurn(
 		// it verbatim (after byte-length validation), keeping shrunk tool results
 		// shrunk so the prompt cache survives and the savings compound.
 		state.compactionPlan = decision.compactionPlan.length > 0 ? decision.compactionPlan : null;
+		state.compactionPlanTokens = decision.compactionPlanTokens;
 		if (usage.cachedTokens > 0 || usage.cacheWriteTokens > 0) {
 			// Non-zero cache traffic is direct evidence the upstream cache exists.
 			state.cacheWarmSlug = servedSlug ?? decision.slug;

@@ -15,6 +15,12 @@ import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts"
 export interface BuildCandidatesArgs {
 	/** Pre-fetched trust/latency signals for all candidate slugs. When provided, buildCandidates uses these instead of per-slug ledger calls. */
 	signals?: Map<string, LedgerSignals>;
+	/**
+	 * Measured cost of an escalated retry per prompt token (from
+	 * `Ledger.escalationCost`). With `filters.escalationCostWeight` > 0 a
+	 * model's measured escalation rate is priced at this; absent ⇒ term inert.
+	 */
+	escalationUsdPerPromptToken?: number;
 	req: NormRequest;
 	features: Features;
 	tier: Tier;
@@ -69,6 +75,16 @@ function resolveQuality(model: CatalogModel, axis: QualityAxis): { score: number
 
 /** Neutral trust prior for models our ledger has never observed. */
 const UNMEASURED_TRUST = 0.9;
+
+/**
+ * Prior on the escalation rate, as pseudo-counts: an unobserved model is
+ * assumed to escalate ESCALATION_PRIOR times in ESCALATION_PRIOR_N attempts
+ * (0.25%), so a new cheap model is not priced out before it has been tried,
+ * and a model with a handful of attempts is pulled toward that rather than
+ * toward 0% or 100%.
+ */
+const ESCALATION_PRIOR = 0.05;
+const ESCALATION_PRIOR_N = 20;
 
 /** Excess-ratio cap so one very slow model cannot be penalised into oblivion. */
 const LATENCY_EXCESS_CAP = 3;
@@ -305,7 +321,19 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// for slowness (TTFT over the reference). qualityExponent 0 makes this
 		// "cheapest above the floor"; the floor does the quality work.
 		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens);
-		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5)) * latencyMult;
+		// Escalation-cost term: the trust divisor prices a failure as a retry of
+		// THIS model, but a probe escalation re-dispatches the whole prompt on
+		// the next tier's model — measured at ~700x a cheap model's own turn cost.
+		// Price the measured rate at what an escalated retry actually bills.
+		const escalationRate =
+			trust !== null && trust.attempts > 0
+				? (trust.escalations + ESCALATION_PRIOR) / (trust.attempts + ESCALATION_PRIOR_N)
+				: ESCALATION_PRIOR / ESCALATION_PRIOR_N;
+		const escalationUsd =
+			filters.escalationCostWeight > 0 && args.escalationUsdPerPromptToken !== undefined
+				? filters.escalationCostWeight * escalationRate * args.escalationUsdPerPromptToken * features.promptTokens
+				: 0;
+		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5) + escalationUsd) * latencyMult;
 		// Score is assigned in a SECOND PASS below: both qualityNormalization and
 		// capabilityFloorUsd are properties of the candidate SET, not of one
 		// model, so no per-model value can be computed here. Placeholder only.
@@ -320,6 +348,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 				: `trust ${trustScore.toFixed(2)} over ${trust.attempts} attempts`,
 			`expected $${fc.expectedUsd.toFixed(6)}`,
 		];
+		if (escalationUsd > 0) {
+			reasons.push(`escalation risk +$${escalationUsd.toFixed(6)} (rate ${(escalationRate * 100).toFixed(2)}% × measured retry cost)`);
+		}
 		if (latencyMult > 1 && latency !== null) {
 			reasons.push(
 				`latency penalty ×${latencyMult.toFixed(2)} (ttft ${Math.round(latency.ttftMs)}ms, ${latency.tokensPerSec.toFixed(0)} tok/s over ${latency.samples} samples)`,

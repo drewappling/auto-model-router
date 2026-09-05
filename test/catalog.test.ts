@@ -316,4 +316,48 @@ describe("createCatalog key-scoped availability", () => {
 		expect(hydrated?.keyScoped).toBe(true);
 		db.close();
 	});
+
+	test("a refresh that keeps under half the models is recorded as a shrink and surfaced", async () => {
+		const { createCatalog } = await import("../src/catalog/openrouter-catalog.ts");
+		const { openDb } = await import("../src/util/sqlite.ts");
+		const { DEFAULT_CONFIG } = await import("../src/config/defaults.ts");
+
+		// Every usable record, then a 4-model slice of it, then the full set again.
+		const usable = RAW.filter((r) => normalizeCatalogModel(r) !== null);
+		expect(usable.length).toBeGreaterThanOrEqual(20);
+		const responses = [usable, usable.slice(0, 4), usable];
+		let calls = 0;
+		const upstream: any = {
+			dispatch: () => Promise.reject(new Error("unused")),
+			complete: () => Promise.reject(new Error("unused")),
+			fetchModels: async () => usable,
+			fetchModelsForUser: async () => responses[Math.min(calls++, responses.length - 1)],
+		};
+		const cfg = {
+			...DEFAULT_CONFIG,
+			benchmarks: { ...DEFAULT_CONFIG.benchmarks, enabled: false },
+			openrouter: { ...DEFAULT_CONFIG.openrouter, apiKey: "sk-or-test" },
+			logLevel: "silent" as const,
+		};
+		const db = openDb(":memory:");
+		const catalog = createCatalog(cfg, upstream, db);
+
+		const first = await catalog.get();
+		expect(catalog.lastShrink?.()).toBeNull();
+
+		// The shrink is ADOPTED (the key decides what may be dispatched) but flagged.
+		const second = await catalog.refresh();
+		expect(second.models.length).toBe(4);
+		const shrink = catalog.lastShrink?.();
+		expect(shrink).not.toBeNull();
+		expect(shrink!.fromModels).toBe(first.models.length);
+		expect(shrink!.toModels).toBe(4);
+
+		// Recovery clears it.
+		const third = await catalog.refresh();
+		expect(third.models.length).toBe(first.models.length);
+		expect(catalog.lastShrink?.()).toBeNull();
+		db.close();
+	});
+
 });

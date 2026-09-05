@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 15;
+const USER_VERSION = 16;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -226,6 +226,23 @@ const MIGRATE_V13 = `
 ALTER TABLE conversations ADD COLUMN compaction_plan TEXT;
 `;
 
+// v16: conversations remember the compacted prompt size the current plan was
+// made at, so re-planning can be rationed to real growth (see
+// CompactionConfig.replanGrowthRatio). 0 = unknown; the next plan sets it.
+//
+// The same migration discards every token_calibration row. Until v16 the
+// calibration paired the PRE-compaction, pre-context-block byte count with the
+// POST-compaction billed token count, so every learned ratio absorbed
+// compaction (measured: actual/compacted-estimate = 1.5), and one provider
+// that reports ~8x prompt tokens had dragged the qwen3 family to 1.6
+// bytes/token. Rows are running sums with thousands of samples, so they would
+// never converge on correctly paired data; relearning from zero costs ~20
+// samples per family at the built-in defaults.
+const MIGRATE_V16 = `
+ALTER TABLE conversations ADD COLUMN compaction_plan_tokens INTEGER NOT NULL DEFAULT 0;
+DELETE FROM token_calibration;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -270,6 +287,7 @@ export function openDb(path: string): Database {
 		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
 		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);
+		if (!convCols.some((c) => c.name === "compaction_plan_tokens")) db.exec(MIGRATE_V16);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

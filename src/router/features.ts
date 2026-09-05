@@ -170,9 +170,21 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		}
 	}
 
+	// The tool run to judge for failure: the trailing run on a continuation, or
+	// the run that sits immediately behind the newest user turn — the failure
+	// the human just saw and is now responding to. The classifier weights the
+	// two differently (a mechanical retry is damped, a user-visible failure is
+	// not), so the second case has to be detectable here or that branch is dead.
 	let lastToolFailed = false;
+	let failureScanFrom = -1;
 	if (isToolResultContinuation) {
-		scanResults: for (let i = messages.length - 1; i >= 0; i--) {
+		failureScanFrom = messages.length - 1;
+	} else if (tail?.role === "user") {
+		const start = trailingRunStart(messages, (m) => m.role === "user");
+		if (messages[start - 1]?.role === "tool") failureScanFrom = start - 1;
+	}
+	if (failureScanFrom >= 0) {
+		scanResults: for (let i = failureScanFrom; i >= 0; i--) {
 			const m = messages[i];
 			if (m === undefined || m.role !== "tool") break;
 			for (const re of TOOL_FAILURE_MARKERS) {
