@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { DEFAULT_CONFIG } from "./defaults.ts";
 import { configInputSchema } from "./schema.ts";
-import { resolveOpenRouterKey, type ResolvedCredential } from "./omp-credentials.ts";
+import { resolveOllamaKey, resolveOpenRouterKey, type ResolvedCredential } from "./omp-credentials.ts";
 import type { RouterConfig } from "./types.ts";
 
 const LOG_LEVELS: readonly RouterConfig["logLevel"][] = ["silent", "error", "warn", "info", "debug"];
@@ -155,7 +155,27 @@ export function loadConfig(opts?: { path?: string; overrides?: DeepPartial<Route
 	cfg.openrouter.apiKey = credential.apiKey;
 	apiKeyProvenance.set(cfg, credential);
 
+	// Same borrowing for Ollama Cloud: `/login ollama-cloud` in omp is all the
+	// setup a direct ollama.com connection needs. Resolved even when the
+	// upstream is disabled, so enabling it later needs no extra step.
+	const ollamaCredential = resolveOllamaKey(cfg.ollama.apiKey);
+	cfg.ollama.apiKey = ollamaCredential.apiKey;
+	ollamaKeyProvenance.set(cfg, ollamaCredential);
+
 	return cfg;
+}
+
+const ollamaKeyProvenance = new WeakMap<RouterConfig, ResolvedCredential>();
+
+/** Where a config's Ollama Cloud key came from; never the key itself. */
+export function ollamaKeySource(cfg: RouterConfig): ResolvedCredential {
+	return (
+		ollamaKeyProvenance.get(cfg) ?? {
+			apiKey: cfg.ollama.apiKey,
+			source: cfg.ollama.apiKey === "" ? "none" : "config",
+			detail: cfg.ollama.apiKey === "" ? "no key configured" : "config",
+		}
+	);
 }
 
 /**

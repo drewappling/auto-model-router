@@ -8,7 +8,7 @@ import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import { UpstreamError } from "../upstream/types.ts";
-import { apiKeySource } from "../config/load.ts";
+import { apiKeySource, ollamaKeySource } from "../config/load.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
 import { watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
@@ -212,7 +212,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (ollama !== null) {
 		log.info("ollama cloud upstream enabled", {
 			baseUrl: cfg.ollama.baseUrl,
-			apiKey: cfg.ollama.apiKey === "" ? "none (daemon sign-in)" : "configured",
+			// Provenance only; never the key itself.
+			apiKeySource: ollamaKeySource(cfg).source,
 			costBias: cfg.ollama.costBias,
 		});
 	}
@@ -391,6 +392,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 								? null
 								: {
 										baseUrl: cfg.ollama.baseUrl,
+										apiKeySource: ollamaKeySource(cfg).source,
 										models: catalog.ollamaModels?.().length ?? 0,
 										available: ollama.available(),
 										cooldownUntilMs: ollama.cooldownUntilMs(),

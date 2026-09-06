@@ -557,7 +557,7 @@ an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
 | --- | --- | --- |
 | `enabled` | `false` | Master switch. |
 | `baseUrl` | `http://127.0.0.1:11434/v1` | A local daemon (proxies `:cloud` models under its sign-in) or `https://ollama.com/v1`. |
-| `apiKey` | unset | Bearer for ollama.com; also read from `OLLAMA_API_KEY`. The daemon needs none. |
+| `apiKey` | unset | Bearer for ollama.com. Resolved from config, then `OLLAMA_API_KEY`, then omp's own auth store (`/login ollama-cloud` in omp) — the same borrowing as the OpenRouter key. The daemon needs none. |
 | `timeoutMs` | `600000` | Per-request timeout. |
 | `catalogTtlMs` | `300000` | Re-list models when the last listing is older than this. |
 | `includeLocal` | `false` | Also expose the daemon's local models (only those named in `prices`). |
@@ -734,7 +734,8 @@ ollama:
   # default: the local daemon, which proxies `:cloud` models under whatever
   # account `ollama signin` used. For ollama.com directly:
   # baseUrl: https://ollama.com/v1
-  # apiKey: <from https://ollama.com/settings/keys, or OLLAMA_API_KEY>
+  # apiKey: <from https://ollama.com/settings/keys, or OLLAMA_API_KEY, or
+  #          borrowed from omp after `/login ollama-cloud` — no copy needed>
 ```
 
 What happens once it is on:

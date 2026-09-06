@@ -95,23 +95,33 @@ export function readOmpCredential(provider: string, storePath = ompAuthStorePath
 	}
 }
 
+interface ProviderKeySpec {
+	/** omp's provider id in the auth store. */
+	ompProvider: string;
+	/** Environment variable the key may have come from. */
+	envVar: string;
+	/** What to tell the operator when nothing resolves. */
+	loginHint: string;
+}
+
 /**
- * Full precedence chain for the OpenRouter key. Explicit configuration always
- * beats the borrowed credential, so a project can point at a different account
+ * Full precedence chain for a provider key: explicit configuration (attributed
+ * to the environment when it matches the env var) beats the credential
+ * borrowed from omp's store, so a project can point at a different account
  * without touching omp.
  */
-export function resolveOpenRouterKey(configured: string): ResolvedCredential {
+function resolveProviderKey(configured: string, spec: ProviderKeySpec): ResolvedCredential {
 	if (configured !== "") {
-		const fromEnv = process.env.OPENROUTER_API_KEY;
+		const fromEnv = process.env[spec.envVar];
 		const source: CredentialSource = fromEnv !== undefined && fromEnv === configured ? "env" : "config";
 		return {
 			apiKey: configured,
 			source,
-			detail: source === "env" ? "OPENROUTER_API_KEY" : "config file",
+			detail: source === "env" ? spec.envVar : "config file",
 		};
 	}
 
-	const borrowed = readOmpCredential("openrouter");
+	const borrowed = readOmpCredential(spec.ompProvider);
 	if (borrowed !== null) {
 		return { apiKey: borrowed, source: "omp-auth-store", detail: `omp auth store (${ompAuthStorePath()})` };
 	}
@@ -119,6 +129,20 @@ export function resolveOpenRouterKey(configured: string): ResolvedCredential {
 	return {
 		apiKey: "",
 		source: "none",
-		detail: "no key: set OPENROUTER_API_KEY, or run `/login openrouter` inside omp",
+		detail: `no key: set ${spec.envVar}, or run \`/login ${spec.loginHint}\` inside omp`,
 	};
+}
+
+export function resolveOpenRouterKey(configured: string): ResolvedCredential {
+	return resolveProviderKey(configured, { ompProvider: "openrouter", envVar: "OPENROUTER_API_KEY", loginHint: "openrouter" });
+}
+
+/**
+ * The Ollama Cloud key, borrowed from omp's `ollama-cloud` provider once
+ * `/login ollama-cloud` has been run there. Only needed when `ollama.baseUrl`
+ * points at ollama.com; the local daemon authenticates with its own sign-in
+ * and ignores a bearer.
+ */
+export function resolveOllamaKey(configured: string): ResolvedCredential {
+	return resolveProviderKey(configured, { ompProvider: "ollama-cloud", envVar: "OLLAMA_API_KEY", loginHint: "ollama-cloud" });
 }
