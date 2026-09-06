@@ -4,6 +4,7 @@ import type { Server } from "bun";
 import { createProviders } from "./providers.ts";
 import { createBridgeFromConfig } from "../context/index.ts";
 import { createLedger } from "../cost/ledger.ts";
+import { buildUsageReport } from "../cost/report.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
@@ -367,6 +368,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/stats") {
 					return json(computeStats(ledger));
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/report") {
+					// Usage analytics for `/router report` and the CLI: bounded window,
+					// optional harness scope (the X-Omp-Harness header value).
+					const rawDays = url.searchParams.get("days");
+					const parsedDays = rawDays === null ? 7 : Number.parseInt(rawDays, 10);
+					const windowDays = Number.isInteger(parsedDays) ? Math.min(Math.max(parsedDays, 1), 365) : 7;
+					const harnessId = url.searchParams.get("harness") ?? "";
+					return json(buildUsageReport(db, { windowDays, harnessId }));
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
 					const rawLimit = url.searchParams.get("limit");

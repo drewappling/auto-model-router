@@ -2,8 +2,9 @@
  * Interactive configuration wizard for `auto-model-router config`.
  *
  * Edits the router's OWN config (`~/.auto-model-router/config.yml`), covering every
- * section: server, openrouter, tiers, tasks, filters, classifier, escalation,
- * hysteresis, cache, budget, ledger, logging.
+ * section: server, openrouter, ollama, benchmarks, tiers, tasks, filters, classifier,
+ * escalation, hysteresis, exploration, cache, compaction, context, budget, ledger,
+ * logging. omp's `/router config` walks the same `WIZARD_SECTIONS`.
  *
  * Only fields the user actually changes are written, as a deep-merge partial,
  * so untouched defaults and hand-edited values survive.
@@ -36,16 +37,18 @@ export interface WizardIo {
 export interface FieldSpec {
 	path: string;
 	label: string;
-	kind: "string" | "number" | "boolean" | "enum" | "stringArray";
-	/** For `enum`: the allowed values. */
+	kind: "string" | "number" | "boolean" | "enum" | "stringArray" | "numberArray";
+	/** For `enum`: the allowed values. For `stringArray`: the allowed items, when restricted. */
 	options?: readonly string[];
-	/** For `number`: inclusive bounds. */
+	/** For `number` / `numberArray`: inclusive bounds. */
 	min?: number;
 	max?: number;
 	/** Whether the field may be cleared to "no value". */
 	optional?: boolean;
 	/** Short hint shown with the label. */
 	hint?: string;
+	/** Credential: the current value is shown as set/unset, never echoed. */
+	secret?: boolean;
 }
 
 /** A wizard section: a titled group of fields. */
@@ -55,26 +58,102 @@ export interface SectionSpec {
 }
 
 const AXES = ["coding", "agentic", "intelligence"] as const;
+const TIER_NAMES = ["trivial", "simple", "moderate", "hard"] as const;
+const TASK_NAMES = ["coding", "vision", "documentation", "data", "chat"] as const;
 
-/** Every field the wizard can edit, grouped into the menu's sections. */
+/**
+ * Escalation triggers the orchestrator understands: the `EscalationSignal`
+ * union in `src/router/types.ts`. The schema accepts any string so an
+ * experimental trigger can still be added by hand in YAML.
+ */
+const ESCALATION_TRIGGERS = [
+	"malformed_tool_args",
+	"refusal",
+	"empty_completion",
+	"repeat_tool_call",
+	"length_stop",
+	"missing_expected_tool_call",
+	"upstream_error",
+] as const;
+
+function tierFields(tier: (typeof TIER_NAMES)[number]): FieldSpec[] {
+	const p = `tiers.${tier}`;
+	return [
+		{ path: `${p}.minQuality`, label: `${tier}: min quality`, kind: "number", min: 0, max: 100 },
+		{ path: `${p}.maxInputPerMtok`, label: `${tier}: max input $/Mtok`, kind: "number", min: 0, optional: true },
+		{ path: `${p}.maxOutputPerMtok`, label: `${tier}: max output $/Mtok`, kind: "number", min: 0, optional: true },
+		{ path: `${p}.qualityExponent`, label: `${tier}: quality exponent`, kind: "number", min: 0, hint: "quality^k per $" },
+		{ path: `${p}.qualityNormalization`, label: `${tier}: normalise quality to floor`, kind: "boolean", optional: true },
+		{ path: `${p}.capabilityFloorUsd`, label: `${tier}: capability floor $/Mtok`, kind: "number", min: 0, optional: true, hint: "blended" },
+		{ path: `${p}.pin`, label: `${tier}: pinned slugs`, kind: "stringArray", hint: "comma-separated" },
+	];
+}
+
+function taskFields(task: (typeof TASK_NAMES)[number]): FieldSpec[] {
+	const p = `tasks.${task}`;
+	return [
+		{ path: `${p}.axis`, label: `${task}: axis`, kind: "enum", options: AXES },
+		{ path: `${p}.minQuality`, label: `${task}: quality floor`, kind: "number", min: 0, max: 100, optional: true },
+		{ path: `${p}.requireImage`, label: `${task}: require image input`, kind: "boolean", optional: true },
+		{ path: `${p}.prefer`, label: `${task}: always-eligible slugs`, kind: "stringArray", optional: true, hint: "comma-separated" },
+	];
+}
+
+/**
+ * Every field the wizard can edit, grouped into the menu's sections. This is
+ * the whole of `RouterConfig` except the two Ollama maps (`ollama.prices`,
+ * `ollama.twins`) and the profiles array, which are edited as records
+ * (profiles through the wizard's own profile editor, the maps in YAML).
+ * `test/config-wizard.test.ts` checks that every other config leaf is here.
+ */
 export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 	{
 		title: "Server",
 		fields: [
 			{ path: "server.host", label: "Listen host", kind: "string" },
 			{ path: "server.port", label: "Listen port", kind: "number", min: 1, max: 65535 },
-			{ path: "server.apiKey", label: "Client bearer token", kind: "string", optional: true },
+			{ path: "server.apiKey", label: "Client bearer token", kind: "string", optional: true, secret: true },
 			{ path: "server.harnessId", label: "Default harness id", kind: "string", optional: true },
+			{ path: "server.maxConcurrentTurns", label: "Max concurrent turns", kind: "number", min: 1, hint: "per process, all sessions" },
 		],
 	},
 	{
 		title: "OpenRouter",
 		fields: [
 			{ path: "openrouter.baseUrl", label: "Base URL", kind: "string" },
+			{ path: "openrouter.apiKey", label: "API key", kind: "string", optional: true, secret: true, hint: "or OPENROUTER_API_KEY / omp login" },
+			{ path: "openrouter.referer", label: "Attribution referer", kind: "string", optional: true },
 			{ path: "openrouter.title", label: "Attribution title", kind: "string" },
 			{ path: "openrouter.timeoutMs", label: "Request timeout", kind: "number", min: 1, hint: "ms" },
 			{ path: "openrouter.catalogTtlMs", label: "Catalog TTL", kind: "number", min: 1, hint: "ms" },
 			{ path: "openrouter.catalogRefreshMs", label: "Catalog refresh", kind: "number", min: 0, hint: "ms, 0=off" },
+		],
+	},
+	{
+		title: "Ollama Cloud",
+		fields: [
+			{ path: "ollama.enabled", label: "Enable Ollama Cloud as a second upstream", kind: "boolean" },
+			{ path: "ollama.baseUrl", label: "Base URL", kind: "string", hint: "https://ollama.com/v1 or a local daemon" },
+			{ path: "ollama.apiKey", label: "API key", kind: "string", optional: true, secret: true, hint: "or OLLAMA_API_KEY / omp login ollama-cloud" },
+			{ path: "ollama.timeoutMs", label: "Request timeout", kind: "number", min: 1, hint: "ms" },
+			{ path: "ollama.catalogTtlMs", label: "Catalog TTL", kind: "number", min: 1, hint: "ms" },
+			{ path: "ollama.includeLocal", label: "Include locally pulled models", kind: "boolean", hint: "local daemon only" },
+			{ path: "ollama.costBias", label: "Cost bias while credits remain", kind: "number", min: 0, hint: "0.1 = tenth the cost; 1 = at list" },
+			{ path: "ollama.biasUntilUsage", label: "Apply bias until plan usage", kind: "number", min: 0, max: 1, hint: "0-1 of included credits" },
+			{ path: "ollama.usagePollMs", label: "Plan usage poll", kind: "number", min: 0, hint: "ms, 0=off" },
+			{ path: "ollama.quotaCooldownMs", label: "Quota (402) cooldown", kind: "number", min: 0, hint: "ms" },
+			{ path: "ollama.rateLimitCooldownMs", label: "Rate-limit (429) cooldown", kind: "number", min: 0, hint: "ms" },
+		],
+	},
+	{
+		title: "Benchmarks",
+		fields: [
+			{ path: "benchmarks.enabled", label: "Fetch quality scores", kind: "boolean" },
+			{ path: "benchmarks.artificialAnalysisApiKey", label: "Artificial Analysis API key", kind: "string", optional: true, secret: true },
+			{ path: "benchmarks.benchlm", label: "Use BenchLM scores", kind: "boolean" },
+			{ path: "benchmarks.refreshMs", label: "Refresh interval", kind: "number", min: 0, hint: "ms" },
+			{ path: "benchmarks.timeoutMs", label: "Fetch timeout", kind: "number", min: 1, hint: "ms" },
+			{ path: "benchmarks.useLocalScores", label: "Blend in local eval scores", kind: "boolean" },
 		],
 	},
 	{
@@ -86,30 +165,13 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 				kind: "boolean",
 				hint: "keeps every tier populated",
 			},
-			{ path: "tiers.trivial.minQuality", label: "trivial: min quality", kind: "number", min: 0, max: 100 },
-			{ path: "tiers.trivial.maxInputPerMtok", label: "trivial: max input $/Mtok", kind: "number", min: 0, optional: true },
-			{ path: "tiers.simple.minQuality", label: "simple: min quality", kind: "number", min: 0, max: 100 },
-			{ path: "tiers.simple.maxInputPerMtok", label: "simple: max input $/Mtok", kind: "number", min: 0, optional: true },
-			{ path: "tiers.moderate.minQuality", label: "moderate: min quality", kind: "number", min: 0, max: 100 },
-			{ path: "tiers.moderate.maxInputPerMtok", label: "moderate: max input $/Mtok", kind: "number", min: 0, optional: true },
-			{ path: "tiers.hard.minQuality", label: "hard: min quality", kind: "number", min: 0, max: 100 },
-			{ path: "tiers.hard.maxInputPerMtok", label: "hard: max input $/Mtok", kind: "number", min: 0, optional: true },
+			{ path: "adaptivePriceCeilings", label: "Adaptive price ceilings", kind: "boolean", hint: "derive $/Mtok caps from the catalog" },
+			...TIER_NAMES.flatMap(tierFields),
 		],
 	},
 	{
 		title: "Tasks",
-		fields: [
-			{ path: "tasks.coding.axis", label: "coding: axis", kind: "enum", options: AXES },
-			{ path: "tasks.coding.minQuality", label: "coding: quality floor", kind: "number", min: 0, max: 100, optional: true },
-			{ path: "tasks.vision.axis", label: "vision: axis", kind: "enum", options: AXES },
-			{ path: "tasks.vision.minQuality", label: "vision: quality floor", kind: "number", min: 0, max: 100, optional: true },
-			{ path: "tasks.documentation.axis", label: "documentation: axis", kind: "enum", options: AXES },
-			{ path: "tasks.documentation.minQuality", label: "documentation: quality floor", kind: "number", min: 0, max: 100, optional: true },
-			{ path: "tasks.data.axis", label: "data: axis", kind: "enum", options: AXES },
-			{ path: "tasks.data.minQuality", label: "data: quality floor", kind: "number", min: 0, max: 100, optional: true },
-			{ path: "tasks.chat.axis", label: "chat: axis", kind: "enum", options: AXES },
-			{ path: "tasks.chat.minQuality", label: "chat: quality floor", kind: "number", min: 0, max: 100, optional: true },
-		],
+		fields: TASK_NAMES.flatMap(taskFields),
 	},
 	{
 		title: "Filters",
@@ -121,7 +183,14 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.minTrust", label: "Min trust", kind: "number", min: 0, max: 1 },
 			{ path: "filters.minTrustSamples", label: "Min trust samples", kind: "number", min: 0 },
 			{ path: "filters.trustScopedByHarness", label: "Scope trust per harness", kind: "boolean" },
+			{ path: "filters.trustWindowDays", label: "Trust window", kind: "number", min: 0, hint: "days, 0=all time" },
 			{ path: "filters.contextHeadroom", label: "Context headroom", kind: "number", min: 1 },
+			{ path: "filters.latencyWeight", label: "Latency weight", kind: "number", min: 0, hint: "0=ignore speed" },
+			{ path: "filters.latencyReferenceMs", label: "Latency reference TTFT", kind: "number", min: 1, hint: "ms" },
+			{ path: "filters.latencyReferenceTokensPerSec", label: "Latency reference speed", kind: "number", min: 1, hint: "tok/s" },
+			{ path: "filters.latencyMinSamples", label: "Latency min samples", kind: "number", min: 0 },
+			{ path: "filters.maxExpectedWaitMs", label: "Max expected wait", kind: "number", min: 1, optional: true, hint: "ms, hard ceiling" },
+			{ path: "filters.escalationCostWeight", label: "Escalation cost weight", kind: "number", min: 0, max: 1 },
 		],
 	},
 	{
@@ -130,9 +199,17 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "classifier.ambiguityThreshold", label: "Ambiguity threshold", kind: "number", min: 0, max: 1 },
 			{ path: "classifier.model", label: "Adjudicator model", kind: "string", optional: true },
 			{ path: "classifier.maxCostFraction", label: "Max cost fraction", kind: "number", min: 0, max: 1 },
+			{ path: "classifier.maxCostUsd", label: "Max adjudication cost $", kind: "number", min: 0 },
 			{ path: "classifier.timeoutMs", label: "Adjudicator timeout", kind: "number", min: 1, hint: "ms" },
+			{ path: "classifier.cacheSize", label: "Adjudication cache size", kind: "number", min: 0 },
 			{ path: "classifier.toolAxis", label: "Tool-call axis", kind: "enum", options: AXES },
 			{ path: "classifier.chatAxis", label: "Chat axis", kind: "enum", options: AXES },
+			{ path: "classifier.agenticLoopDepth", label: "Agentic loop depth", kind: "number", min: 0, hint: "tool rounds before damping" },
+			{ path: "classifier.mechanicalRetryFactor", label: "Mechanical retry factor", kind: "number", min: 0, max: 1 },
+			{ path: "classifier.reasoningWeights.medium", label: "Reasoning weight: medium", kind: "number", min: 0 },
+			{ path: "classifier.reasoningWeights.high", label: "Reasoning weight: high", kind: "number", min: 0 },
+			{ path: "classifier.reasoningWeights.xhigh", label: "Reasoning weight: xhigh", kind: "number", min: 0 },
+			{ path: "classifier.reasoningWeights.max", label: "Reasoning weight: max", kind: "number", min: 0 },
 		],
 	},
 	{
@@ -142,14 +219,34 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "escalation.probeTokens", label: "Probe tokens", kind: "number", min: 1 },
 			{ path: "escalation.maxHoldMs", label: "Max hold", kind: "number", min: 1, hint: "ms" },
 			{ path: "escalation.maxAttempts", label: "Max attempts", kind: "number", min: 1 },
+			{ path: "escalation.probeTiers", label: "Tiers that probe", kind: "stringArray", options: TIER_NAMES, hint: "comma-separated" },
+			{ path: "escalation.triggers", label: "Triggers", kind: "stringArray", options: ESCALATION_TRIGGERS, hint: "comma-separated" },
+			{ path: "escalation.escalateOnLengthStop", label: "Escalate on length stop", kind: "boolean" },
 		],
 	},
 	{
 		title: "Hysteresis",
 		fields: [
 			{ path: "hysteresis.holdTurns", label: "Hold turns", kind: "number", min: 0 },
+			{ path: "hysteresis.holdTurnsAfterEscalation", label: "Hold turns after escalation", kind: "number", min: 0 },
 			{ path: "hysteresis.switchMargin", label: "Switch margin", kind: "number", min: 0 },
+			{ path: "hysteresis.switchHorizonTurns", label: "Switch horizon", kind: "number", min: 1, hint: "turns amortised" },
 			{ path: "hysteresis.cacheWarmTtlMs", label: "Cache-warm TTL", kind: "number", min: 0, hint: "ms" },
+			{ path: "hysteresis.maxDowngradePerTurn", label: "Max downgrade per turn", kind: "number", min: 0, hint: "tiers" },
+			{ path: "hysteresis.breakHoldOnMechanical", label: "Break hold on mechanical turns", kind: "boolean" },
+		],
+	},
+	{
+		title: "Exploration",
+		fields: [
+			{ path: "exploration.enabled", label: "Enable exploration", kind: "boolean", hint: "records arms into the ledger" },
+			{ path: "exploration.rates.trivial", label: "Rate: trivial", kind: "number", min: 0, max: 1, optional: true },
+			{ path: "exploration.rates.simple", label: "Rate: simple", kind: "number", min: 0, max: 1, optional: true },
+			{ path: "exploration.rates.moderate", label: "Rate: moderate", kind: "number", min: 0, max: 1, optional: true },
+			{ path: "exploration.rates.hard", label: "Rate: hard", kind: "number", min: 0, max: 1, optional: true },
+			{ path: "exploration.stickyPolicy", label: "Sticky policy", kind: "enum", options: ["never", "cold-cache", "always"] },
+			{ path: "exploration.holdTurns.enabled", label: "Hold-length experiment", kind: "boolean" },
+			{ path: "exploration.holdTurns.values", label: "Hold-length arms", kind: "numberArray", min: 1, hint: "comma-separated turns" },
 		],
 	},
 	{
@@ -158,6 +255,41 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "cache.injectBreakpoints", label: "Inject cache breakpoints", kind: "boolean" },
 			{ path: "cache.maxBreakpoints", label: "Max breakpoints", kind: "number", min: 1 },
 			{ path: "cache.minPromptTokens", label: "Min prompt tokens", kind: "number", min: 0 },
+			{ path: "cache.milestoneTokens", label: "Milestone tokens", kind: "number", min: 1, hint: "breakpoint spacing" },
+		],
+	},
+	{
+		title: "Compaction",
+		fields: [
+			{ path: "compaction.enabled", label: "Enable compaction", kind: "boolean" },
+			{ path: "compaction.budgetTokens", label: "Budget tokens", kind: "number", min: 1 },
+			{ path: "compaction.floorRatio", label: "Floor ratio", kind: "number", min: 0, max: 1, hint: "of the budget" },
+			{ path: "compaction.replanGrowthRatio", label: "Replan growth ratio", kind: "number", min: 1 },
+			{ path: "compaction.fitToWindow", label: "Fit to model context window", kind: "boolean" },
+			{ path: "compaction.protectRecentTurns", label: "Protect recent turns", kind: "number", min: 1 },
+			{ path: "compaction.maxToolResultBytes", label: "Max tool result bytes", kind: "number", min: 1 },
+			{ path: "compaction.keepHeadBytes", label: "Keep head bytes", kind: "number", min: 0 },
+			{ path: "compaction.keepTailBytes", label: "Keep tail bytes", kind: "number", min: 0 },
+			{ path: "compaction.elideSupersededReads", label: "Elide superseded reads", kind: "boolean" },
+			{ path: "compaction.collapseDuplicateResults", label: "Collapse duplicate results", kind: "boolean" },
+		],
+	},
+	{
+		title: "Context (agentdox)",
+		fields: [
+			{ path: "context.enabled", label: "Inject shared project context", kind: "boolean" },
+			{ path: "context.baseUrl", label: "agentdox URL", kind: "string", optional: true },
+			{ path: "context.token", label: "agentdox token", kind: "string", optional: true, secret: true, hint: "or AGENTDOX_TOKEN" },
+			{ path: "context.defaultScope", label: "Default scope", kind: "string", optional: true },
+			{ path: "context.timeoutMs", label: "Request timeout", kind: "number", min: 1, hint: "ms" },
+			{ path: "context.maxStalenessMs", label: "Max staleness", kind: "number", min: 0, hint: "ms" },
+			{ path: "context.maxBlockChars", label: "Max block chars", kind: "number", min: 1 },
+			{ path: "context.memoryLimit", label: "Memory items", kind: "number", min: 1 },
+			{ path: "context.docsLimit", label: "Doc items", kind: "number", min: 0 },
+			{ path: "context.sessionLimit", label: "Session items", kind: "number", min: 0 },
+			{ path: "context.briefChars", label: "Brief chars", kind: "number", min: 0 },
+			{ path: "context.recordTurns", label: "Record turns back", kind: "boolean" },
+			{ path: "context.maxQueue", label: "Write-back queue", kind: "number", min: 1 },
 		],
 	},
 	{
@@ -172,8 +304,11 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 	{
 		title: "Ledger",
 		fields: [
+			{ path: "ledger.path", label: "Ledger path", kind: "string", hint: "SQLite file" },
 			{ path: "ledger.blendWindowDays", label: "Blend window", kind: "number", min: 1, hint: "days" },
 			{ path: "ledger.blendMinSamples", label: "Blend min samples", kind: "number", min: 0 },
+			{ path: "ledger.fallbackBlend.inputPerMtok", label: "Fallback blend input $/Mtok", kind: "number", min: 0 },
+			{ path: "ledger.fallbackBlend.outputPerMtok", label: "Fallback blend output $/Mtok", kind: "number", min: 0 },
 			{ path: "ledger.conversationTtlMs", label: "Conversation TTL", kind: "number", min: 1, hint: "ms" },
 		],
 	},
@@ -258,7 +393,24 @@ export function validateField(field: FieldSpec, raw: string): FieldResult {
 
 		case "stringArray": {
 			const items = text.split(",").map((s) => s.trim()).filter((s) => s !== "");
+			if (field.options !== undefined) {
+				const bad = items.filter((s) => !field.options?.includes(s));
+				if (bad.length > 0) return { ok: false, error: `unknown: ${bad.join(", ")} (one of: ${field.options.join(", ")})` };
+			}
 			return { ok: true, value: items };
+		}
+
+		case "numberArray": {
+			const items = text.split(",").map((s) => s.trim()).filter((s) => s !== "");
+			const values: number[] = [];
+			for (const item of items) {
+				const n = Number(item);
+				if (!Number.isFinite(n)) return { ok: false, error: `not a number: ${item}` };
+				if (field.min !== undefined && n < field.min) return { ok: false, error: `${item}: must be >= ${field.min}` };
+				if (field.max !== undefined && n > field.max) return { ok: false, error: `${item}: must be <= ${field.max}` };
+				values.push(n);
+			}
+			return { ok: true, value: values };
 		}
 	}
 }
@@ -321,10 +473,19 @@ export function formatValue(value: unknown): string {
 	return String(value);
 }
 
+/**
+ * What a prompt shows as the current value: `formatValue`, except that a
+ * secret is never echoed — only whether one is set.
+ */
+export function displayValue(field: FieldSpec, value: unknown): string {
+	if (field.secret === true) return value === undefined || value === null || value === "" ? "unset" : "set";
+	return formatValue(value);
+}
+
 /** Builds the field prompt line, e.g. `  Listen port [8788]: `. */
 function fieldPrompt(field: FieldSpec, current: unknown): string {
 	const hint = field.hint !== undefined ? ` (${field.hint})` : "";
-	return `  ${field.label}${hint} [${formatValue(current)}]: `;
+	return `  ${field.label}${hint} [${displayValue(field, current)}]: `;
 }
 
 /** Renders the top-level section menu. */

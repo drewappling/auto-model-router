@@ -29,6 +29,7 @@ const BOOLEAN_FLAGS: Record<string, true> = {
 const COMMANDS: Record<string, true> = {
 	serve: true,
 	stats: true,
+	report: true,
 	models: true,
 	explain: true,
 	config: true,

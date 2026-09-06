@@ -8,6 +8,7 @@ import { writeRouterConfig } from "../src/cli/config-cmd.ts";
 import {
 	applyAnswers,
 	CLEAR_TOKEN,
+	displayValue,
 	formatValue,
 	getPath,
 	mergeConfigPartial,
@@ -20,6 +21,7 @@ import {
 	type FieldSpec,
 	type WizardIo,
 } from "../src/cli/config-wizard.ts";
+import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
 
 const cfg = loadConfig({});
@@ -113,6 +115,78 @@ describe("validateField", () => {
 		expect(validateField(opt, CLEAR_TOKEN)).toEqual({ ok: true, value: null });
 		expect(validateField(num, CLEAR_TOKEN).ok).toBe(false);
 	});
+
+	test("a restricted string array rejects unknown items", () => {
+		const tiers: FieldSpec = { path: "escalation.probeTiers", label: "t", kind: "stringArray", options: ["trivial", "simple"] };
+		expect(validateField(tiers, "simple, trivial")).toEqual({ ok: true, value: ["simple", "trivial"] });
+		const bad = validateField(tiers, "simple, hard");
+		expect(bad.ok).toBe(false);
+		if (!bad.ok) expect(bad.error).toContain("hard");
+	});
+
+	test("number arrays parse, bound-check and reject non-numbers", () => {
+		const arms: FieldSpec = { path: "exploration.holdTurns.values", label: "a", kind: "numberArray", min: 1 };
+		expect(validateField(arms, "2, 3,4")).toEqual({ ok: true, value: [2, 3, 4] });
+		expect(validateField(arms, "2, x").ok).toBe(false);
+		expect(validateField(arms, "0, 2").ok).toBe(false);
+	});
+
+	test("secrets display as set/unset", () => {
+		const key: FieldSpec = { path: "openrouter.apiKey", label: "k", kind: "string", optional: true, secret: true };
+		expect(displayValue(key, "sk-abc")).toBe("set");
+		expect(displayValue(key, "")).toBe("unset");
+		expect(displayValue(key, undefined)).toBe("unset");
+		expect(displayValue({ ...key, secret: false }, "sk-abc")).toBe("sk-abc");
+	});
+});
+
+describe("WIZARD_SECTIONS coverage", () => {
+	/** Leaves that are edited as whole records/arrays rather than fields. */
+	const RECORD_PATHS = new Set(["ollama.prices", "ollama.twins", "profiles"]);
+
+	function leaves(obj: unknown, prefix = ""): string[] {
+		if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return [prefix];
+		const out: string[] = [];
+		for (const [k, v] of Object.entries(obj)) {
+			const path = prefix === "" ? k : `${prefix}.${k}`;
+			if (RECORD_PATHS.has(path)) continue;
+			out.push(...leaves(v, path));
+		}
+		return out;
+	}
+
+	test("every config leaf has a wizard field (so /router can edit all of it)", () => {
+		const fields = new Set(WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path)));
+		const missing = leaves(DEFAULT_CONFIG).filter((p) => !fields.has(p));
+		expect(missing).toEqual([]);
+	});
+
+	test("every wizard field points at a real config path or a known optional", () => {
+		// Optional keys absent from DEFAULT_CONFIG still have to be spelled right;
+		// they are listed here so a typo in a new field path fails loudly.
+		const KNOWN_OPTIONAL = new Set([
+			"server.apiKey", "server.harnessId", "openrouter.referer",
+			"budget.perTurnUsd", "budget.perConversationUsd", "budget.perDayUsd", "filters.maxExpectedWaitMs",
+			...["trivial", "simple", "moderate", "hard"].flatMap((t) => [
+				`tiers.${t}.maxInputPerMtok`, `tiers.${t}.maxOutputPerMtok`, `tiers.${t}.qualityNormalization`, `tiers.${t}.capabilityFloorUsd`,
+			]),
+			...["coding", "vision", "documentation", "data", "chat"].flatMap((t) => [`tasks.${t}.minQuality`, `tasks.${t}.requireImage`, `tasks.${t}.prefer`]),
+			...["trivial", "simple", "moderate", "hard"].map((t) => `exploration.rates.${t}`),
+		]);
+		const known = new Set(leaves(DEFAULT_CONFIG));
+		const unknown = WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path)).filter((p) => !known.has(p) && !KNOWN_OPTIONAL.has(p));
+		expect(unknown).toEqual([]);
+	});
+
+	test("field paths are unique across sections", () => {
+		const all = WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path));
+		expect(new Set(all).size).toBe(all.length);
+	});
+
+	test("secrets are exactly the credential keys", () => {
+		const secrets = WIZARD_SECTIONS.flatMap((s) => s.fields.filter((f) => f.secret === true).map((f) => f.path)).sort();
+		expect(secrets).toEqual(["benchmarks.artificialAnalysisApiKey", "context.token", "ollama.apiKey", "openrouter.apiKey", "server.apiKey"]);
+	});
 });
 
 describe("applyAnswers", () => {
@@ -198,13 +272,14 @@ describe("runWizard", () => {
 	});
 
 	test("blank answers keep current values; only edits are written", async () => {
-		// Server section: host, port, apiKey, harnessId.
+		// Server section: host, port, apiKey, harnessId, maxConcurrentTurns.
 		const { partial, changed } = await drive([
 			SECTION.get("Server") ?? "",
 			"", // keep host
 			"9000", // change port
 			"", // keep apiKey
 			"", // keep harnessId
+			"", // keep maxConcurrentTurns
 			"s",
 		]);
 		expect(partial).toEqual({ server: { port: 9000 } });
@@ -248,6 +323,7 @@ describe("runWizard", () => {
 			"n", // injectBreakpoints
 			"", // maxBreakpoints
 			"", // minPromptTokens
+			"", // milestoneTokens
 			"s",
 		]);
 		expect(partial).toEqual({ logLevel: "warn", cache: { injectBreakpoints: false } });

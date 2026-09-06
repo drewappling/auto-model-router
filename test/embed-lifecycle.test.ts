@@ -33,6 +33,7 @@ const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => voi
 
 const pi: ExtensionAPI = {
 	setLabel: () => {},
+	sendMessage: () => {},
 	on: (event, handler) => {
 		const list = handlers.get(event) ?? [];
 		list.push(handler);

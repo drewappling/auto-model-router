@@ -43,12 +43,62 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		getSessionId(): string;
 	}
 
+	/** A TUI component: rows at a width, optional key handling and teardown. */
+	export interface Component {
+		render(width: number): readonly string[];
+		handleInput?(data: string): void;
+		invalidate?(): void;
+		dispose?(): void;
+	}
+
+	/** The subset of omp's theme the report hub paints with. */
+	export interface Theme {
+		fg(color: string, text: string): string;
+		bg(color: string, text: string): string;
+		bold(text: string): string;
+		boxRound: {
+			topLeft: string;
+			topRight: string;
+			bottomLeft: string;
+			bottomRight: string;
+			horizontal: string;
+			vertical: string;
+			teeDown: string;
+			teeUp: string;
+			teeLeft: string;
+			teeRight: string;
+		};
+		nav: { cursor: string };
+	}
+
+	export interface TUI {
+		terminal?: { rows: number; columns: number };
+		requestRender(): void;
+	}
+
+	export interface KeybindingsManager {
+		matches(data: string, keybinding: string): boolean;
+	}
+
+	export interface OverlayOptions {
+		width?: number | string;
+		maxHeight?: number | string;
+		anchor?: string;
+		fullscreen?: boolean;
+	}
+
 	/** Mirrors `ConfigUi` in configure-logic.ts, which is what /router drives. */
 	export interface ExtensionUI {
-		select(title: string, options: string[], selected?: number): Promise<string | undefined>;
-		input(title: string, placeholder?: string, initial?: string): Promise<string | undefined>;
+		/** Returns the chosen label; an option may carry a dimmed description. */
+		select(title: string, options: Array<string | { label: string; description?: string }>): Promise<string | undefined>;
+		input(title: string, placeholder?: string): Promise<string | undefined>;
 		confirm(title: string, message: string): Promise<boolean>;
 		notify(text: string, level?: "info" | "warn" | "error"): void;
+		/** Show a custom component with keyboard focus; `overlay: true` floats it over the transcript. */
+		custom<T>(
+			factory: (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (result: T) => void) => Component,
+			options?: { overlay?: boolean; overlayOptions?: OverlayOptions },
+		): Promise<T>;
 	}
 
 	export interface ExtensionContext {
@@ -66,11 +116,38 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		handler(args: string, ctx: ExtensionContext): void | Promise<void>;
 	}
 
+	/**
+	 * A custom transcript message. `display: true` renders it in the TUI;
+	 * `content` is markdown. (Real type: `CustomMessagePayload<T>`.)
+	 */
+	export interface CustomMessagePayload {
+		customType?: string;
+		content?: string;
+		display?: boolean;
+		details?: unknown;
+	}
+
 	export interface ExtensionAPI {
 		setLabel(label: string): void;
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>): void;
 		registerProvider(id: string, registration: ProviderRegistration): void;
 		unregisterProvider(id: string): void;
 		registerCommand(name: string, command: CommandDefinition): void;
+		/** Appends a custom message to the session; `triggerTurn: false` leaves the agent idle. */
+		sendMessage(message: CustomMessagePayload | string, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
 	}
+}
+
+/**
+ * LOCAL stub for omp's TUI toolkit, which omp resolves for extensions at load
+ * time (its bundled example extensions import it the same way). Only the
+ * helpers the report hub uses are declared.
+ */
+declare module "@oh-my-pi/pi-tui" {
+	/** Columns a string occupies on screen, ignoring ANSI styling. */
+	export function visibleWidth(text: string): number;
+	/** Cuts a (possibly styled) string to at most `width` columns. */
+	export function truncateToWidth(text: string, width: number, ellipsis?: string): string;
+	/** Matches raw terminal input against a key id such as `"left"` or `"ctrl+c"`. */
+	export function matchesKey(data: string, keyId: string): boolean;
 }
