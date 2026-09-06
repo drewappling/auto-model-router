@@ -898,8 +898,10 @@ come from a small omp extension that polls the router's in-process ledger:
 ```
 
 It raises a TUI toast (`ctx.ui.notify`) like
-`meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
-Install it by adding the file's absolute path to omp's `extensions:` list.
+`openrouter · meta/muse-glimmer-30b [trivial] · $0.00001` or
+`ollama · glm-5.3-flash [moderate] · $0.00070` whenever a new model is chosen —
+provider first, so a mixed catalog is legible at a glance. Install it by adding
+the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file

@@ -98,10 +98,22 @@ export interface ToastMessage {
 	text: string;
 }
 
+/**
+ * Provider and model for display. Catalog slugs namespace providers by
+ * prefix: `ollama/<id>` is Ollama Cloud, anything else is OpenRouter (whose
+ * slugs keep their vendor segment, e.g. `z-ai/glm-5.3-flash`). The Ollama
+ * prefix is dropped from the displayed model since the provider label
+ * already says it.
+ */
+export function providerOf(slug: string): { provider: string; model: string } {
+	if (slug.startsWith("ollama/")) return { provider: "ollama", model: slug.slice("ollama/".length) };
+	return { provider: "openrouter", model: slug };
+}
+
 export function toToastText(d: ToastDecision): string {
-	const model = d.servedSlug ?? d.slug;
+	const { provider, model } = providerOf(d.servedSlug ?? d.slug);
 	const cost = d.reportedUsd === null ? "" : ` \u00b7 $${d.reportedUsd.toFixed(5)}`;
-	return `${model} [${d.tier}]${cost}`;
+	return `${provider} \u00b7 ${model} [${d.tier}]${cost}`;
 }
 
 /**
