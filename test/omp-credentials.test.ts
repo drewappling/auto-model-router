@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { readOmpCredential, resolveOpenRouterKey } from "../src/config/omp-credentials.ts";
+import { readOmpCredential, resolveOllamaKey, resolveOpenRouterKey } from "../src/config/omp-credentials.ts";
 
 /**
  * omp's real `auth_credentials` DDL, copied verbatim from a live
@@ -183,3 +183,45 @@ describe("resolveOpenRouterKey", () => {
 		expect(resolved.source).toBe("omp-auth-store");
 	});
 });
+
+describe("resolveOllamaKey", () => {
+	test("explicit configuration wins, and an env-sourced key is attributed to OLLAMA_API_KEY", () => {
+		setEnv("OLLAMA_API_KEY", undefined);
+		expect(resolveOllamaKey("ok-explicit").source).toBe("config");
+		setEnv("OLLAMA_API_KEY", "ok-from-env");
+		const resolved = resolveOllamaKey("ok-from-env");
+		expect(resolved.source).toBe("env");
+		expect(resolved.detail).toBe("OLLAMA_API_KEY");
+	});
+
+	test("borrows omp's ollama-cloud credential when nothing else is configured", () => {
+		setEnv("OLLAMA_API_KEY", undefined);
+		const dir = mkdtempSync(join(tmpdir(), "ompr-agentdir-"));
+		dirs.push(dir);
+		const db = new Database(join(dir, "agent.db"));
+		db.exec(SCHEMA);
+		db.query("INSERT INTO auth_credentials (provider, credential_type, data) VALUES (?, ?, ?)").run(
+			"ollama-cloud",
+			"api_key",
+			JSON.stringify({ key: "ok-borrowed", source: "login" }),
+		);
+		db.close();
+		setEnv("PI_CODING_AGENT_DIR", dir);
+		const resolved = resolveOllamaKey("");
+		expect(resolved.apiKey).toBe("ok-borrowed");
+		expect(resolved.source).toBe("omp-auth-store");
+		// The OpenRouter chain must not pick up the Ollama credential, nor vice versa.
+		expect(resolveOpenRouterKey("").source).toBe("none");
+	});
+
+	test("points at /login ollama-cloud when nothing resolves", () => {
+		setEnv("OLLAMA_API_KEY", undefined);
+		const dir = mkdtempSync(join(tmpdir(), "ompr-empty-agent-"));
+		dirs.push(dir);
+		setEnv("PI_CODING_AGENT_DIR", dir);
+		const resolved = resolveOllamaKey("");
+		expect(resolved.source).toBe("none");
+		expect(resolved.detail).toContain("/login ollama-cloud");
+	});
+});
+

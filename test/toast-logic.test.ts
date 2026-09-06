@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import {
 	DEFAULT_ROUTER_URL,
 	newestId,
+	providerOf,
 	resolveRouterUrl,
 	selectToasts,
 	toToastText,
@@ -186,7 +187,15 @@ describe("toToastText", () => {
 		expect(toToastText(dec({ reportedUsd: null }))).not.toContain("$");
 	});
 
-	test("renders model [tier]", () => {
-		expect(toToastText(dec({ slug: "q/w", tier: "hard", reportedUsd: null }))).toBe("q/w [hard]");
+	test("renders provider · model [tier]", () => {
+		expect(toToastText(dec({ slug: "q/w", tier: "hard", reportedUsd: null }))).toBe("openrouter · q/w [hard]");
+	});
+
+	test("an Ollama slug is labelled with its provider and shown without the prefix", () => {
+		expect(toToastText(dec({ slug: "ollama/glm-5.3-flash", servedSlug: "ollama/glm-5.3-flash", tier: "moderate", reportedUsd: 0.0007 }))).toBe(
+			"ollama · glm-5.3-flash [moderate] · $0.00070",
+		);
+		expect(providerOf("ollama/gpt-oss:120b")).toEqual({ provider: "ollama", model: "gpt-oss:120b" });
+		expect(providerOf("z-ai/glm-5.3-flash")).toEqual({ provider: "openrouter", model: "z-ai/glm-5.3-flash" });
 	});
 });

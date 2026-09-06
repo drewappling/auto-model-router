@@ -3,10 +3,13 @@
 **[Website & benchmarks →](https://drewappling.github.io/auto-model-router/)**
 
 A local model router for [Oh My Pi](https://github.com/oh-my-pi). It presents
-itself as one keyless OpenAI-compatible provider, then picks a concrete
-OpenRouter model **per turn** based on measured price and estimated task
-complexity — including mid-conversation, when a session shifts from mechanical
-tool-loop churn to genuine reasoning work.
+itself as one keyless OpenAI-compatible provider, then picks a concrete model
+**per turn** — from OpenRouter's catalog, and from
+[Ollama Cloud](#ollama-cloud) when that is enabled too — based on measured
+price and estimated task complexity, including mid-conversation, when a
+session shifts from mechanical tool-loop churn to genuine reasoning work.
+With both providers on, every turn ranks the candidates of both together and
+fails over across them.
 
 auto-model-router runs **embedded inside the omp process** (as an omp extension) — no
 separate server, no orphaned process. It binds a free OS-assigned port and
@@ -145,12 +148,17 @@ Harness, tasks and raw per-turn data:
 graph LR
   omp[omp process] -->|OpenAI chat completions| wire[wire/openai]
   wire -->|NormRequest| router[router]
-  catalog[catalog<br/>OpenRouter /models] --> router
+  orcat[OpenRouter /models] --> catalog[catalog<br/>one merged snapshot]
+  olcat[Ollama /api/tags + prices<br/>optional] --> catalog
+  catalog --> router
   cost[cost<br/>forecast + ledger] --> router
   router -->|Decision| guard[escalation guard]
-  guard -->|rendered body| up[upstream/openrouter]
-  up -->|UpstreamChunk| guard
-  guard -->|commit or retry upward| wire
+  guard -->|rendered body| up[upstream/multi<br/>by slug prefix]
+  up --> or[openrouter]
+  up --> ol[ollama<br/>ollama/… slugs]
+  or -->|UpstreamChunk| guard
+  ol -->|UpstreamChunk| guard
+  guard -->|commit, fail over, or retry upward| wire
   guard -->|usage + reported cost| cost
 ```
 
@@ -163,12 +171,12 @@ without touching routing.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. |
+| `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. `ollama-catalog.ts` builds Ollama Cloud models from `/api/tags`, a shipped price table and OpenRouter twins; `composite.ts` merges the two into one snapshot. |
 | `src/cost/` | Cost forecasting per candidate; reconciliation against OpenRouter's authoritative `usage.cost`; the spend ledger; per-model trust; rolling blended rate. |
 | `src/tokens/` | Token estimation with no tokenizer dependency, self-calibrating from observed `prompt_tokens` per tokenizer family. |
 | `src/wire/` | Protocol boundary. `wire/openai/` implements chat completions in and SSE out. |
 | `src/router/` | Feature extraction, complexity classification, candidate filtering and scoring, hysteresis, cache-breakpoint placement, budget guard, probe planning. |
-| `src/upstream/` | OpenRouter transport: streaming dispatch, `session_id` stickiness, error classification, fallback arrays. |
+| `src/upstream/` | Transports: OpenRouter (streaming dispatch, `session_id` stickiness, error classification, fallback arrays) and Ollama Cloud (body rewrite for its compatibility layer, quota/rate-limit breaker); `multi.ts` dispatches by slug prefix. |
 | `src/config/` | Configuration loading, schema validation, and the built-in defaults. |
 | `src/cli/` | `serve`, `stats`, `models`, `explain`, `config` commands. |
 | `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts`. |
@@ -545,6 +553,30 @@ what each one does. All values are optional; omit a key to use its default.
 | `catalogTtlMs` | `21600000` (6 h) | How long the model catalog is cached before a forced refetch. |
 | `catalogRefreshMs` | `300000` (5 min) | Background catalog refetch interval; `0` disables it. |
 
+### `ollama` — Ollama Cloud as a second upstream
+
+Off by default. When enabled, Ollama Cloud models join the same catalog as
+OpenRouter's under `ollama/<id>` slugs and are ranked on the same economics:
+a turn picks whichever provider's model is cheapest above the tier's floor,
+and same-tier failover crosses providers (a 402 or 429 from Ollama retries on
+an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch. |
+| `baseUrl` | `http://127.0.0.1:11434/v1` | A local daemon (proxies `:cloud` models under its sign-in) or `https://ollama.com/v1`. |
+| `apiKey` | unset | Bearer for ollama.com. Resolved from config, then `OLLAMA_API_KEY`, then omp's own auth store (`/login ollama-cloud` in omp) — the same borrowing as the OpenRouter key. The daemon needs none. |
+| `timeoutMs` | `600000` | Per-request timeout. |
+| `catalogTtlMs` | `300000` | Re-list models when the last listing is older than this. |
+| `includeLocal` | `false` | Also expose the daemon's local models (only those named in `prices`). |
+| `prices` | `{}` | USD per million tokens by bare cloud name (`{input, cachedInput?, output}`); overrides or extends the shipped snapshot. |
+| `twins` | `{}` | Bare cloud name → OpenRouter slug, to pin a quality-score twin the name match misses. |
+| `costBias` | `1` | Multiplier on Ollama models' effective cost in ranking; below 1 prefers Ollama. The ledger still records list price. |
+| `biasUntilUsage` | `0.9` | Share of the plan's included monthly credits at which `costBias` switches off and Ollama ranks at list price. Read live from ollama.com's `/api/usage`, which reports usage relative to the plan, so the same value is right on Pro, Max or Team. `1` keeps the bias regardless. |
+| `usagePollMs` | `600000` (10 min) | How often plan usage is re-read. `0` disables it (static bias). Needs the API key; the daemon path without one keeps a static bias. |
+| `quotaCooldownMs` | `900000` | Route around Ollama this long after a 402 (credits exhausted). |
+| `rateLimitCooldownMs` | `60000` | Route around Ollama this long after a 429 (concurrency cap). |
+
 ### `tiers` — per-tier economic envelope
 
 Each tier (`trivial`, `simple`, `moderate`, `hard`) is a `tierConfig`:
@@ -700,6 +732,59 @@ Each profile is a complete entry (arrays replace wholesale):
 | `adaptiveTierFloors` | `true` | Relax a tier's quality floor to a catalog-derived band when fewer than three available models meet the configured floor (never raising it). A floor that three or more models meet stands as written. |
 | `logLevel` | `info` | `silent`/`error`/`warn`/`info`/`debug`. |
 
+## Ollama Cloud
+
+[Ollama Cloud](https://ollama.com/cloud) hosts open models behind Ollama's own
+OpenAI-compatible endpoint and bills them per token against a plan's monthly
+credits. The router can treat it as a second upstream next to OpenRouter:
+
+```yaml
+ollama:
+  enabled: true
+  # default: the local daemon, which proxies `:cloud` models under whatever
+  # account `ollama signin` used. For ollama.com directly:
+  # baseUrl: https://ollama.com/v1
+  # apiKey: <from https://ollama.com/settings/keys, or OLLAMA_API_KEY, or
+  #          borrowed from omp after `/login ollama-cloud` — no copy needed>
+```
+
+What happens once it is on:
+
+- **One catalog.** Every cloud model Ollama lists becomes `ollama/<id>` (for
+  example `ollama/glm-5.3-flash:cloud` through the daemon, `ollama/glm-5.3-flash`
+  on ollama.com) with the context length and capabilities Ollama publishes
+  (`/api/tags` on the daemon, `/api/show` on ollama.com).
+- **Prices come from a shipped table**, because no Ollama endpoint publishes
+  them: the rates on [ollama.com/pricing](https://ollama.com/pricing) as of
+  2026-09-05 (`src/catalog/ollama-prices.ts`). `ollama.prices` overrides or
+  extends it; a model with no rate from either is left out, on the same rule
+  that drops unpriced OpenRouter models.
+- **Quality scores come from the OpenRouter twin.** Ollama publishes none, so
+  `glm-5.3-flash` inherits `z-ai/glm-5.3-flash`'s indices by name match, which
+  is what lets it serve `simple` and above. `ollama.twins` pins a match the
+  name normaliser cannot make; an unmatched model is unscored and serves only
+  `trivial`.
+- **Same economics, same failover.** Candidates from both providers are ranked
+  together; `costBias` tilts the comparison while a plan's included credits
+  would otherwise go unused. **Credit-aware by default:** the router reads the
+  plan's usage from ollama.com (`/api/usage`, the same figure the dashboard
+  shows, as a share of the plan's included credits) every `usagePollMs`, and
+  once it passes `biasUntilUsage` (90%) Ollama ranks at list price for the rest
+  of the billing month. Because the figure is relative to the plan, nothing
+  about Pro, Max or Team needs configuring; `/health` shows the raw reading
+  and the multiplier in force. A 402 (credits exhausted) or 429 (concurrency cap) from
+  Ollama fails the attempt over to an OpenRouter sibling in the same tier and
+  opens a breaker, so following turns route straight to OpenRouter without
+  paying a doomed dispatch first; `/health` shows `ollama.available` and the
+  cooldown.
+- **Ollama reports no cost per response**, so the ledger records the
+  predicted figure at list price for those rows.
+
+Ollama's compatibility layer differs from OpenRouter's in a few ways the
+router handles for you: no `models[]` fallback cascade, no `tool_choice`,
+`reasoning_effort` instead of the `reasoning` object, and no `cache_control`
+markers (they are stripped before dispatch).
+
 ## Multiple coding harnesses, one router
 
 A single embedded router can serve several omp sessions without them stepping
@@ -821,8 +906,10 @@ come from a small omp extension that polls the router's in-process ledger:
 ```
 
 It raises a TUI toast (`ctx.ui.notify`) like
-`meta/muse-glimmer-30b [trivial] · $0.00001` whenever a new model is chosen.
-Install it by adding the file's absolute path to omp's `extensions:` list.
+`openrouter · meta/muse-glimmer-30b [trivial] · $0.00001` or
+`ollama · glm-5.3-flash [moderate] · $0.00070` whenever a new model is chosen —
+provider first, so a mixed catalog is legible at a glance. Install it by adding
+the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file

@@ -181,6 +181,7 @@ export function normalizeCatalogModel(raw: unknown): CatalogModel | null {
 
 	const model: CatalogModel = {
 		slug: id,
+		provider: "openrouter",
 		canonicalSlug: typeof canonical === "string" && canonical.length > 0 ? canonical : id,
 		name: typeof name === "string" && name.length > 0 ? name : id,
 		contextLength,

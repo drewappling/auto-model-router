@@ -10,7 +10,7 @@
 import { existsSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 
-import { createCatalog } from "../catalog/openrouter-catalog.ts";
+import { createProviders } from "../server/providers.ts";
 import { effectiveQualityFloor, tierPlanFor } from "../router/tier-plan.ts";
 import { loadConfig } from "../config/load.ts";
 import type { QualityAxis, RouterConfig } from "../config/types.ts";
@@ -21,7 +21,6 @@ import { classifyTask } from "../router/classify.ts";
 import { extractFeatures } from "../router/features.ts";
 import { TIER_ORDER, type Candidate, type Rejection, type Tier } from "../router/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
-import { createOpenRouterClient } from "../upstream/openrouter.ts";
 import { openDb } from "../util/sqlite.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
 import { configOpts, flagInt, flagString, type CliArgs } from "./args.ts";
@@ -156,8 +155,7 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 	const db: Database = openDb(cfg.ledger.path);
 	const ledger: Ledger | null = existsSync(cfg.ledger.path) ? createLedger(db, cfg) : null;
 	try {
-		const upstream = createOpenRouterClient(cfg);
-		const catalog = createCatalog(cfg, upstream, db);
+		const { catalog } = createProviders(cfg, db);
 		const snapshot = await catalog.get();
 
 		const req = syntheticRequest();

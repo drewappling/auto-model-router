@@ -33,6 +33,28 @@ const openrouter = z.strictObject({
 	catalogRefreshMs: z.number().nonnegative().optional(),
 });
 
+const ollamaRate = z.strictObject({
+	input: z.number().nonnegative(),
+	cachedInput: z.number().nonnegative().optional(),
+	output: z.number().nonnegative(),
+});
+
+const ollama = z.strictObject({
+	enabled: z.boolean().optional(),
+	baseUrl: z.string().min(1).optional(),
+	apiKey: z.string().optional(),
+	timeoutMs: z.number().positive().optional(),
+	catalogTtlMs: z.number().positive().optional(),
+	includeLocal: z.boolean().optional(),
+	prices: z.record(z.string(), ollamaRate).optional(),
+	twins: z.record(z.string(), z.string()).optional(),
+	costBias: z.number().positive().optional(),
+	biasUntilUsage: z.number().min(0).max(1).optional(),
+	usagePollMs: z.number().nonnegative().optional(),
+	quotaCooldownMs: z.number().nonnegative().optional(),
+	rateLimitCooldownMs: z.number().nonnegative().optional(),
+});
+
 const benchmarks = z.strictObject({
 	enabled: z.boolean().optional(),
 	artificialAnalysisApiKey: z.string().optional(),
@@ -230,6 +252,7 @@ export const configInputSchema = z.strictObject({
 			chat: taskConfig.optional(),
 		})
 		.optional(),
+	ollama: ollama.optional(),
 	filters: filters.optional(),
 	classifier: classifier.optional(),
 	escalation: escalation.optional(),

@@ -45,9 +45,14 @@ export interface QualityScores {
 	agentic?: number;
 }
 
+/** Which upstream serves a catalog model. Slugs are namespaced per provider (`ollama/…`). */
+export type CatalogProvider = "openrouter" | "ollama";
+
 export interface CatalogModel {
-	/** OpenRouter slug, e.g. `anthropic/claude-sonnet-4.5`. Routing identity. */
+	/** OpenRouter slug, e.g. `anthropic/claude-sonnet-4.5`, or `ollama/<id>`. Routing identity. */
 	slug: string;
+	/** Upstream that dispatches this slug. */
+	provider: CatalogProvider;
 	/** Immutable dated slug, e.g. `anthropic/claude-4.5-sonnet-20250929`. */
 	canonicalSlug: string;
 	name: string;
@@ -83,6 +88,12 @@ export interface CatalogSnapshot {
 	models: CatalogModel[];
 	/** When this snapshot was fetched. */
 	fetchedAtMs: number;
+	/**
+	 * Per-provider cost multipliers in force for this snapshot (1 = list price).
+	 * Set by the composite catalog from live plan usage; absent ⇒ the
+	 * configured static bias applies.
+	 */
+	providerBias?: Partial<Record<CatalogProvider, number>>;
 	/**
 	 * True when the snapshot was fetched via key-scoped `GET /models/user`.
 	 * False when fetched from the public `GET /models` endpoint.
