@@ -22,6 +22,7 @@ import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { createMultiUpstream } from "../src/upstream/multi.ts";
 import { classifyOllamaStatus, createOllamaClient, toOllamaBody } from "../src/upstream/ollama.ts";
+import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
 import type { Dispatch, DispatchOptions, UpstreamClient } from "../src/upstream/types.ts";
 import { createLogger } from "../src/util/log.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
@@ -415,3 +416,91 @@ describe("selection over a mixed catalog", () => {
 		expect(candidates.find((c) => c.model.slug === "ollama/glm-5.3-flash:cloud")!.reasons.some((r) => r.startsWith("provider bias"))).toBe(true);
 	});
 });
+
+describe("ollama plan usage (credit-aware bias)", () => {
+	// The shape ollama.com/api/usage returned on 2026-09-06 for a Pro account.
+	const PAYLOAD = {
+		activity: { cost: "0.00000", period: { type: "last_4_weeks", starting_at: "2026-08-10T00:00:00Z", ending_at: "2026-09-06T04:57:02Z" }, models: [] },
+		limits: { monthly: { usage: 0, models: [{ name: "glm-5.3", request_count: 1 }, { name: "nemotron-3-super", request_count: 2 }] } },
+	};
+
+	test("parses the observed payload", () => {
+		const u = parseOllamaUsage(PAYLOAD, 5)!;
+		expect(u.monthlyUsedFraction).toBe(0);
+		expect(u.monthlyUsageRaw).toBe(0);
+		expect(u.activityCostUsd).toBe(0);
+		expect(u.requestsThisMonth).toBe(3);
+		expect(u.fetchedAtMs).toBe(5);
+		expect(parseOllamaUsage({ unrelated: true })).toBeNull();
+		expect(parseOllamaUsage("nope")).toBeNull();
+	});
+
+	test("infers the usage scale: percent above 1, fraction at or below 1, exactly 1 read as 1%", () => {
+		expect(usageFraction(0)).toBe(0);
+		expect(usageFraction(37)).toBeCloseTo(0.37, 6);
+		expect(usageFraction(250)).toBe(1);
+		expect(usageFraction(0.42)).toBeCloseTo(0.42, 6);
+		expect(usageFraction(1)).toBeCloseTo(0.01, 6);
+	});
+
+	test("the bias holds under the threshold, switches to list price above it, and stays on when usage is unknown", () => {
+		const at = (f: number | null) => (f === null ? null : { monthlyUsedFraction: f, monthlyUsageRaw: f, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 });
+		expect(effectiveOllamaBias(0.1, 0.9, at(0.5))).toBe(0.1);
+		expect(effectiveOllamaBias(0.1, 0.9, at(0.9))).toBe(1);
+		expect(effectiveOllamaBias(0.1, 0.9, at(1))).toBe(1);
+		expect(effectiveOllamaBias(0.1, 0.9, at(null))).toBe(0.1);
+		expect(effectiveOllamaBias(0.1, 0.9, null)).toBe(0.1);
+		expect(effectiveOllamaBias(1, 0.9, at(0))).toBe(1);
+	});
+
+	test("the source polls on its interval, keeps the last reading on failure, and is inert without a key", async () => {
+		let calls = 0;
+		let fail = false;
+		const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+			calls++;
+			expect(url).toBe("https://ollama.com/api/usage");
+			expect((init?.headers as Record<string, string>).authorization).toBe("Bearer k");
+			if (fail) return new Response("down", { status: 503 });
+			return Response.json({ ...PAYLOAD, limits: { monthly: { usage: 42, models: [] } } });
+		};
+		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 50, timeoutMs: 1000, log, fetchImpl });
+		expect(src.peek()).toBeNull();
+		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6);
+		await src.get();
+		expect(calls).toBe(1); // within the interval
+		fail = true;
+		await new Promise((r) => setTimeout(r, 60));
+		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6); // last good reading survives a 503
+		expect(calls).toBe(2);
+		expect(createOllamaUsageSource({ apiKey: "", pollMs: 50, timeoutMs: 1000, log, fetchImpl })).toBe(NO_USAGE);
+	});
+
+	test("the composite snapshot carries the live bias and re-merges when it flips", async () => {
+		const base: CatalogSnapshot = { models: OR_MODELS, fetchedAtMs: 1, keyScoped: true };
+		const openrouter: CatalogSource = { get: async () => base, refresh: async () => base, peek: () => base, find: (s) => OR_MODELS.find((m) => m.slug === s) };
+		const ollamaModels = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg: OLLAMA, log });
+		const source = { get: async () => ollamaModels, peek: () => ollamaModels, invalidate: () => {} };
+		const breaker = { available: () => true, cooldownUntilMs: () => null, lastTrip: () => null };
+		let used = 0.2;
+		const usage = { get: async () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 }), peek: () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 }) };
+		const catalog = createCompositeCatalog(openrouter, source, breaker, { costBias: 0.1, biasUntilUsage: 0.9, usage });
+
+		const a = await catalog.get();
+		expect(a.providerBias).toEqual({ ollama: 0.1 });
+		expect(catalog.ollamaBias()).toBe(0.1);
+		expect(await catalog.get()).toBe(a);
+
+		// Candidate scoring reads the bias off the snapshot, not the config.
+		const req = parseChatRequest({ model: "auto", tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }], messages: [{ role: "user", content: "rename the helper" }] }, new Headers());
+		const features = extractFeatures(req, 50_000);
+		const rank = (snap: CatalogSnapshot) => buildCandidates({ req, features, tier: "simple", task: "coding", snapshot: snap, ledger: null, cfg: { ...BASE, adaptiveTierFloors: false, ollama: { ...OLLAMA, costBias: 1 } }, expectedCompletionTokens: 512, warmSlug: null }).candidates.map((c) => c.model.slug);
+		expect(rank(a).indexOf("ollama/glm-5.3-flash:cloud")).toBeLessThan(rank(a).indexOf("z-ai/glm-5.3-flash"));
+
+		used = 0.95; // credits nearly gone: list price
+		const b = await catalog.get();
+		expect(b).not.toBe(a);
+		expect(b.providerBias).toEqual({ ollama: 1 });
+		expect(rank(b).indexOf("z-ai/glm-5.3-flash")).toBeLessThan(rank(b).indexOf("ollama/glm-5.3-flash:cloud"));
+	});
+});
+

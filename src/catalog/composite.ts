@@ -13,26 +13,47 @@
  */
 
 import type { OllamaAvailability } from "../upstream/ollama.ts";
+import { effectiveOllamaBias, NO_USAGE, type OllamaUsageSource } from "../upstream/ollama-usage.ts";
 import { mergeSnapshots, type OllamaCatalogSource } from "./ollama-catalog.ts";
 import type { CatalogModel, CatalogShrink, CatalogSnapshot, CatalogSource } from "./types.ts";
+
+export interface CompositeBias {
+	/** Static multiplier from config. */
+	costBias: number;
+	/** Plan usage fraction at which the bias switches off (list price). */
+	biasUntilUsage: number;
+	usage: OllamaUsageSource;
+}
 
 export function createCompositeCatalog(
 	openrouter: CatalogSource,
 	ollama: OllamaCatalogSource,
 	availability: OllamaAvailability,
-): CatalogSource & { ollamaModels(): CatalogModel[] } {
+	bias: CompositeBias = { costBias: 1, biasUntilUsage: 1, usage: NO_USAGE },
+): CatalogSource & { ollamaModels(): CatalogModel[]; ollamaBias(): number } {
 	let lastBase: CatalogSnapshot | null = null;
 	let lastOllama: readonly CatalogModel[] = [];
 	let lastAvailable = true;
+	let lastBias = 1;
 	let merged: CatalogSnapshot | null = null;
+
+	/** The multiplier in force from the latest usage reading (no network). */
+	function currentBias(): number {
+		return effectiveOllamaBias(bias.costBias, bias.biasUntilUsage, bias.usage.peek());
+	}
 
 	function combine(base: CatalogSnapshot, models: readonly CatalogModel[]): CatalogSnapshot {
 		const available = availability.available();
-		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable) return merged;
+		const providerBias = currentBias();
+		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable && providerBias === lastBias) return merged;
 		lastBase = base;
 		lastOllama = models;
 		lastAvailable = available;
+		lastBias = providerBias;
 		merged = mergeSnapshots(base, available ? models : []);
+		// A fresh object either way once anything changed; stamp the live bias so
+		// candidate scoring reads it off the snapshot it is ranking.
+		merged = { ...merged, providerBias: { ollama: providerBias } };
 		return merged;
 	}
 
@@ -48,14 +69,18 @@ export function createCompositeCatalog(
 		async get(): Promise<CatalogSnapshot> {
 			const base = await openrouter.get();
 			const models = await ollama.get(base.models);
+			// Refreshes on its own poll interval; a cached reading returns at once.
+			await bias.usage.get();
 			return combine(base, models);
 		},
 		async refresh(): Promise<CatalogSnapshot> {
 			const base = await openrouter.refresh();
 			ollama.invalidate();
 			const models = await ollama.get(base.models);
+			await bias.usage.get();
 			return combine(base, models);
 		},
+		ollamaBias: currentBias,
 		peek(): CatalogSnapshot | null {
 			const base = openrouter.peek();
 			if (base === null) return null;

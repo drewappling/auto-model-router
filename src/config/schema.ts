@@ -49,6 +49,8 @@ const ollama = z.strictObject({
 	prices: z.record(z.string(), ollamaRate).optional(),
 	twins: z.record(z.string(), z.string()).optional(),
 	costBias: z.number().positive().optional(),
+	biasUntilUsage: z.number().min(0).max(1).optional(),
+	usagePollMs: z.number().nonnegative().optional(),
 	quotaCooldownMs: z.number().nonnegative().optional(),
 	rateLimitCooldownMs: z.number().nonnegative().optional(),
 });

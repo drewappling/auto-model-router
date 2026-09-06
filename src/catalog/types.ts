@@ -89,6 +89,12 @@ export interface CatalogSnapshot {
 	/** When this snapshot was fetched. */
 	fetchedAtMs: number;
 	/**
+	 * Per-provider cost multipliers in force for this snapshot (1 = list price).
+	 * Set by the composite catalog from live plan usage; absent ⇒ the
+	 * configured static bias applies.
+	 */
+	providerBias?: Partial<Record<CatalogProvider, number>>;
+	/**
 	 * True when the snapshot was fetched via key-scoped `GET /models/user`.
 	 * False when fetched from the public `GET /models` endpoint.
 	 */

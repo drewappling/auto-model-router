@@ -101,6 +101,15 @@ export interface OllamaConfig {
 	 * unused; the ledger still records list price, so spend stays honest.
 	 */
 	costBias: number;
+	/**
+	 * Plan-usage fraction (0-1) at which `costBias` switches off and Ollama
+	 * ranks at list price. Read from ollama.com's `/api/usage`, which reports
+	 * consumption as a share of the plan's included monthly credits — so the
+	 * same setting is right on Pro, Max or Team. 1 keeps the bias regardless.
+	 */
+	biasUntilUsage: number;
+	/** How often to re-read plan usage, ms. 0 disables the read (bias stays static). */
+	usagePollMs: number;
 	/** How long to route around Ollama after a 402 (credits exhausted), ms. */
 	quotaCooldownMs: number;
 	/** How long to route around Ollama after a 429 (concurrency cap), ms. */

@@ -45,6 +45,13 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		prices: {},
 		twins: {},
 		costBias: 1,
+		// Bias off once 90% of the month's included credits are used: the last
+		// slice is left for the plan to absorb overage-free, and anything past it
+		// bills at list price, where OpenRouter is usually cheaper.
+		biasUntilUsage: 0.9,
+		// The usage endpoint aggregates with a lag and rounds to whole percents;
+		// polling faster than this learns nothing.
+		usagePollMs: 10 * 60 * 1000,
 		// Credits reset monthly; 15 minutes keeps a topped-up account from waiting long.
 		quotaCooldownMs: 15 * 60 * 1000,
 		// Concurrency caps clear as soon as an in-flight request finishes.

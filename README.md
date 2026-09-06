@@ -572,6 +572,8 @@ an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
 | `prices` | `{}` | USD per million tokens by bare cloud name (`{input, cachedInput?, output}`); overrides or extends the shipped snapshot. |
 | `twins` | `{}` | Bare cloud name → OpenRouter slug, to pin a quality-score twin the name match misses. |
 | `costBias` | `1` | Multiplier on Ollama models' effective cost in ranking; below 1 prefers Ollama. The ledger still records list price. |
+| `biasUntilUsage` | `0.9` | Share of the plan's included monthly credits at which `costBias` switches off and Ollama ranks at list price. Read live from ollama.com's `/api/usage`, which reports usage relative to the plan, so the same value is right on Pro, Max or Team. `1` keeps the bias regardless. |
+| `usagePollMs` | `600000` (10 min) | How often plan usage is re-read. `0` disables it (static bias). Needs the API key; the daemon path without one keeps a static bias. |
 | `quotaCooldownMs` | `900000` | Route around Ollama this long after a 402 (credits exhausted). |
 | `rateLimitCooldownMs` | `60000` | Route around Ollama this long after a 429 (concurrency cap). |
 
@@ -763,8 +765,14 @@ What happens once it is on:
   name normaliser cannot make; an unmatched model is unscored and serves only
   `trivial`.
 - **Same economics, same failover.** Candidates from both providers are ranked
-  together; `costBias` tilts the comparison if a plan's included credits would
-  otherwise go unused. A 402 (credits exhausted) or 429 (concurrency cap) from
+  together; `costBias` tilts the comparison while a plan's included credits
+  would otherwise go unused. **Credit-aware by default:** the router reads the
+  plan's usage from ollama.com (`/api/usage`, the same figure the dashboard
+  shows, as a share of the plan's included credits) every `usagePollMs`, and
+  once it passes `biasUntilUsage` (90%) Ollama ranks at list price for the rest
+  of the billing month. Because the figure is relative to the plan, nothing
+  about Pro, Max or Team needs configuring; `/health` shows the raw reading
+  and the multiplier in force. A 402 (credits exhausted) or 429 (concurrency cap) from
   Ollama fails the attempt over to an OpenRouter sibling in the same tier and
   opens a breaker, so following turns route straight to OpenRouter without
   paying a doomed dispatch first; `/health` shows `ollama.available` and the

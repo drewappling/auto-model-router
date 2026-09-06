@@ -171,7 +171,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
-	const { upstream, catalog, ollama } = createProviders(cfg, db, log);
+	const { upstream, catalog, ollama, ollamaUsage } = createProviders(cfg, db, log);
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
@@ -397,6 +397,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 										available: ollama.available(),
 										cooldownUntilMs: ollama.cooldownUntilMs(),
 										lastTrip: ollama.lastTrip(),
+										// Plan usage as ollama.com reports it (share of included monthly
+										// credits) and the cost multiplier currently in force.
+										usage: ollamaUsage.peek(),
+										costBias: { configured: cfg.ollama.costBias, effective: catalog.ollamaBias?.() ?? cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage },
 									},
 						catalog: snap === null
 							? null
