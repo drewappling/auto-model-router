@@ -4,13 +4,12 @@
  *
  *   /router                 menu: Configure / Report / Status
  *   /router config          edit any section of the router's config.yml
- *   /router report [7d] [--all]
- *                           usage analytics in a fullscreen hub styled like
+ *   /router report          usage analytics in a fullscreen hub styled like
  *                           /models: views for overview, providers, models,
- *                           tiers, by day and status; ←/→ cycle the window,
- *                           a toggles harness scope. Scoped to this harness
- *                           when OMP_HARNESS_ID is set; `--all` widens it.
- *                           Headless sessions get the text in the transcript.
+ *                           tiers, by day and status, with the time window
+ *                           (24h / 7d / 30d / 90d) and harness scope chosen
+ *                           in the sidebar. `/router report 30d --all` presets
+ *                           them. Headless sessions get the text instead.
  *   /router status          the router's /health: keys, catalog, Ollama
  *                           availability and plan usage, agentdox.
  *
@@ -64,7 +63,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.setLabel("auto-model-router");
 
 	pi.registerCommand("router", {
-		description: "auto-model-router: configure, usage report, status (/router report 7d)",
+		description: "auto-model-router: configure, usage report, status",
 		handler: async (args, ctx) => {
 			const [verb = "", ...rest] = args.trim().split(/\s+/).filter((t) => t !== "");
 			const tail = rest.join(" ");
@@ -85,19 +84,14 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			const chosen = await ctx.ui.select("auto-model-router", [
-				"Configure",
-				"Report: last 24h",
-				"Report: last 7 days",
-				"Report: last 30 days",
-				"Status",
+				{ label: "Configure", description: "edit any router setting" },
+				{ label: "Report", description: "usage analytics; window and scope adjustable inside" },
+				{ label: "Status", description: "keys, catalog, Ollama, agentdox" },
 			]);
 			if (chosen === undefined) return;
 			if (chosen === "Configure") return configure(ctx);
 			if (chosen === "Status") return status(pi, ctx);
-			if (chosen.startsWith("Report")) {
-				const days = chosen.includes("24h") ? "1d" : chosen.includes("30") ? "30d" : "7d";
-				return report(pi, ctx, days);
-			}
+			if (chosen === "Report") return report(pi, ctx, "");
 		},
 	});
 }
@@ -150,6 +144,7 @@ async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string):
 						pageUp: (d) => keybindings.matches(d, "tui.select.pageUp"),
 						pageDown: (d) => keybindings.matches(d, "tui.select.pageDown"),
 						cancel: (d) => keybindings.matches(d, "tui.select.cancel"),
+						confirm: (d) => keybindings.matches(d, "tui.select.confirm"),
 						left: (d) => matchesKey(d, "left"),
 						right: (d) => matchesKey(d, "right"),
 					},

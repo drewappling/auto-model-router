@@ -484,11 +484,14 @@ tokens (including cached), reported cost, time to first token, total latency,
 escalation signal, error. Three views aggregate it, all from the same
 `buildUsageReport` in `src/cost/report.ts`:
 
-- `/router report [7d] [--all]` in omp — rendered into the transcript as a
-  code block, so it scrolls with the conversation and the model can answer
-  questions about it. Scoped to this harness when `OMP_HARNESS_ID` is set;
-  `--all` widens it. Falls back to reading the ledger directly if the router
-  is unreachable.
+- `/router report` in omp — a fullscreen hub with the `/models` look: views
+  for overview, providers, models, tiers, by day and status in a sidebar, plus
+  a Window selector (24h / 7d / 30d / 90d) and, when `OMP_HARNESS_ID` is set,
+  a scope toggle between this harness and all harnesses. ↑/↓ move, Enter
+  applies a window or scope, ←/→ also cycle the window, PgUp/PgDn scroll, r
+  reloads, Esc closes. Headless sessions get the same report as text in the
+  transcript. Falls back to reading the ledger directly if the router is
+  unreachable.
 - `auto-model-router report --days 7 [--harness <id>] [--json]` on the terminal.
 - `GET /v1/router/report?days=7&harness=<id>` for dashboards.
 
@@ -517,13 +520,13 @@ built-in defaults below. There are two ways to edit it:
 ### Via `/router` (in-omp, native UI)
 
 Install the `router-configure` extension, restart omp, then run `/router` in
-the session prompt. With no arguments it shows a menu (Configure, Report for
-the last 24h / 7 days / 30 days, Status); the subcommands go straight there:
+the session prompt. With no arguments it shows a menu (Configure, Report,
+Status); the subcommands go straight there:
 
 | Command | What it does |
 | --- | --- |
 | `/router config` | Section picker over **every** config key: Server, OpenRouter, Ollama Cloud, Benchmarks, Tiers, Tasks, Filters, Classifier, Escalation, Hysteresis, Exploration, Cache, Compaction, Context (agentdox), Budget, Ledger, Logging, Profiles. Only `ollama.prices` and `ollama.twins` (maps) stay YAML-only. |
-| `/router report [7d] [--all]` | Usage analytics for the window (`24h`, `7d`, `2w`, `30` …), posted into the transcript. See [Usage reports](#usage-reports). |
+| `/router report` | Usage analytics in a fullscreen hub styled like `/models`: pick a view in the sidebar, set the window (24h / 7d / 30d / 90d) and the harness scope there too. `/router report 30d --all` presets them. See [Usage reports](#usage-reports). |
 | `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, agentdox bridge. |
 
 Picking a section lists its fields with their current values (pending edits

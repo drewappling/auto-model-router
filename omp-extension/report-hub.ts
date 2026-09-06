@@ -2,9 +2,11 @@
  * Fullscreen report hub for `/router report`, drawn the way omp's `/models`
  * hub is: a titled two-column frame on the alternate screen, a sidebar of
  * views on the left, the selected view's table on the right, a divider and
- * a footer hint row. Keys: ↑/↓ or j/k pick a view, ←/→ or w cycle the time
- * window, a toggles harness scope, PgUp/PgDn scroll a long table, r reloads,
- * Esc/q close.
+ * a footer hint row. The sidebar holds the views, a Window
+ * selector (24h / 7d / 30d / 90d) and, when the session has a harness id, a
+ * scope toggle. Keys: ↑/↓ or j/k move, Enter applies a window or scope entry,
+ * ←/→ also cycle the window, PgUp/PgDn scroll a long table, r reloads, Esc/q
+ * close.
  *
  * The component is pure: styling comes through the `HubTheme` seam (omp's
  * `Theme` in production, identity functions in tests), data through
@@ -49,6 +51,7 @@ export interface HubKeys {
 	pageUp(data: string): boolean;
 	pageDown(data: string): boolean;
 	cancel(data: string): boolean;
+	confirm(data: string): boolean;
 }
 
 export interface HubSource {
@@ -76,21 +79,31 @@ export const WINDOWS: readonly number[] = [1, 7, 30, 90];
 
 type ViewId = "overview" | "providers" | "models" | "tiers" | "days" | "status";
 
-interface SidebarEntry {
-	id: ViewId | "sep";
-	label: string;
-	icon: string;
-}
+type SidebarEntry =
+	| { kind: "view"; id: ViewId; label: string; icon: string }
+	| { kind: "window"; days: number; label: string }
+	| { kind: "scope" }
+	| { kind: "label"; label: string }
+	| { kind: "sep" };
 
-const ENTRIES: readonly SidebarEntry[] = [
-	{ id: "overview", label: "Overview", icon: "◎" },
-	{ id: "providers", label: "Providers", icon: "◈" },
-	{ id: "models", label: "Models", icon: "◇" },
-	{ id: "tiers", label: "Tiers", icon: "≡" },
-	{ id: "days", label: "By day", icon: "▤" },
-	{ id: "sep", label: "", icon: "" },
-	{ id: "status", label: "Status", icon: "●" },
+const VIEWS: readonly Extract<SidebarEntry, { kind: "view" }>[] = [
+	{ kind: "view", id: "overview", label: "Overview", icon: "◎" },
+	{ kind: "view", id: "providers", label: "Providers", icon: "◈" },
+	{ kind: "view", id: "models", label: "Models", icon: "◇" },
+	{ kind: "view", id: "tiers", label: "Tiers", icon: "≡" },
+	{ kind: "view", id: "days", label: "By day", icon: "▤" },
 ];
+
+const WINDOW_LABELS: Record<number, string> = { 1: "24 hours", 7: "7 days", 30: "30 days", 90: "90 days" };
+
+/** Sidebar in order: views, Window selector, scope toggle (when scoped), Status. */
+function buildEntries(hasHarness: boolean): SidebarEntry[] {
+	const entries: SidebarEntry[] = [...VIEWS, { kind: "sep" }, { kind: "label", label: "Window" }];
+	for (const days of WINDOWS) entries.push({ kind: "window", days, label: WINDOW_LABELS[days] ?? `${days}d` });
+	if (hasHarness) entries.push({ kind: "sep" }, { kind: "label", label: "Scope" }, { kind: "scope" });
+	entries.push({ kind: "sep" }, { kind: "view", id: "status", label: "Status", icon: "●" });
+	return entries;
+}
 
 const SIDEBAR_WIDTH = 18;
 
@@ -108,10 +121,13 @@ function fit(text: string, width: number, t: HubText): string {
 export class ReportHub {
 	#o: HubOptions;
 	#req: ReportRequest;
-	#active = 0;
+	#entries: SidebarEntry[];
+	/** Sidebar cursor (index into #entries). */
+	#cursor = 0;
+	#view: ViewId = "overview";
 	#scroll = 0;
 	#report: UsageReport | null = null;
-	#view: ReportView | null = null;
+	#data: ReportView | null = null;
 	#status: string | null = null;
 	#loading = false;
 	#error: string | null = null;
@@ -122,6 +138,7 @@ export class ReportHub {
 	constructor(o: HubOptions) {
 		this.#o = o;
 		this.#req = { ...o.initial };
+		this.#entries = buildEntries(o.harnessId !== "");
 		void this.#load();
 	}
 
@@ -130,7 +147,12 @@ export class ReportHub {
 	}
 
 	get activeView(): ViewId {
-		return (ENTRIES[this.#active]?.id ?? "overview") as ViewId;
+		return this.#view;
+	}
+
+	/** The sidebar entry under the cursor. */
+	get cursorEntry(): SidebarEntry {
+		return this.#entries[this.#cursor] ?? { kind: "sep" };
 	}
 
 	async #load(): Promise<void> {
@@ -145,7 +167,7 @@ export class ReportHub {
 			]);
 			if (gen !== this.#generation || this.#disposed) return;
 			this.#report = report;
-			this.#view = reportView(report);
+			this.#data = reportView(report);
 			this.#status = status;
 		} catch (err) {
 			if (gen !== this.#generation || this.#disposed) return;
@@ -159,21 +181,40 @@ export class ReportHub {
 	}
 
 	#move(delta: number): void {
-		let next = this.#active;
-		for (let i = 0; i < ENTRIES.length; i++) {
-			next = (next + delta + ENTRIES.length) % ENTRIES.length;
-			if (ENTRIES[next]?.id !== "sep") break;
+		let next = this.#cursor;
+		for (let i = 0; i < this.#entries.length; i++) {
+			next = (next + delta + this.#entries.length) % this.#entries.length;
+			const kind = this.#entries[next]?.kind;
+			if (kind !== "sep" && kind !== "label") break;
 		}
-		this.#active = next;
+		this.#cursor = next;
+		// Landing on a view shows it at once, as /models does for its scopes;
+		// window and scope entries wait for Enter.
+		const e = this.#entries[next];
+		if (e?.kind === "view" && e.id !== this.#view) {
+			this.#view = e.id;
+			this.#scroll = 0;
+		}
+	}
+
+	#setWindow(days: number): void {
+		if (days === this.#req.windowDays) return;
+		this.#req = { ...this.#req, windowDays: days };
 		this.#scroll = 0;
+		void this.#load();
+	}
+
+	/** Enter on the cursor entry: apply a window or flip the scope. */
+	#activate(): void {
+		const e = this.cursorEntry;
+		if (e.kind === "window") this.#setWindow(e.days);
+		else if (e.kind === "scope") this.#toggleScope();
 	}
 
 	#cycleWindow(delta: number): void {
 		const i = WINDOWS.indexOf(this.#req.windowDays);
 		const next = i < 0 ? 0 : (i + delta + WINDOWS.length) % WINDOWS.length;
-		this.#req = { ...this.#req, windowDays: WINDOWS[next] ?? 7 };
-		this.#scroll = 0;
-		void this.#load();
+		this.#setWindow(WINDOWS[next] ?? 7);
 	}
 
 	#toggleScope(): void {
@@ -191,6 +232,7 @@ export class ReportHub {
 		}
 		if (k.up(data) || data === "k") this.#move(-1);
 		else if (k.down(data) || data === "j") this.#move(1);
+		else if (k.confirm(data) || data === " ") this.#activate();
 		else if (k.right(data) || data === "w") this.#cycleWindow(1);
 		else if (k.left(data)) this.#cycleWindow(-1);
 		else if (data === "a") this.#toggleScope();
@@ -215,7 +257,7 @@ export class ReportHub {
 			if (this.#status === null) return [th.fg("dim", "loading…")];
 			return this.#status.split("\n");
 		}
-		const v = this.#view;
+		const v = this.#data;
 		const r = this.#report;
 		if (v === null || r === null) return [th.fg("dim", "loading…")];
 		if (r.totals.dispatches === 0) {
@@ -241,7 +283,7 @@ export class ReportHub {
 	#statusRow(width: number): string {
 		const th = this.#o.theme;
 		const scope = this.#req.harnessId === "" ? "all harnesses" : `harness ${this.#req.harnessId}`;
-		const heading = this.#view === null ? `last ${this.#req.windowDays}d · ${scope}` : `${this.#view.heading.replace(/ · harness [^·]+/, "")} · ${scope}`;
+		const heading = this.#data === null ? `last ${this.#req.windowDays}d · ${scope}` : `${this.#data.heading.replace(/ · harness [^·]+/, "")} · ${scope}`;
 		const tail = this.#loading ? th.fg("warning", " · loading…") : "";
 		return this.#o.text.truncateToWidth(th.fg("accent", ` ${heading}`) + tail, width);
 	}
@@ -249,15 +291,34 @@ export class ReportHub {
 	#sidebarLines(width: number, rows: number): string[] {
 		const th = this.#o.theme;
 		const lines: string[] = [];
-		ENTRIES.forEach((e, i) => {
-			if (e.id === "sep") {
-				lines.push(th.fg("border", th.boxRound.horizontal.repeat(width)));
-				return;
+		this.#entries.forEach((e, i) => {
+			const here = i === this.#cursor;
+			const cursor = here ? th.fg("accent", th.nav.cursor) : " ";
+			switch (e.kind) {
+				case "sep":
+					lines.push(th.fg("border", th.boxRound.horizontal.repeat(width)));
+					return;
+				case "label":
+					lines.push(th.fg("dim", `  ${e.label}`));
+					return;
+				case "view": {
+					const active = e.id === this.#view;
+					const label = active ? th.bold(th.fg("accent", e.label)) : e.label;
+					lines.push(`${cursor} ${th.fg(active ? "accent" : "dim", e.icon)} ${label}`);
+					return;
+				}
+				case "window": {
+					const on = e.days === this.#req.windowDays;
+					lines.push(`${cursor} ${on ? th.fg("accent", "●") : th.fg("dim", "○")} ${on ? th.bold(e.label) : e.label}`);
+					return;
+				}
+				case "scope": {
+					const scoped = this.#req.harnessId !== "";
+					const label = scoped ? `this harness` : "all harnesses";
+					lines.push(`${cursor} ${th.fg("accent", scoped ? "◉" : "◎")} ${label}`);
+					return;
+				}
 			}
-			const active = i === this.#active;
-			const cursor = active ? th.fg("accent", th.nav.cursor) : " ";
-			const label = active ? th.bold(th.fg("accent", e.label)) : e.label;
-			lines.push(`${cursor} ${th.fg(active ? "accent" : "dim", e.icon)} ${label}`);
 		});
 		while (lines.length < rows) lines.push("");
 		return lines.slice(0, rows);
@@ -265,8 +326,9 @@ export class ReportHub {
 
 	#footer(width: number): string {
 		const th = this.#o.theme;
-		const scope = this.#o.harnessId === "" ? "" : " · a scope";
-		return this.#o.text.truncateToWidth(th.fg("dim", `↑↓ view · ←→ window (${this.#req.windowDays}d)${scope} · pgup/pgdn scroll · r reload · esc close`), width);
+		const e = this.cursorEntry;
+		const enter = e.kind === "window" ? "enter set window · " : e.kind === "scope" ? "enter toggle scope · " : "";
+		return this.#o.text.truncateToWidth(th.fg("dim", `↑↓ move · ${enter}←→ window (${this.#req.windowDays}d) · pgup/pgdn scroll · r reload · esc close`), width);
 	}
 
 	render(width: number): string[] {

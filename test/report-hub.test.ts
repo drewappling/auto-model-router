@@ -41,6 +41,7 @@ const keys: HubKeys = {
 	pageUp: (d) => d === "PGUP",
 	pageDown: (d) => d === "PGDN",
 	cancel: (d) => d === "ESC",
+	confirm: (d) => d === "ENTER",
 };
 
 function report(over: Partial<UsageReport> = {}): UsageReport {
@@ -158,7 +159,7 @@ describe("ReportHub frame", () => {
 		expect(body).toContain("providers");
 		expect(body).toContain("openrouter");
 		expect(body).toContain("z-ai/glm");
-		expect(body).toContain("←→ window (7d)");
+		expect(body).toContain("window (7d)");
 	});
 
 	test("shows loading before data arrives and the error when the load fails", async () => {
@@ -172,7 +173,7 @@ describe("ReportHub frame", () => {
 });
 
 describe("ReportHub navigation", () => {
-	test("up/down move between views, skipping the separator, and wrap", async () => {
+	test("up/down move through views, window entries and status, skipping rules and labels, and wrap", async () => {
 		const h = mount();
 		await h.settle();
 		expect(h.hub.activeView).toBe("overview");
@@ -180,13 +181,50 @@ describe("ReportHub navigation", () => {
 		expect(h.hub.activeView).toBe("providers");
 		for (let i = 0; i < 3; i++) h.hub.handleInput("DOWN");
 		expect(h.hub.activeView).toBe("days");
-		h.hub.handleInput("DOWN"); // over the separator
+		// Over the rule and the "Window" label onto the first window entry:
+		// the view stays put until Enter picks something.
+		h.hub.handleInput("DOWN");
+		expect(h.hub.cursorEntry).toEqual({ kind: "window", days: 1, label: "24 hours" });
+		expect(h.hub.activeView).toBe("days");
+		for (let i = 0; i < 3; i++) h.hub.handleInput("DOWN");
+		expect(h.hub.cursorEntry).toEqual({ kind: "window", days: 90, label: "90 days" });
+		h.hub.handleInput("DOWN"); // over the rule to Status (no scope entry without a harness id)
 		expect(h.hub.activeView).toBe("status");
+		expect(h.hub.render(100).join("\n")).toContain("openrouter: key configured (omp)");
 		h.hub.handleInput("DOWN"); // wraps
 		expect(h.hub.activeView).toBe("overview");
 		h.hub.handleInput("UP");
 		expect(h.hub.activeView).toBe("status");
-		expect(h.hub.render(100).join("\n")).toContain("openrouter: key configured (omp)");
+	});
+
+	test("the sidebar shows the window selector with the active window marked", async () => {
+		const h = mount();
+		await h.settle();
+		const side = h.hub.render(100).join("\n");
+		expect(side).toContain("  Window");
+		expect(side).toContain("○ 24 hours");
+		expect(side).toContain("● 7 days");
+		expect(side).toContain("○ 30 days");
+		expect(side).toContain("○ 90 days");
+		expect(side).not.toContain("Scope");
+	});
+
+	test("enter on a window entry applies it and reloads; the view is unchanged", async () => {
+		const h = mount();
+		await h.settle();
+		// Moving down passes every view (each shows as the cursor lands on it)
+		// and stops on the 30-day entry; Enter there changes the window only.
+		for (let i = 0; i < 7; i++) h.hub.handleInput("j");
+		expect(h.hub.cursorEntry).toEqual({ kind: "window", days: 30, label: "30 days" });
+		expect(h.hub.activeView).toBe("days");
+		h.hub.handleInput("ENTER");
+		expect(h.hub.request.windowDays).toBe(30);
+		expect(h.hub.activeView).toBe("days");
+		h.hub.handleInput("ENTER"); // same window again: no reload
+		await h.settle();
+		expect(h.requests.map((r) => r.windowDays)).toEqual([7, 30]);
+		expect(h.hub.render(100).join("\n")).toContain("● 30 days");
+		expect(h.hub.render(100).join("\n")).toContain("enter set window");
 	});
 
 	test("j/k are aliases and a chosen view renders only its table", async () => {
@@ -219,18 +257,26 @@ describe("ReportHub navigation", () => {
 		expect(h.hub.render(100).join("\n")).toContain("last 90d");
 	});
 
-	test("a toggles harness scope only when the session has a harness id", async () => {
+	test("the scope entry exists only with a harness id; enter (or a) toggles it", async () => {
 		const none = mount();
 		await none.settle();
 		none.hub.handleInput("a");
 		expect(none.hub.request.harnessId).toBe("");
-		expect(none.hub.render(100).join("\n")).not.toContain("a scope");
 
 		const h = mount({ harnessId: "omp", initialHarness: "omp" });
 		await h.settle();
-		expect(h.hub.render(100).join("\n")).toContain("harness omp");
-		h.hub.handleInput("a");
+		let side = h.hub.render(100).join("\n");
+		expect(side).toContain("  Scope");
+		expect(side).toContain("◉ this harness");
+		expect(side).toContain("harness omp");
+		// views(5) + window(4) → the scope entry is the 10th selectable.
+		for (let i = 0; i < 9; i++) h.hub.handleInput("DOWN");
+		expect(h.hub.cursorEntry).toEqual({ kind: "scope" });
+		h.hub.handleInput("ENTER");
 		expect(h.hub.request.harnessId).toBe("");
+		side = h.hub.render(100).join("\n");
+		expect(side).toContain("◎ all harnesses");
+		expect(side).toContain("enter toggle scope");
 		h.hub.handleInput("a");
 		expect(h.hub.request.harnessId).toBe("omp");
 		await h.settle();
