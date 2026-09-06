@@ -5,10 +5,12 @@
  *   /router                 menu: Configure / Report / Status
  *   /router config          edit any section of the router's config.yml
  *   /router report [7d] [--all]
- *                           usage analytics for the last N days (default 7):
- *                           providers, models, tiers, spend, speed, cache hit
- *                           rate, escalations. Scoped to this harness when
- *                           OMP_HARNESS_ID is set; `--all` widens it.
+ *                           usage analytics in a fullscreen hub styled like
+ *                           /models: views for overview, providers, models,
+ *                           tiers, by day and status; ←/→ cycle the window,
+ *                           a toggles harness scope. Scoped to this harness
+ *                           when OMP_HARNESS_ID is set; `--all` widens it.
+ *                           Headless sessions get the text in the transcript.
  *   /router status          the router's /health: keys, catalog, Ollama
  *                           availability and plan usage, agentdox.
  *
@@ -44,8 +46,11 @@ import { openDb } from "../src/util/sqlite.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+
 import { editProfile, sectionTitles, walkSection, type ConfigUi } from "./configure-logic.ts";
-import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot } from "./report-logic.ts";
+import { ReportHub } from "./report-hub.ts";
+import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot, type ReportRequest } from "./report-logic.ts";
 import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
 
 // This harness's id, matching the X-Omp-Harness header the router records.
@@ -102,25 +107,69 @@ function post(pi: ExtensionAPI, text: string): void {
 	pi.sendMessage({ customType: MESSAGE_TYPE, content: `\`\`\`text\n${text}\n\`\`\``, display: true }, { triggerTurn: false });
 }
 
-async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string): Promise<void> {
-	const req = parseReportArgs(argText, HARNESS_ID);
-	let data: UsageReport;
+/** Loads a report: the running router first, the ledger directly if it is down. */
+async function loadReport(req: ReportRequest): Promise<UsageReport> {
 	try {
-		data = await fetchReport(routerBaseUrl(), req, routerAuthHeaders());
+		return await fetchReport(routerBaseUrl(), req, routerAuthHeaders());
 	} catch (err) {
 		// Router not reachable (standalone `serve` not running, or embed still
 		// starting): read the ledger directly so the report still comes back.
 		const cfg = loadConfig();
 		if (!existsSync(cfg.ledger.path)) {
-			ctx.ui.notify(`router unreachable (${err instanceof Error ? err.message : String(err)}) and no ledger at ${cfg.ledger.path}`, "error");
-			return;
+			throw new Error(`router unreachable (${err instanceof Error ? err.message : String(err)}) and no ledger at ${cfg.ledger.path}`);
 		}
 		const db = openDb(cfg.ledger.path);
 		try {
-			data = buildUsageReport(db, req);
+			return buildUsageReport(db, req);
 		} finally {
 			db.close();
 		}
+	}
+}
+
+async function loadStatus(): Promise<string> {
+	const baseUrl = routerBaseUrl();
+	const res = await fetch(`${baseUrl}/health`, { headers: routerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
+	if (!res.ok) throw new Error(`router returned ${res.status}`);
+	return renderStatus(baseUrl, (await res.json()) as HealthSnapshot);
+}
+
+async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string): Promise<void> {
+	const req = parseReportArgs(argText, HARNESS_ID);
+	// Interactive sessions get the fullscreen hub (the /models look); headless
+	// and print modes get the text posted into the transcript.
+	if (ctx.hasUI && typeof ctx.ui.custom === "function") {
+		await ctx.ui.custom<void>(
+			(tui, theme, keybindings, done) =>
+				new ReportHub({
+					theme,
+					text: { visibleWidth, truncateToWidth },
+					keys: {
+						up: (d) => keybindings.matches(d, "tui.select.up"),
+						down: (d) => keybindings.matches(d, "tui.select.down"),
+						pageUp: (d) => keybindings.matches(d, "tui.select.pageUp"),
+						pageDown: (d) => keybindings.matches(d, "tui.select.pageDown"),
+						cancel: (d) => keybindings.matches(d, "tui.select.cancel"),
+						left: (d) => matchesKey(d, "left"),
+						right: (d) => matchesKey(d, "right"),
+					},
+					source: { report: loadReport, status: loadStatus },
+					rows: () => tui.terminal?.rows ?? process.stdout.rows ?? 40,
+					requestRender: () => tui.requestRender(),
+					close: () => done(undefined),
+					initial: req,
+					harnessId: HARNESS_ID,
+				}),
+			{ overlay: true, overlayOptions: { fullscreen: true, width: "100%", maxHeight: "100%", anchor: "center" } },
+		);
+		return;
+	}
+	let data: UsageReport;
+	try {
+		data = await loadReport(req);
+	} catch (err) {
+		ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+		return;
 	}
 	if (data.totals.dispatches === 0) {
 		ctx.ui.notify(`no routed turns in the last ${req.windowDays}d${req.harnessId === "" ? "" : ` for harness ${req.harnessId}`}`, "info");
@@ -130,17 +179,11 @@ async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string):
 }
 
 async function status(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	const baseUrl = routerBaseUrl();
-	let health: HealthSnapshot;
 	try {
-		const res = await fetch(`${baseUrl}/health`, { headers: routerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
-		if (!res.ok) throw new Error(`router returned ${res.status}`);
-		health = (await res.json()) as HealthSnapshot;
+		post(pi, await loadStatus());
 	} catch (err) {
-		ctx.ui.notify(`router unreachable at ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`, "error");
-		return;
+		ctx.ui.notify(`router unreachable at ${routerBaseUrl()}: ${err instanceof Error ? err.message : String(err)}`, "error");
 	}
-	post(pi, renderStatus(baseUrl, health));
 }
 
 async function configure(ctx: ExtensionContext): Promise<void> {

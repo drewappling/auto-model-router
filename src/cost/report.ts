@@ -246,69 +246,95 @@ const num = (v: number): string => v.toLocaleString("en-US");
 const ms = (v: number | null): string => (v === null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`);
 const tps = (v: number | null): string => (v === null ? "–" : `${v.toFixed(0)} tok/s`);
 
-function table(headers: string[], rows: string[][]): string[] {
+/** One aligned table of a report: header row, then data rows. */
+export interface ReportTable {
+	/** Stable id: `providers` | `models` | `tiers` | `days`. */
+	id: string;
+	title: string;
+	headers: string[];
+	rows: string[][];
+}
+
+/** Everything a renderer needs, already formatted: summary lines and tables. */
+export interface ReportView {
+	/** `last 7d · harness omp · 2026-09-06 14:18Z`. */
+	heading: string;
+	summary: string[];
+	tables: ReportTable[];
+}
+
+/**
+ * Column-aligns a table into fixed-width lines: header, rule, rows. The first
+ * column is left-aligned, the rest right-aligned. Cells are plain text, so
+ * the caller can style whole lines without breaking the alignment.
+ */
+export function formatTable(headers: string[], rows: string[][]): string[] {
 	const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? "").length)));
 	const line = (cells: string[]): string => cells.map((c, i) => (i === 0 ? c.padEnd(widths[i]!) : c.padStart(widths[i]!))).join("  ");
 	return [line(headers), line(widths.map((w) => "-".repeat(w))), ...rows.map(line)];
 }
 
-/** Plain-text rendering: fixed-width tables, no markup, fits a TUI panel. */
-export function renderUsageReport(r: UsageReport, opts: { maxModels?: number } = {}): string {
+/** Formats a report into summary lines and tables, shared by every renderer. */
+export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): ReportView {
 	const maxModels = opts.maxModels ?? 12;
 	const t = r.totals;
-	const out: string[] = [];
-	out.push(`auto-model-router · last ${r.windowDays}d${r.harnessId === "" ? "" : ` · harness ${r.harnessId}`} · ${new Date(r.generatedAtMs).toISOString().slice(0, 16).replace("T", " ")}Z`);
-	out.push("");
-	out.push(
+	const heading = `last ${r.windowDays}d${r.harnessId === "" ? "" : ` · harness ${r.harnessId}`} · ${new Date(r.generatedAtMs).toISOString().slice(0, 16).replace("T", " ")}Z`;
+	const summary = [
 		`spend ${usd(t.spendUsd)} over ${num(t.dispatches)} dispatches in ${num(t.conversations)} conversations · ${usd(t.dispatches > 0 ? t.spendUsd / t.dispatches : 0)}/dispatch`,
-	);
-	out.push(
 		`prompt ${num(t.promptTokens)} tok (cache hit ${pct(t.cacheHitRate)}) · completion ${num(t.completionTokens)} tok · switches ${num(t.modelSwitches)} · escalations ${num(t.escalations)} · failovers ${num(t.failovers)} · errors ${num(t.errors)} (${num(t.aborted)} aborted)`,
-	);
+	];
+	const tables: ReportTable[] = [];
 	if (r.providers.length > 0) {
-		out.push("", "providers");
-		out.push(
-			...table(
-				["provider", "dispatches", "spend", "share", "cache", "ttft", "speed", "esc", "err"],
-				r.providers.map((p) => [p.key, num(p.dispatches), usd(p.spendUsd), pct(p.share), pct(p.cacheHitRate), ms(p.avgTtftMs), tps(p.tokensPerSec), num(p.escalations), num(p.errors)]),
-			),
-		);
+		tables.push({
+			id: "providers",
+			title: "providers",
+			headers: ["provider", "dispatches", "spend", "share", "cache", "ttft", "speed", "esc", "err"],
+			rows: r.providers.map((p) => [p.key, num(p.dispatches), usd(p.spendUsd), pct(p.share), pct(p.cacheHitRate), ms(p.avgTtftMs), tps(p.tokensPerSec), num(p.escalations), num(p.errors)]),
+		});
 	}
 	if (r.models.length > 0) {
-		out.push("", `models (top ${Math.min(maxModels, r.models.length)} of ${r.models.length} by spend)`);
-		out.push(
-			...table(
-				["model", "dispatches", "spend", "share", "cache", "ttft", "speed", "tiers"],
-				r.models
-					.slice(0, maxModels)
-					.map((m) => [
-						m.key,
-						num(m.dispatches),
-						usd(m.spendUsd),
-						pct(m.share),
-						pct(m.cacheHitRate),
-						ms(m.avgTtftMs),
-						tps(m.tokensPerSec),
-						Object.entries(m.tiers)
-							.sort((a, b) => b[1] - a[1])
-							.map(([k, v]) => `${k}:${v}`)
-							.join(" "),
-					]),
-			),
-		);
+		tables.push({
+			id: "models",
+			title: `models (top ${Math.min(maxModels, r.models.length)} of ${r.models.length} by spend)`,
+			headers: ["model", "dispatches", "spend", "share", "cache", "ttft", "speed", "tiers"],
+			rows: r.models.slice(0, maxModels).map((m) => [
+				m.key,
+				num(m.dispatches),
+				usd(m.spendUsd),
+				pct(m.share),
+				pct(m.cacheHitRate),
+				ms(m.avgTtftMs),
+				tps(m.tokensPerSec),
+				Object.entries(m.tiers)
+					.sort((a, b) => b[1] - a[1])
+					.map(([k, v]) => `${k}:${v}`)
+					.join(" "),
+			]),
+		});
 	}
 	if (r.tiers.length > 0) {
-		out.push("", "tiers");
-		out.push(
-			...table(
-				["tier", "dispatches", "spend", "share", "cache", "avg prompt", "esc"],
-				r.tiers.map((x) => [x.key, num(x.dispatches), usd(x.spendUsd), pct(x.share), pct(x.cacheHitRate), num(x.avgPromptTokens), num(x.escalations)]),
-			),
-		);
+		tables.push({
+			id: "tiers",
+			title: "tiers",
+			headers: ["tier", "dispatches", "spend", "share", "cache", "avg prompt", "esc"],
+			rows: r.tiers.map((x) => [x.key, num(x.dispatches), usd(x.spendUsd), pct(x.share), pct(x.cacheHitRate), num(x.avgPromptTokens), num(x.escalations)]),
+		});
 	}
 	if (r.days.length > 1) {
-		out.push("", "by day (UTC)");
-		out.push(...table(["day", "dispatches", "spend", "cache"], r.days.map((d) => [d.day, num(d.dispatches), usd(d.spendUsd), pct(d.cacheHitRate)])));
+		tables.push({
+			id: "days",
+			title: "by day (UTC)",
+			headers: ["day", "dispatches", "spend", "cache"],
+			rows: r.days.map((d) => [d.day, num(d.dispatches), usd(d.spendUsd), pct(d.cacheHitRate)]),
+		});
 	}
+	return { heading, summary, tables };
+}
+
+/** Plain-text rendering: fixed-width tables, no markup, fits a TUI panel. */
+export function renderUsageReport(r: UsageReport, opts: { maxModels?: number } = {}): string {
+	const v = reportView(r, opts);
+	const out: string[] = [`auto-model-router · ${v.heading}`, "", ...v.summary];
+	for (const t of v.tables) out.push("", t.title, ...formatTable(t.headers, t.rows));
 	return out.join("\n");
 }
