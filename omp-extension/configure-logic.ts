@@ -10,7 +10,7 @@
  */
 
 import type { FieldSpec, SectionSpec } from "../src/cli/config-wizard.ts";
-import { CLEAR_TOKEN, formatValue, validateField } from "../src/cli/config-wizard.ts";
+import { CLEAR_TOKEN, displayValue, validateField } from "../src/cli/config-wizard.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 
 export interface ConfigUi {
@@ -38,8 +38,12 @@ export async function promptField(
 	const label = field.hint !== undefined ? `${field.label} (${field.hint})` : field.label;
 
 	if (field.kind === "boolean") {
-		const chosen = await ui.select(label, ["true", "false"], current === true ? 0 : 1);
+		// An optional boolean can also be cleared back to "unset" (its default).
+		const options = field.optional === true ? ["true", "false", "unset"] : ["true", "false"];
+		const selected = current === true ? 0 : current === false ? 1 : field.optional === true ? 2 : 1;
+		const chosen = await ui.select(label, options, selected);
 		if (chosen === undefined) return undefined;
+		if (chosen === "unset") return { value: null, changed: current !== undefined && current !== null };
 		const value = chosen === "true";
 		return { value, changed: value !== current };
 	}
@@ -52,8 +56,9 @@ export async function promptField(
 		return { value: chosen, changed: chosen !== current };
 	}
 
-	// string | number | stringArray: free-text input.
-	const placeholder = formatValue(current);
+	// string | number | stringArray | numberArray: free-text input. Secrets
+	// show set/unset rather than the value.
+	const placeholder = displayValue(field, current);
 	const answer = await ui.input(label, placeholder, "");
 	if (answer === undefined) return undefined;
 	if (answer.trim() === "") return { value: current, changed: false }; // keep
@@ -67,7 +72,12 @@ export async function promptField(
 		ui.notify(`invalid: ${result.error}`, "warn");
 		return { value: current, changed: false };
 	}
-	return { value: result.value, changed: result.value !== current };
+	// Arrays are re-parsed from text every time, so compare by content or an
+	// unchanged list would register as an edit.
+	const changed = Array.isArray(result.value) && Array.isArray(current)
+		? JSON.stringify(result.value) !== JSON.stringify(current)
+		: result.value !== current;
+	return { value: result.value, changed };
 }
 
 /**

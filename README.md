@@ -172,14 +172,14 @@ without touching routing.
 | Path | Responsibility |
 | --- | --- |
 | `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. `ollama-catalog.ts` builds Ollama Cloud models from `/api/tags`, a shipped price table and OpenRouter twins; `composite.ts` merges the two into one snapshot. |
-| `src/cost/` | Cost forecasting per candidate; reconciliation against OpenRouter's authoritative `usage.cost`; the spend ledger; per-model trust; rolling blended rate. |
+| `src/cost/` | Cost forecasting per candidate; reconciliation against OpenRouter's authoritative `usage.cost`; the spend ledger; per-model trust; rolling blended rate; `report.ts` usage analytics. |
 | `src/tokens/` | Token estimation with no tokenizer dependency, self-calibrating from observed `prompt_tokens` per tokenizer family. |
 | `src/wire/` | Protocol boundary. `wire/openai/` implements chat completions in and SSE out. |
 | `src/router/` | Feature extraction, complexity classification, candidate filtering and scoring, hysteresis, cache-breakpoint placement, budget guard, probe planning. |
 | `src/upstream/` | Transports: OpenRouter (streaming dispatch, `session_id` stickiness, error classification, fallback arrays) and Ollama Cloud (body rewrite for its compatibility layer, quota/rate-limit breaker); `multi.ts` dispatches by slug prefix. |
 | `src/config/` | Configuration loading, schema validation, and the built-in defaults. |
-| `src/cli/` | `serve`, `stats`, `models`, `explain`, `config` commands. |
-| `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts`. |
+| `src/cli/` | `serve`, `stats`, `report`, `models`, `explain`, `config` commands. |
+| `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts` (`/router` config, report, status). |
 
 ### Two cost numbers, never conflated
 
@@ -212,7 +212,7 @@ Then add the shipped extensions to omp's `~/.omp/agent/config.yml`
 extensions:
   - auto-model-router/omp-extension/router-embed.ts
   - auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - auto-model-router/omp-extension/router-configure.ts # optional: /router command
+  - auto-model-router/omp-extension/router-configure.ts # optional: /router config, report, status
 ```
 
 ### From the repo (cross-platform installer)
@@ -235,7 +235,7 @@ The installer adds:
 
 - `router-embed.ts` — **required**; runs the router in-process.
 - `router-toast.ts` — optional; chosen-model toasts.
-- `router-configure.ts` — optional; the `/router` command.
+- `router-configure.ts` — optional; the `/router` command (configure, usage reports, status).
 
 Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 
@@ -244,7 +244,7 @@ Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 extensions:
   - /path/to/auto-model-router/omp-extension/router-embed.ts
   - /path/to/auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
-  - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router command
+  - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router config, report, status
 ```
 
 Then restart the omp session (extensions load at session start).
@@ -477,6 +477,37 @@ virtual profile it picked. Every routed response carries
 
 ---
 
+## Usage reports
+
+The ledger records every dispatch: model decided and served, tier, provider,
+tokens (including cached), reported cost, time to first token, total latency,
+escalation signal, error. Three views aggregate it, all from the same
+`buildUsageReport` in `src/cost/report.ts`:
+
+- `/router report [7d] [--all]` in omp — rendered into the transcript as a
+  code block, so it scrolls with the conversation and the model can answer
+  questions about it. Scoped to this harness when `OMP_HARNESS_ID` is set;
+  `--all` widens it. Falls back to reading the ledger directly if the router
+  is unreachable.
+- `auto-model-router report --days 7 [--harness <id>] [--json]` on the terminal.
+- `GET /v1/router/report?days=7&harness=<id>` for dashboards.
+
+What it shows, for the window:
+
+| Block | Columns |
+| --- | --- |
+| totals | spend, dispatches, conversations, $/dispatch, prompt and completion tokens, cache hit rate, model switches, escalations, failovers, errors (aborted separately) |
+| providers | per upstream (`openrouter`, `ollama`): dispatches, spend, share, cache hit, mean TTFT, tokens/s, escalations, errors |
+| models | per served slug (top 12 by spend): the same plus the tier mix it was routed for |
+| tiers | per tier: dispatches, spend, share, cache hit, mean prompt tokens, escalations |
+| by day | UTC calendar days: dispatches, spend, cache hit |
+
+Spend follows the ledger's rule — the provider's reported cost when it gave
+one, else the usage-priced figure the router computed, else the forecast.
+Speed uses only clean streamed rows (TTFT recorded, no error); tokens/s is
+completion tokens over time after first token. Ollama Cloud does not report
+cached tokens, so its cache column reads 0% by construction.
+
 ## Configuring the router
 
 The router's own config lives at `$AUTO_MODEL_ROUTER_HOME/config.yml` (default
@@ -486,12 +517,21 @@ built-in defaults below. There are two ways to edit it:
 ### Via `/router` (in-omp, native UI)
 
 Install the `router-configure` extension, restart omp, then run `/router` in
-the session prompt. It shows a section picker (Server, OpenRouter, Tiers,
-Tasks, Filters, Classifier, Escalation, Hysteresis, Cache, Budget, Ledger,
-Logging, Profiles). Each field prompts through omp's native UI dialogs —
-empty input keeps the current value, `-` clears an optional field. `Save and
-exit` writes the merged config (schema-checked and backed up first). Restart
-the omp session after saving.
+the session prompt. With no arguments it shows a menu (Configure, Report for
+the last 24h / 7 days / 30 days, Status); the subcommands go straight there:
+
+| Command | What it does |
+| --- | --- |
+| `/router config` | Section picker over **every** config key: Server, OpenRouter, Ollama Cloud, Benchmarks, Tiers, Tasks, Filters, Classifier, Escalation, Hysteresis, Exploration, Cache, Compaction, Context (agentdox), Budget, Ledger, Logging, Profiles. Only `ollama.prices` and `ollama.twins` (maps) stay YAML-only. |
+| `/router report [7d] [--all]` | Usage analytics for the window (`24h`, `7d`, `2w`, `30` …), posted into the transcript. See [Usage reports](#usage-reports). |
+| `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, agentdox bridge. |
+
+Each config field prompts through omp's native UI dialogs — empty input keeps
+the current value, `-` clears an optional field, credentials show as
+`set`/`unset` and are never echoed. `Save and exit` writes the merged config
+(schema-checked and backed up first). Tier, task, filter, classifier,
+hysteresis, exploration, compaction, cache and budget changes hot-reload;
+restart omp for `server`, `openrouter`, `ollama`, `context` and `ledger`.
 
 ### Via `auto-model-router config` (text wizard / CLI)
 

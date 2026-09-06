@@ -201,10 +201,10 @@ describe("createOllamaCatalog", () => {
 			if (fail) throw new Error("boom");
 			return Response.json({ models: url.endsWith("/api/tags") ? DAEMON_TAGS : [] });
 		};
-		const src = createOllamaCatalog({ ...OLLAMA, catalogTtlMs: 1 }, log, fetchImpl);
+		const src = createOllamaCatalog({ ...OLLAMA, catalogTtlMs: 10 }, log, fetchImpl);
 		expect((await src.get(OR_MODELS)).length).toBe(3);
 		fail = true;
-		await new Promise((r) => setTimeout(r, 5));
+		await new Promise((r) => setTimeout(r, 60)); // well past the 10ms TTL, even on a loaded runner
 		expect((await src.get(OR_MODELS)).length).toBe(3);
 	});
 });
@@ -463,13 +463,13 @@ describe("ollama plan usage (credit-aware bias)", () => {
 			if (fail) return new Response("down", { status: 503 });
 			return Response.json({ ...PAYLOAD, limits: { monthly: { usage: 42, models: [] } } });
 		};
-		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 50, timeoutMs: 1000, log, fetchImpl });
+		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 20, timeoutMs: 1000, log, fetchImpl });
 		expect(src.peek()).toBeNull();
 		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6);
 		await src.get();
 		expect(calls).toBe(1); // within the interval
 		fail = true;
-		await new Promise((r) => setTimeout(r, 60));
+		await new Promise((r) => setTimeout(r, 120)); // well past the 20ms poll interval
 		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6); // last good reading survives a 503
 		expect(calls).toBe(2);
 		expect(createOllamaUsageSource({ apiKey: "", pollMs: 50, timeoutMs: 1000, log, fetchImpl })).toBe(NO_USAGE);

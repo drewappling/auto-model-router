@@ -28,6 +28,19 @@ function makeUi(script: Array<{ type: "select" | "input" | "confirm"; value?: st
 		notify(_text, _level) {},
 	};
 }
+/** One "keep" answer per field of a section, with overrides by dotted path. */
+function keepAll(section: { fields: readonly FieldSpec[] }, overrides: Record<string, string> = {}) {
+	return section.fields.map((f) => {
+		const value = overrides[f.path] ?? "";
+		if (f.kind === "boolean" || f.kind === "enum") {
+			// A cancelled select aborts the walk, so an optional boolean keeps
+			// "unset" and everything else must be given a value by the caller.
+			return { type: "select" as const, value: value !== "" ? value : f.kind === "boolean" && f.optional === true ? "unset" : undefined };
+		}
+		return { type: "input" as const, value };
+	});
+}
+
 const baseCfg = {
 	server: { host: "127.0.0.1", port: 8788, apiKey: undefined, harnessId: undefined },
 	openrouter: {
@@ -55,12 +68,7 @@ const serverSection = WIZARD_SECTIONS.find((s) => s.title === "Server")!;
 
 describe("promptField via walkSection", () => {
 	test("empty answer keeps the current value (no change)", async () => {
-		const ui = makeUi([
-			{ type: "input", value: "" }, // keep host
-			{ type: "input", value: "" }, // keep port
-			{ type: "input", value: "" }, // keep apiKey
-			{ type: "input", value: "" }, // keep harnessId
-		]);
+		const ui = makeUi(keepAll(serverSection));
 		const answers: Record<string, unknown> = {};
 		const changed = await walkSection(ui, serverSection, baseCfg, answers);
 		expect(changed).toBe(false);
@@ -68,12 +76,7 @@ describe("promptField via walkSection", () => {
 	});
 
 	test("an edit is collected under its dotted path", async () => {
-		const ui = makeUi([
-			{ type: "input", value: "127.0.0.2" }, // host
-			{ type: "input", value: "" }, // keep port
-			{ type: "input", value: "" }, // keep apiKey
-			{ type: "input", value: "" }, // keep harnessId
-		]);
+		const ui = makeUi(keepAll(serverSection, { "server.host": "127.0.0.2" }));
 		const answers: Record<string, unknown> = {};
 		const changed = await walkSection(ui, serverSection, baseCfg, answers);
 		expect(changed).toBe(true);
@@ -89,12 +92,7 @@ describe("promptField via walkSection", () => {
 	});
 
 	test("CLEAR_TOKEN clears an optional field to null", async () => {
-		const ui = makeUi([
-			{ type: "input", value: "" }, // host
-			{ type: "input", value: "" }, // port
-			{ type: "input", value: "-" }, // clear apiKey
-			{ type: "input", value: "" }, // harnessId
-		]);
+		const ui = makeUi(keepAll(serverSection, { "server.apiKey": "-" }));
 		const answers: Record<string, unknown> = {};
 		const changed = await walkSection(ui, serverSection, baseCfg, answers);
 		expect(changed).toBe(true);
@@ -102,21 +100,49 @@ describe("promptField via walkSection", () => {
 	});
 
 	test("boolean fields use the select dialog", async () => {
-		const adaptive = WIZARD_SECTIONS.find((s) => s.title === "Tiers")!;
-		const ui = makeUi([
-			{ type: "select", value: "false" }, // adaptiveTierFloors
-			{ type: "input", value: "" }, // trivial minQuality
-			{ type: "input", value: "" }, // trivial maxInputPerMtok
-			{ type: "input", value: "" }, // simple minQuality
-			{ type: "input", value: "" }, // simple maxInputPerMtok
-			{ type: "input", value: "" }, // moderate minQuality
-			{ type: "input", value: "" }, // moderate maxInputPerMtok
-			{ type: "input", value: "" }, // hard minQuality
-			{ type: "input", value: "" }, // hard maxInputPerMtok
-		]);
+		const tiers = WIZARD_SECTIONS.find((s) => s.title === "Tiers")!;
+		// Booleans and enums prompt through select; a cancelled select would
+		// abort, so every boolean/enum in the section is answered with its
+		// current value except the one under test.
+		const script = keepAll(tiers, { adaptiveTierFloors: "false", adaptivePriceCeilings: "false" });
+		for (const call of script) if (call.type === "select" && call.value === undefined) call.value = "false";
+		const ui = makeUi(script);
 		const answers: Record<string, unknown> = {};
-		await walkSection(ui, adaptive, baseCfg, answers);
+		await walkSection(ui, tiers, { ...(baseCfg as object), adaptivePriceCeilings: false } as never, answers);
 		expect(answers).toEqual({ adaptiveTierFloors: false });
+	});
+
+	test("an optional boolean can be cleared back to unset", async () => {
+		const field: FieldSpec = { path: "tiers.hard.qualityNormalization", label: "norm", kind: "boolean", optional: true };
+		const section = { title: "t", fields: [field] };
+		const answers: Record<string, unknown> = {};
+		await walkSection(makeUi([{ type: "select", value: "unset" }]), section, { tiers: { hard: { qualityNormalization: true } } } as never, answers);
+		expect(answers).toEqual({ "tiers.hard.qualityNormalization": null });
+		const none: Record<string, unknown> = {};
+		await walkSection(makeUi([{ type: "select", value: "unset" }]), section, { tiers: { hard: {} } } as never, none);
+		expect(none).toEqual({});
+	});
+
+	test("re-entering an unchanged array is not an edit", async () => {
+		const field: FieldSpec = { path: "filters.deny", label: "deny", kind: "stringArray" };
+		const section = { title: "t", fields: [field] };
+		const answers: Record<string, unknown> = {};
+		const changed = await walkSection(makeUi([{ type: "input", value: "a, b" }]), section, { filters: { deny: ["a", "b"] } } as never, answers);
+		expect(changed).toBe(false);
+		expect(answers).toEqual({});
+	});
+
+	test("a secret field is prompted with set/unset, never its value", async () => {
+		const field: FieldSpec = { path: "openrouter.apiKey", label: "key", kind: "string", optional: true, secret: true };
+		const placeholders: string[] = [];
+		const ui: ConfigUi = {
+			async select() { return undefined; },
+			async input(_t, placeholder) { placeholders.push(placeholder ?? ""); return ""; },
+			async confirm() { return false; },
+			notify() {},
+		};
+		await walkSection(ui, { title: "t", fields: [field] }, { openrouter: { apiKey: "sk-secret" } } as never, {});
+		expect(placeholders).toEqual(["set"]);
 	});
 });
 

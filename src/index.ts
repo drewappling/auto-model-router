@@ -12,6 +12,7 @@ import { parseArgv } from "./cli/args.ts";
 import { configCommand } from "./cli/config-cmd.ts";
 import { explainCommand } from "./cli/explain.ts";
 import { modelsCommand } from "./cli/models.ts";
+import { reportCommand } from "./cli/report.ts";
 import { serveCommand } from "./cli/serve.ts";
 import { statsCommand } from "./cli/stats.ts";
 
@@ -21,6 +22,7 @@ Usage: auto-model-router <command> [options]
 
   serve      Run the router as a standalone process (for non-omp harnesses)
   stats      Show routed spend, per-model share, and escalation rates
+  report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
   config     Interactive wizard over the router's own config.yml
@@ -33,6 +35,7 @@ Global options:
 
   serve    --port <n>  --host <addr>  --log <level>
   stats    --days <n>  --json
+  report   --days <n>  --harness <id>  --json
   models   --tier <trivial|simple|moderate|hard>  --limit <n>  --json
   explain  --file <request.json>  --json          (reads stdin when --file is absent)
   config   --print  --write  --path <models.yml>  --config <router-config.yml>
@@ -67,14 +70,8 @@ async function main(): Promise<number> {
 		case "stats":
 			await statsCommand(args);
 			return 0;
-		case "models":
-
-		case "serve":
-			// Resolves once listening; the server itself keeps the loop alive.
-			await serveCommand(args);
-			return 0;
-		case "stats":
-			await statsCommand(args);
+		case "report":
+			await reportCommand(args);
 			return 0;
 		case "models":
 			await modelsCommand(args);

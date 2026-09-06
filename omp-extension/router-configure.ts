@@ -1,13 +1,29 @@
 /**
- * omp extension: `/router` — edit auto-model-router's settings through
- * omp's native UI dialogs.
+ * omp extension: `/router` — configure auto-model-router and pull usage
+ * reports without leaving the session.
  *
- * The command walks the same sections and fields as `auto-model-router config`
- * (reusing `WIZARD_SECTIONS` / `PROFILE_FIELDS` from the router's CLI) but
- * prompts through `ctx.ui` select/input/confirm dialogs instead of stdin.
- * Edits are persisted through the router's own validated merge
- * (`writeRouterConfig`), so the on-disk config.yml is schema-checked and
- * backed up exactly as the CLI wizard does.
+ *   /router                 menu: Configure / Report / Status
+ *   /router config          edit any section of the router's config.yml
+ *   /router report [7d] [--all]
+ *                           usage analytics for the last N days (default 7):
+ *                           providers, models, tiers, spend, speed, cache hit
+ *                           rate, escalations. Scoped to this harness when
+ *                           OMP_HARNESS_ID is set; `--all` widens it.
+ *   /router status          the router's /health: keys, catalog, Ollama
+ *                           availability and plan usage, agentdox.
+ *
+ * Configuration walks the same sections and fields as `auto-model-router
+ * config` (reusing `WIZARD_SECTIONS` / `PROFILE_FIELDS` from the router's
+ * CLI) but prompts through `ctx.ui` select/input dialogs. Edits are persisted
+ * through the router's own validated merge (`writeRouterConfig`), so the
+ * on-disk config.yml is schema-checked and backed up exactly as the CLI
+ * wizard does.
+ *
+ * Reports and status are fetched from the running router
+ * (`GET /v1/router/report`, `GET /health`) and posted into the transcript as
+ * a custom message, so they scroll with the conversation and the model can
+ * answer questions about them. If the router is unreachable the report falls
+ * back to reading the ledger directly.
  *
  * Install alongside router-embed.ts:
  *
@@ -15,62 +31,154 @@
  *   extensions:
  *     - /path/to/auto-model-router/omp-extension/router-embed.ts
  *     - /path/to/auto-model-router/omp-extension/router-configure.ts
- *
- * Run `/router` in an omp session to pick a section, edit its
- * fields, and save.
  */
 
-import { loadConfig } from "../src/config/load.ts";
-import { applyAnswers, PROFILE_FIELDS, WIZARD_SECTIONS } from "../src/cli/config-wizard.ts";
-import { writeRouterConfig, routerConfigPath } from "../src/cli/config-cmd.ts";
-import type { RouterConfig } from "../src/config/types.ts";
+import { existsSync } from "node:fs";
 
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { applyAnswers, PROFILE_FIELDS, WIZARD_SECTIONS } from "../src/cli/config-wizard.ts";
+import { routerConfigPath, writeRouterConfig } from "../src/cli/config-cmd.ts";
+import { loadConfig } from "../src/config/load.ts";
+import type { RouterConfig } from "../src/config/types.ts";
+import { buildUsageReport, renderUsageReport, type UsageReport } from "../src/cost/report.ts";
+import { openDb } from "../src/util/sqlite.ts";
+
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { editProfile, sectionTitles, walkSection, type ConfigUi } from "./configure-logic.ts";
+import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot } from "./report-logic.ts";
+import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
+
+// This harness's id, matching the X-Omp-Harness header the router records.
+// Empty ⇒ reports cover every harness (single-harness default).
+const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
+
+/** Custom message type for report/status output in the transcript. */
+const MESSAGE_TYPE = "auto-model-router";
 
 export default function (pi: ExtensionAPI): void {
-	pi.setLabel("auto-model-router configure");
+	pi.setLabel("auto-model-router");
 
 	pi.registerCommand("router", {
-		description: "Configure auto-model-router settings through the native UI",
-		handler: async (_args, ctx) => {
-			const ui = ctx.ui;
-			const cfg = loadConfig();
-			const answers: Record<string, unknown> = {};
-
-			for (;;) {
-				const options = [...sectionTitles(WIZARD_SECTIONS), "Profiles", "Save and exit", "Quit without saving"];
-				const chosen = await ui.select("auto-model-router configure", options);
-				if (chosen === undefined) return;
-				if (chosen === "Quit without saving") return;
-				if (chosen === "Save and exit") break;
-
-				if (chosen === "Profiles") {
-					await editProfiles(ui, cfg, answers);
-					continue;
-				}
-
-				const section = WIZARD_SECTIONS.find((s) => s.title === chosen);
-				if (section === undefined) continue;
-				await walkSection(ui, section, cfg, answers);
+		description: "auto-model-router: configure, usage report, status (/router report 7d)",
+		handler: async (args, ctx) => {
+			const [verb = "", ...rest] = args.trim().split(/\s+/).filter((t) => t !== "");
+			const tail = rest.join(" ");
+			switch (verb.toLowerCase()) {
+				case "config":
+				case "configure":
+					return configure(ctx);
+				case "report":
+					return report(pi, ctx, tail);
+				case "status":
+				case "health":
+					return status(pi, ctx);
+				case "":
+					break;
+				default:
+					ctx.ui.notify(`unknown /router subcommand "${verb}" (config | report [7d] [--all] | status)`, "warn");
+					return;
 			}
 
-			if (Object.keys(answers).length === 0) {
-				ui.notify("no changes made", "info");
-				return;
-			}
-
-			try {
-				const target = routerConfigPath();
-				const partial = applyAnswers(answers);
-				const backup = writeRouterConfig(target, partial);
-				ui.notify(`wrote ${target}${backup ? ` (backup: ${backup})` : ""}`, "info");
-			} catch (err) {
-				ui.notify(err instanceof Error ? err.message : String(err), "error");
+			const chosen = await ctx.ui.select("auto-model-router", [
+				"Configure",
+				"Report: last 24h",
+				"Report: last 7 days",
+				"Report: last 30 days",
+				"Status",
+			]);
+			if (chosen === undefined) return;
+			if (chosen === "Configure") return configure(ctx);
+			if (chosen === "Status") return status(pi, ctx);
+			if (chosen.startsWith("Report")) {
+				const days = chosen.includes("24h") ? "1d" : chosen.includes("30") ? "30d" : "7d";
+				return report(pi, ctx, days);
 			}
 		},
 	});
+}
+
+/** Posts a block of text into the transcript without triggering a turn. */
+function post(pi: ExtensionAPI, text: string): void {
+	pi.sendMessage({ customType: MESSAGE_TYPE, content: `\`\`\`text\n${text}\n\`\`\``, display: true }, { triggerTurn: false });
+}
+
+async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string): Promise<void> {
+	const req = parseReportArgs(argText, HARNESS_ID);
+	let data: UsageReport;
+	try {
+		data = await fetchReport(routerBaseUrl(), req, routerAuthHeaders());
+	} catch (err) {
+		// Router not reachable (standalone `serve` not running, or embed still
+		// starting): read the ledger directly so the report still comes back.
+		const cfg = loadConfig();
+		if (!existsSync(cfg.ledger.path)) {
+			ctx.ui.notify(`router unreachable (${err instanceof Error ? err.message : String(err)}) and no ledger at ${cfg.ledger.path}`, "error");
+			return;
+		}
+		const db = openDb(cfg.ledger.path);
+		try {
+			data = buildUsageReport(db, req);
+		} finally {
+			db.close();
+		}
+	}
+	if (data.totals.dispatches === 0) {
+		ctx.ui.notify(`no routed turns in the last ${req.windowDays}d${req.harnessId === "" ? "" : ` for harness ${req.harnessId}`}`, "info");
+		return;
+	}
+	post(pi, renderUsageReport(data));
+}
+
+async function status(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	const baseUrl = routerBaseUrl();
+	let health: HealthSnapshot;
+	try {
+		const res = await fetch(`${baseUrl}/health`, { headers: routerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
+		if (!res.ok) throw new Error(`router returned ${res.status}`);
+		health = (await res.json()) as HealthSnapshot;
+	} catch (err) {
+		ctx.ui.notify(`router unreachable at ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`, "error");
+		return;
+	}
+	post(pi, renderStatus(baseUrl, health));
+}
+
+async function configure(ctx: ExtensionContext): Promise<void> {
+	const ui = ctx.ui;
+	const cfg = loadConfig();
+	const answers: Record<string, unknown> = {};
+
+	for (;;) {
+		const options = [...sectionTitles(WIZARD_SECTIONS), "Profiles", "Save and exit", "Quit without saving"];
+		const pending = Object.keys(answers).length;
+		const chosen = await ui.select(`auto-model-router configure${pending > 0 ? ` (${pending} pending)` : ""}`, options);
+		if (chosen === undefined) return;
+		if (chosen === "Quit without saving") return;
+		if (chosen === "Save and exit") break;
+
+		if (chosen === "Profiles") {
+			await editProfiles(ui, cfg, answers);
+			continue;
+		}
+
+		const section = WIZARD_SECTIONS.find((s) => s.title === chosen);
+		if (section === undefined) continue;
+		await walkSection(ui, section, cfg, answers);
+	}
+
+	if (Object.keys(answers).length === 0) {
+		ui.notify("no changes made", "info");
+		return;
+	}
+
+	try {
+		const target = routerConfigPath();
+		const partial = applyAnswers(answers);
+		const backup = writeRouterConfig(target, partial);
+		ui.notify(`wrote ${target}${backup ? ` (backup: ${backup})` : ""} — restart omp for server/upstream/ledger changes`, "info");
+	} catch (err) {
+		ui.notify(err instanceof Error ? err.message : String(err), "error");
+	}
 }
 
 /** Edits the profiles array as whole elements, mirroring the CLI wizard. */

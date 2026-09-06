@@ -66,11 +66,24 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		handler(args: string, ctx: ExtensionContext): void | Promise<void>;
 	}
 
+	/**
+	 * A custom transcript message. `display: true` renders it in the TUI;
+	 * `content` is markdown. (Real type: `CustomMessagePayload<T>`.)
+	 */
+	export interface CustomMessagePayload {
+		customType?: string;
+		content?: string;
+		display?: boolean;
+		details?: unknown;
+	}
+
 	export interface ExtensionAPI {
 		setLabel(label: string): void;
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>): void;
 		registerProvider(id: string, registration: ProviderRegistration): void;
 		unregisterProvider(id: string): void;
 		registerCommand(name: string, command: CommandDefinition): void;
+		/** Appends a custom message to the session; `triggerTurn: false` leaves the agent idle. */
+		sendMessage(message: CustomMessagePayload | string, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
 	}
 }
