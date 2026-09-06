@@ -3,10 +3,13 @@
 **[Website & benchmarks →](https://drewappling.github.io/auto-model-router/)**
 
 A local model router for [Oh My Pi](https://github.com/oh-my-pi). It presents
-itself as one keyless OpenAI-compatible provider, then picks a concrete
-OpenRouter model **per turn** based on measured price and estimated task
-complexity — including mid-conversation, when a session shifts from mechanical
-tool-loop churn to genuine reasoning work.
+itself as one keyless OpenAI-compatible provider, then picks a concrete model
+**per turn** — from OpenRouter's catalog, and from
+[Ollama Cloud](#ollama-cloud) when that is enabled too — based on measured
+price and estimated task complexity, including mid-conversation, when a
+session shifts from mechanical tool-loop churn to genuine reasoning work.
+With both providers on, every turn ranks the candidates of both together and
+fails over across them.
 
 auto-model-router runs **embedded inside the omp process** (as an omp extension) — no
 separate server, no orphaned process. It binds a free OS-assigned port and
@@ -145,12 +148,17 @@ Harness, tasks and raw per-turn data:
 graph LR
   omp[omp process] -->|OpenAI chat completions| wire[wire/openai]
   wire -->|NormRequest| router[router]
-  catalog[catalog<br/>OpenRouter /models] --> router
+  orcat[OpenRouter /models] --> catalog[catalog<br/>one merged snapshot]
+  olcat[Ollama /api/tags + prices<br/>optional] --> catalog
+  catalog --> router
   cost[cost<br/>forecast + ledger] --> router
   router -->|Decision| guard[escalation guard]
-  guard -->|rendered body| up[upstream/openrouter]
-  up -->|UpstreamChunk| guard
-  guard -->|commit or retry upward| wire
+  guard -->|rendered body| up[upstream/multi<br/>by slug prefix]
+  up --> or[openrouter]
+  up --> ol[ollama<br/>ollama/… slugs]
+  or -->|UpstreamChunk| guard
+  ol -->|UpstreamChunk| guard
+  guard -->|commit, fail over, or retry upward| wire
   guard -->|usage + reported cost| cost
 ```
 
@@ -163,12 +171,12 @@ without touching routing.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. |
+| `src/catalog/` | Fetch and normalize OpenRouter `/api/v1/models`: pricing, capability flags, Artificial Analysis quality indices. SQLite-cached with TTL. `ollama-catalog.ts` builds Ollama Cloud models from `/api/tags`, a shipped price table and OpenRouter twins; `composite.ts` merges the two into one snapshot. |
 | `src/cost/` | Cost forecasting per candidate; reconciliation against OpenRouter's authoritative `usage.cost`; the spend ledger; per-model trust; rolling blended rate. |
 | `src/tokens/` | Token estimation with no tokenizer dependency, self-calibrating from observed `prompt_tokens` per tokenizer family. |
 | `src/wire/` | Protocol boundary. `wire/openai/` implements chat completions in and SSE out. |
 | `src/router/` | Feature extraction, complexity classification, candidate filtering and scoring, hysteresis, cache-breakpoint placement, budget guard, probe planning. |
-| `src/upstream/` | OpenRouter transport: streaming dispatch, `session_id` stickiness, error classification, fallback arrays. |
+| `src/upstream/` | Transports: OpenRouter (streaming dispatch, `session_id` stickiness, error classification, fallback arrays) and Ollama Cloud (body rewrite for its compatibility layer, quota/rate-limit breaker); `multi.ts` dispatches by slug prefix. |
 | `src/config/` | Configuration loading, schema validation, and the built-in defaults. |
 | `src/cli/` | `serve`, `stats`, `models`, `explain`, `config` commands. |
 | `omp-extension/` | The omp extensions: `router-embed.ts`, `router-toast.ts`, `router-configure.ts`. |

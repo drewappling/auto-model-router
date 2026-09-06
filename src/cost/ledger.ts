@@ -314,7 +314,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	return {
 		record(entry: LedgerEntry): void {
 			const models = priceIndex();
-			const model = (entry.servedSlug !== null ? models?.get(entry.servedSlug) : undefined) ?? models?.get(entry.slug) ?? null;
+			const model =
+				entry.priceModel ?? (entry.servedSlug !== null ? models?.get(entry.servedSlug) : undefined) ?? models?.get(entry.slug) ?? null;
 			insertStmt.run(
 				entry.id,
 				entry.createdAtMs,

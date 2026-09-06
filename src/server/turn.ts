@@ -11,6 +11,7 @@
 import type { CatalogSource } from "../catalog/types.ts";
 import type { ContextBridge } from "../context/types.ts";
 import type { RouterConfig } from "../config/types.ts";
+import { computeCost } from "../cost/forecast.ts";
 import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
 import { resolveHoldTurns } from "../router/explore.ts";
@@ -222,6 +223,7 @@ export async function runTurn(
 			if (generationId === null && dispatch !== null) {
 				generationId = await dispatch.generationId().catch(() => null);
 			}
+			const priceModel = deps.catalog.find(servedSlug ?? decision.slug);
 			ledger.record({
 				id: crypto.randomUUID(),
 				createdAtMs: Date.now(),
@@ -255,6 +257,9 @@ export async function runTurn(
 				upstreamGenerationId: generationId,
 				error: fields.error,
 				promptTokensSaved: decision.promptTokensSaved,
+				// The ledger prices OpenRouter slugs from its own cached payload; any
+				// other provider's model exists only in the live catalog.
+				...(priceModel === undefined ? {} : { priceModel }),
 			});
 			// Book the money HERE, beside the ledger row, so the two can never
 			// disagree. Every dispatch that reaches this point was billed —
@@ -449,6 +454,15 @@ export async function runTurn(
 					escalateVerdict = verdict;
 				}
 			}
+		}
+
+		// A provider that reports no cost (Ollama) still reports usage: price the
+		// actual tokens at the served model's catalog rate rather than leaving the
+		// pre-dispatch forecast (with its assumed 1,024 completion tokens) to stand
+		// in for a turn that produced 26.
+		if (reportedUsd === null && usage.promptTokens > 0) {
+			const served = deps.catalog.find(servedSlug ?? decision.slug);
+			if (served !== undefined) reportedUsd = computeCost(served, usage).total;
 		}
 
 		if (sinkDied) {

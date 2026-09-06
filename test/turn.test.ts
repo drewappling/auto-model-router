@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createDisabledBridge } from "../src/context/bridge.ts";
 import type { ContextBridge, TurnRecord } from "../src/context/types.ts";
-import type { CatalogSource } from "../src/catalog/types.ts";
+import type { CatalogModel, CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
 import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
 import type {
@@ -796,6 +796,54 @@ describe("latency measurement covers the work the router actually does", () => {
 		expect(entries[0]!.finishReason).toBeNull();
 		expect(map.get("conv-test")!.turn).toBe(0);
 		expect(finishes).toHaveLength(0);
+	});
+
+
+	test("a provider that reports usage but no cost gets its actual tokens priced at the catalog rate", async () => {
+		// Ollama returns usage without `cost`. Leaving the forecast (assumed 1,024
+		// completion tokens) as the recorded figure overstated a 26-token turn ~3x.
+		const { router } = mkRouter([mkDecision("trivial", "ollama/glm-5.3-flash")]);
+		const { upstream } = mkUpstream([
+			{
+				kind: "chunks",
+				chunks: [startChunk("ollama/glm-5.3-flash"), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: 1_000_000, completionTokens: 1_000_000 }, null)],
+			},
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, finishes } = mkSink();
+		const priced = {
+			...catalog,
+			find: (slug: string) =>
+				slug === "ollama/glm-5.3-flash"
+					? ({
+							slug,
+							provider: "ollama",
+							canonicalSlug: slug,
+							name: slug,
+							contextLength: 1_000_000,
+							supportsTools: true,
+							supportsReasoning: true,
+							reasoningMandatory: false,
+							supportsToolChoice: false,
+							inputModalities: ["text"],
+							price: { prompt: 0.15 / 1e6, completion: 0.5 / 1e6 },
+							priceTiers: [],
+							quality: {},
+							tokenizer: "Other",
+							isFree: false,
+							createdAtMs: 0,
+							author: "ollama",
+						} satisfies CatalogModel)
+					: undefined,
+		};
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog: priced, context: createDisabledBridge() }, new AbortController().signal);
+
+		// 1M prompt tokens at $0.15/M + 1M completion tokens at $0.50/M.
+		expect(entries[0]!.reportedUsd).toBeCloseTo(0.65, 6);
+		expect(entries[0]!.priceModel?.slug).toBe("ollama/glm-5.3-flash");
+		expect(finishes[0]!.reportedUsd).toBeCloseTo(0.65, 6);
 	});
 
 });

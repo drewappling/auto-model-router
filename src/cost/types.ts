@@ -5,8 +5,13 @@
  *  - **predicted**: our arithmetic over the catalog, computed *before* dispatch.
  *    Drives routing and budget enforcement.
  *  - **reported**: `usage.cost` returned by OpenRouter, authoritative after the
- *    fact. Drives the ledger, `stats`, and prediction-error calibration.
+ *    fact. Drives the ledger, `stats`, and prediction-error calibration. A
+ *    provider that returns usage but no cost (Ollama) has its ACTUAL tokens
+ *    priced at the catalog rate and recorded here — still after the fact, and
+ *    still not the forecast.
  */
+
+import type { CatalogModel } from "../catalog/types.ts";
 
 /** Token counts for one upstream generation. */
 export interface UsageCounts {
@@ -135,6 +140,12 @@ export interface LedgerEntry {
 	error: string | null;
 	/** Prompt tokens removed by compaction before dispatch. 0 when none. NULL before v12. */
 	promptTokensSaved: number;
+	/**
+	 * The catalog model that served, for the cost split. The ledger can price
+	 * OpenRouter slugs from its own cached catalog payload; a model from another
+	 * provider (Ollama) exists only in memory, so the orchestrator hands it over.
+	 */
+	priceModel?: CatalogModel;
 }
 
 /** Rolling blended rate used to keep omp's cost display honest. */
