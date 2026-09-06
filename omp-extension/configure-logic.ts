@@ -1,5 +1,5 @@
 /**
- * Pure configuration-driving logic for the `/router configure` slash command.
+ * Pure configuration-driving logic for the `/router config` slash command.
  *
  * Reuses the router's existing wizard field definitions and validation
  * (`src/cli/config-wizard.ts`) so the in-omp UI edits exactly the same set of
@@ -13,11 +13,14 @@ import type { FieldSpec, SectionSpec } from "../src/cli/config-wizard.ts";
 import { CLEAR_TOKEN, displayValue, validateField } from "../src/cli/config-wizard.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 
+/** A selector entry: omp renders the description dimmed beside the label and returns the label. */
+export type SelectOption = string | { label: string; description?: string };
+
 export interface ConfigUi {
 	/** Show a selector, return the chosen option label, or undefined on cancel. */
-	select(title: string, options: string[], selected?: number): Promise<string | undefined>;
+	select(title: string, options: SelectOption[]): Promise<string | undefined>;
 	/** Show a text input with a placeholder, or undefined on cancel. */
-	input(title: string, placeholder?: string, initial?: string): Promise<string | undefined>;
+	input(title: string, placeholder?: string): Promise<string | undefined>;
 	/** Yes/no confirmation. */
 	confirm(title: string, message: string): Promise<boolean>;
 	/** Surface a status/result line. */
@@ -25,41 +28,50 @@ export interface ConfigUi {
 }
 
 
+/** `Listen port (ms) · current: 8788` — every dialog names the value it would replace. */
+function promptTitle(field: FieldSpec, current: unknown): string {
+	const hint = field.hint !== undefined ? ` (${field.hint})` : "";
+	return `${field.label}${hint} · current: ${displayValue(field, current)}`;
+}
+
 /**
  * Prompts for one field, returning the parsed value or null when the user kept
- * the current value. An empty answer keeps the current; CLEAR_TOKEN clears an
- * optional field. Returns `undefined` when the user cancelled the dialog.
+ * the current value. The current value is shown in the dialog title, marked
+ * in select pickers, and used as the input placeholder; an empty answer keeps
+ * it and CLEAR_TOKEN clears an optional field. Returns `undefined` when the
+ * user cancelled the dialog.
  */
 export async function promptField(
 	ui: ConfigUi,
 	field: FieldSpec,
 	current: unknown,
 ): Promise<{ value: unknown; changed: boolean } | undefined> {
-	const label = field.hint !== undefined ? `${field.label} (${field.hint})` : field.label;
+	const title = promptTitle(field, current);
+	const mark = (label: string, isCurrent: boolean): SelectOption => (isCurrent ? { label, description: "current" } : label);
 
 	if (field.kind === "boolean") {
 		// An optional boolean can also be cleared back to "unset" (its default).
-		const options = field.optional === true ? ["true", "false", "unset"] : ["true", "false"];
-		const selected = current === true ? 0 : current === false ? 1 : field.optional === true ? 2 : 1;
-		const chosen = await ui.select(label, options, selected);
+		const unset = current === undefined || current === null;
+		const options: SelectOption[] = [mark("true", current === true), mark("false", current === false)];
+		if (field.optional === true) options.push(mark("unset", unset));
+		const chosen = await ui.select(title, options);
 		if (chosen === undefined) return undefined;
-		if (chosen === "unset") return { value: null, changed: current !== undefined && current !== null };
+		if (chosen === "unset") return { value: null, changed: !unset };
 		const value = chosen === "true";
 		return { value, changed: value !== current };
 	}
 
 	if (field.kind === "enum") {
-		const options = field.options ?? [];
-		const idx = options.indexOf(String(current));
-		const chosen = await ui.select(label, [...options], idx >= 0 ? idx : 0);
+		const options = (field.options ?? []).map((o) => mark(o, o === current));
+		const chosen = await ui.select(title, options);
 		if (chosen === undefined) return undefined;
 		return { value: chosen, changed: chosen !== current };
 	}
 
 	// string | number | stringArray | numberArray: free-text input. Secrets
 	// show set/unset rather than the value.
-	const placeholder = displayValue(field, current);
-	const answer = await ui.input(label, placeholder, "");
+	const placeholder = `${displayValue(field, current)}  (Enter keeps${field.optional === true ? `, ${CLEAR_TOKEN} clears` : ""})`;
+	const answer = await ui.input(title, placeholder);
 	if (answer === undefined) return undefined;
 	if (answer.trim() === "") return { value: current, changed: false }; // keep
 	if (answer.trim() === CLEAR_TOKEN) {
@@ -78,6 +90,40 @@ export async function promptField(
 		? JSON.stringify(result.value) !== JSON.stringify(current)
 		: result.value !== current;
 	return { value: result.value, changed };
+}
+
+/**
+ * Section editor for the omp command: a picker listing every field of the
+ * section with its current value (or the pending edit, marked), so the user
+ * sees the settings before choosing which one to change. Picking a field
+ * prompts for it; "Back" returns. Returns true if any field changed.
+ */
+export async function editSectionMenu(
+	ui: ConfigUi,
+	section: SectionSpec,
+	cfg: RouterConfig,
+	answers: Record<string, unknown>,
+): Promise<boolean> {
+	let any = false;
+	for (;;) {
+		const options: SelectOption[] = section.fields.map((field) => {
+			const pending = field.path in answers;
+			const current = pending ? answers[field.path] : getPathValue(cfg, field.path);
+			return { label: field.label, description: `${displayValue(field, current)}${pending ? "  (pending)" : ""}` };
+		});
+		options.push("Back");
+		const chosen = await ui.select(`${section.title}${any ? " (edited)" : ""}`, options);
+		if (chosen === undefined || chosen === "Back") return any;
+		const field = section.fields.find((f) => f.label === chosen);
+		if (field === undefined) continue;
+		const current = field.path in answers ? answers[field.path] : getPathValue(cfg, field.path);
+		const result = await promptField(ui, field, current);
+		if (result === undefined) continue; // cancelled the field dialog: back to the picker
+		if (result.changed) {
+			answers[field.path] = result.value;
+			any = true;
+		}
+	}
 }
 
 /**

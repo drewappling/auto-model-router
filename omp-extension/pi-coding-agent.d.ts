@@ -89,8 +89,9 @@ declare module "@oh-my-pi/pi-coding-agent" {
 
 	/** Mirrors `ConfigUi` in configure-logic.ts, which is what /router drives. */
 	export interface ExtensionUI {
-		select(title: string, options: string[], selected?: number): Promise<string | undefined>;
-		input(title: string, placeholder?: string, initial?: string): Promise<string | undefined>;
+		/** Returns the chosen label; an option may carry a dimmed description. */
+		select(title: string, options: Array<string | { label: string; description?: string }>): Promise<string | undefined>;
+		input(title: string, placeholder?: string): Promise<string | undefined>;
 		confirm(title: string, message: string): Promise<boolean>;
 		notify(text: string, level?: "info" | "warn" | "error"): void;
 		/** Show a custom component with keyboard focus; `overlay: true` floats it over the transcript. */

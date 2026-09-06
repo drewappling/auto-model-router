@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { WIZARD_SECTIONS } from "../src/cli/config-wizard.ts";
 import type { FieldSpec } from "../src/cli/config-wizard.ts";
 
-import { editProfile, walkSection, type ConfigUi } from "../omp-extension/configure-logic.ts";
+import { editProfile, editSectionMenu, walkSection, type ConfigUi, type SelectOption } from "../omp-extension/configure-logic.ts";
 
 function makeUi(script: Array<{ type: "select" | "input" | "confirm"; value?: string | boolean | undefined }>): ConfigUi {
 	const calls = script.slice();
@@ -14,7 +14,7 @@ function makeUi(script: Array<{ type: "select" | "input" | "confirm"; value?: st
 			if (call.value === undefined) return undefined;
 			return call.value as string;
 		},
-		async input(_title, _placeholder, _initial) {
+		async input(_title, _placeholder) {
 			const call = calls.shift();
 			if (call?.type !== "input") throw new Error("expected input, got " + JSON.stringify(call));
 			if (call.value === undefined) return undefined;
@@ -142,7 +142,77 @@ describe("promptField via walkSection", () => {
 			notify() {},
 		};
 		await walkSection(ui, { title: "t", fields: [field] }, { openrouter: { apiKey: "sk-secret" } } as never, {});
-		expect(placeholders).toEqual(["set"]);
+		expect(placeholders[0]).toStartWith("set  (");
+		expect(placeholders[0]).not.toContain("sk-secret");
+	});
+});
+
+describe("current value is visible in every dialog", () => {
+	/** A UI that records what each dialog showed and answers from a script. */
+	function recordingUi(script: Array<string | undefined>) {
+		const shown: { title: string; options?: SelectOption[]; placeholder?: string }[] = [];
+		const ui: ConfigUi = {
+			async select(title, options) { shown.push({ title, options }); return script.shift(); },
+			async input(title, placeholder) { shown.push({ title, ...(placeholder === undefined ? {} : { placeholder }) }); return script.shift(); },
+			async confirm() { return false; },
+			notify() {},
+		};
+		return { ui, shown };
+	}
+	const cfg = { server: { host: "127.0.0.1", port: 8788 }, budget: { onExceeded: "downgrade" }, cache: { injectBreakpoints: true } } as never;
+
+	test("text prompts carry the current value in the title and placeholder", async () => {
+		const { ui, shown } = recordingUi([""]);
+		const field: FieldSpec = { path: "server.port", label: "Listen port", kind: "number", min: 1, max: 65535 };
+		await walkSection(ui, { title: "Server", fields: [field] }, cfg, {});
+		expect(shown[0]?.title).toBe("Listen port · current: 8788");
+		expect(shown[0]?.placeholder).toContain("8788");
+		expect(shown[0]?.placeholder).toContain("Enter keeps");
+	});
+
+	test("enum and boolean pickers mark the current option instead of relying on a preselect index", async () => {
+		const { ui, shown } = recordingUi(["reject", "false"]);
+		const en: FieldSpec = { path: "budget.onExceeded", label: "On exceeded", kind: "enum", options: ["downgrade", "reject"] };
+		const bo: FieldSpec = { path: "cache.injectBreakpoints", label: "Inject cache breakpoints", kind: "boolean" };
+		const answers: Record<string, unknown> = {};
+		await walkSection(ui, { title: "t", fields: [en, bo] }, cfg, answers);
+		expect(shown[0]?.title).toBe("On exceeded · current: downgrade");
+		expect(shown[0]?.options).toEqual([{ label: "downgrade", description: "current" }, "reject"]);
+		expect(shown[1]?.options).toEqual([{ label: "true", description: "current" }, "false"]);
+		expect(answers).toEqual({ "budget.onExceeded": "reject", "cache.injectBreakpoints": false });
+	});
+
+	test("editSectionMenu lists every field with its current value, edits one, and marks it pending", async () => {
+		const section = {
+			title: "Server",
+			fields: [
+				{ path: "server.host", label: "Listen host", kind: "string" },
+				{ path: "server.port", label: "Listen port", kind: "number", min: 1 },
+			] as FieldSpec[],
+		};
+		// pick port → type 9000 → picker again → Back
+		const { ui, shown } = recordingUi(["Listen port", "9000", "Back"]);
+		const answers: Record<string, unknown> = {};
+		const changed = await editSectionMenu(ui, section, cfg, answers);
+		expect(changed).toBe(true);
+		expect(answers).toEqual({ "server.port": 9000 });
+		expect(shown[0]?.options).toEqual([
+			{ label: "Listen host", description: "127.0.0.1" },
+			{ label: "Listen port", description: "8788" },
+			"Back",
+		]);
+		expect(shown[1]?.title).toBe("Listen port · current: 8788");
+		// Second picker shows the pending edit, not the on-disk value.
+		expect(shown[2]?.title).toBe("Server (edited)");
+		expect(shown[2]?.options?.[1]).toEqual({ label: "Listen port", description: "9000  (pending)" });
+	});
+
+	test("cancelling a field dialog returns to the picker; cancelling the picker returns", async () => {
+		const section = { title: "Server", fields: [{ path: "server.host", label: "Listen host", kind: "string" }] as FieldSpec[] };
+		const { ui, shown } = recordingUi(["Listen host", undefined, undefined]);
+		const changed = await editSectionMenu(ui, section, cfg, {});
+		expect(changed).toBe(false);
+		expect(shown).toHaveLength(3);
 	});
 });
 

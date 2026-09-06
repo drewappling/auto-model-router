@@ -48,7 +48,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
-import { editProfile, sectionTitles, walkSection, type ConfigUi } from "./configure-logic.ts";
+import { editProfile, editSectionMenu, type ConfigUi, type SelectOption } from "./configure-logic.ts";
 import { ReportHub } from "./report-hub.ts";
 import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot, type ReportRequest } from "./report-logic.ts";
 import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
@@ -192,7 +192,12 @@ async function configure(ctx: ExtensionContext): Promise<void> {
 	const answers: Record<string, unknown> = {};
 
 	for (;;) {
-		const options = [...sectionTitles(WIZARD_SECTIONS), "Profiles", "Save and exit", "Quit without saving"];
+		// Each section shows how many of its fields have pending edits.
+		const options: SelectOption[] = WIZARD_SECTIONS.map((s) => {
+			const touched = s.fields.filter((f) => f.path in answers).length;
+			return touched > 0 ? { label: s.title, description: `${touched} pending` } : { label: s.title, description: `${s.fields.length} settings` };
+		});
+		options.push("profiles" in answers ? { label: "Profiles", description: "pending" } : { label: "Profiles", description: `${cfg.profiles.length} profiles` }, "Save and exit", "Quit without saving");
 		const pending = Object.keys(answers).length;
 		const chosen = await ui.select(`auto-model-router configure${pending > 0 ? ` (${pending} pending)` : ""}`, options);
 		if (chosen === undefined) return;
@@ -206,7 +211,7 @@ async function configure(ctx: ExtensionContext): Promise<void> {
 
 		const section = WIZARD_SECTIONS.find((s) => s.title === chosen);
 		if (section === undefined) continue;
-		await walkSection(ui, section, cfg, answers);
+		await editSectionMenu(ui, section, cfg, answers);
 	}
 
 	if (Object.keys(answers).length === 0) {
@@ -234,7 +239,8 @@ async function editProfiles(
 	// expects), converting at the boundary to/from ProfileConfig.
 	const list: Record<string, unknown>[] = cfg.profiles.map((p) => ({ ...p }));
 	const names = list.map((p, i) => `${i + 1}) ${p.id} (${p.name})`);
-	const choice = await ui.select("Profiles", [...names, "+ Add profile", "Back"]);
+	const items: SelectOption[] = list.map((p, i) => ({ label: names[i] ?? "", description: `${p.minTier}..${p.maxTier} · ctx ${p.contextWindow} · out ${p.maxTokens}` }));
+	const choice = await ui.select("Profiles", [...items, "+ Add profile", "Back"]);
 	if (choice === undefined || choice === "Back") return;
 
 	if (choice === "+ Add profile") {

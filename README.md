@@ -526,9 +526,11 @@ the last 24h / 7 days / 30 days, Status); the subcommands go straight there:
 | `/router report [7d] [--all]` | Usage analytics for the window (`24h`, `7d`, `2w`, `30` …), posted into the transcript. See [Usage reports](#usage-reports). |
 | `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, agentdox bridge. |
 
-Each config field prompts through omp's native UI dialogs — empty input keeps
-the current value, `-` clears an optional field, credentials show as
-`set`/`unset` and are never echoed. `Save and exit` writes the merged config
+Picking a section lists its fields with their current values (pending edits
+marked), so you see the settings before choosing one to change. Each field
+dialog names the current value in its title, marks it in pickers and uses it
+as the placeholder — empty input keeps it, `-` clears an optional field,
+credentials show as `set`/`unset` and are never echoed. `Save and exit` writes the merged config
 (schema-checked and backed up first). Tier, task, filter, classifier,
 hysteresis, exploration, compaction, cache and budget changes hot-reload;
 restart omp for `server`, `openrouter`, `ollama`, `context` and `ledger`.
