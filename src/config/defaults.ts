@@ -174,6 +174,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// 1 = the shipped one-turn comparison. Raise to amortise a switch over the
 		// turns that follow it; see HysteresisConfig.switchHorizonTurns.
 		switchHorizonTurns: 1,
+		// Low-confidence heuristic upgrades from a warm model wait one turn; see
+		// HysteresisConfig.confirmUpgradesBelowConfidence for the measurement.
+		confirmUpgradesBelowConfidence: 0.6,
 		// OpenRouter sticky sessions expire in 5-10 minutes.
 		cacheWarmTtlMs: 300_000,
 		maxDowngradePerTurn: 1,

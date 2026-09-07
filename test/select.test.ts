@@ -996,3 +996,57 @@ describe("compaction.replanGrowthRatio (review 2026-09-05 §7)", () => {
 	});
 });
 
+
+describe("hysteresis.confirmUpgradesBelowConfidence", () => {
+	// A low-confidence heuristic upgrade from a warm model waits one turn.
+	// Measured: 65 of 67 moderate→hard upgrades in a week bounced back within
+	// 3 turns, each paying a cold hard-tier read of a ~120k prompt.
+	const warmSlug = run({ tier: "moderate" }).slug;
+	function upgrade(opts: { confidence?: number; source?: "heuristic" | "escalation"; st?: Partial<ConversationState>; cfg?: RouterConfig; lastToolFailed?: boolean }) {
+		const cfg = opts.cfg ?? BASE;
+		const req = request("now rework the whole scheduler");
+		const base = extractFeatures(req, 120_000);
+		const features = opts.lastToolFailed === true ? { ...base, lastToolFailed: true } : base;
+		const heuristic = scoreHeuristic(features, cfg);
+		return select({
+			req,
+			features,
+			classification: { ...heuristic, tier: "hard", confidence: opts.confidence ?? 0.45, source: opts.source ?? "heuristic" },
+			profile: PROFILE,
+			state: state({ turn: 4, currentTier: "moderate", currentSlug: warmSlug, cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 110_000, ...opts.st }),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg,
+			nowMs: Date.now(),
+		});
+	}
+
+	test("a low-confidence upgrade from a warm model is deferred to the held tier", () => {
+		const d = upgrade({});
+		expect(d.tier).toBe("moderate");
+		expect(d.upgradeDeferred).toBe("hard");
+		expect(d.reasons.some((r) => r.includes("upgrade moderate → hard deferred one turn"))).toBe(true);
+	});
+
+	test("a second consecutive upgrade classification confirms it", () => {
+		const d = upgrade({ st: { upgradeDeferredTier: "hard" } });
+		expect(d.tier).toBe("hard");
+		expect(d.upgradeDeferred).toBeNull();
+		expect(d.reasons.some((r) => r.includes("upgrade moderate → hard confirmed"))).toBe(true);
+	});
+
+	test("confident classifications, cold caches, escalations, failing tools and the off switch all upgrade at once", () => {
+		expect(upgrade({ confidence: 0.9 }).tier).toBe("hard");
+		expect(upgrade({ st: { cacheWarmAtMs: Date.now() - 3_600_000 } }).tier).toBe("hard");
+		expect(upgrade({ source: "escalation" }).tier).toBe("hard");
+		expect(upgrade({ lastToolFailed: true }).tier).toBe("hard");
+		const off: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, confirmUpgradesBelowConfidence: 0 } };
+		expect(upgrade({ cfg: off }).tier).toBe("hard");
+		for (const d of [upgrade({ confidence: 0.9 }), upgrade({ source: "escalation" })]) expect(d.upgradeDeferred).toBeNull();
+	});
+
+	test("a downgrade or a same-tier turn is never deferred", () => {
+		const d = run({ tier: "simple", st: state({ turn: 4, currentTier: "moderate", currentSlug: warmSlug, cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now() }) });
+		expect(d.upgradeDeferred).toBeNull();
+	});
+});

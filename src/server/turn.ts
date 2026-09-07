@@ -567,6 +567,8 @@ export async function runTurn(
 		// shrunk so the prompt cache survives and the savings compound.
 		state.compactionPlan = decision.compactionPlan.length > 0 ? decision.compactionPlan : null;
 		state.compactionPlanTokens = decision.compactionPlanTokens;
+		// One-turn memory: a deferred upgrade is confirmed or forgotten next turn.
+		state.upgradeDeferredTier = decision.upgradeDeferred;
 		if (usage.cachedTokens > 0 || usage.cacheWriteTokens > 0) {
 			// Non-zero cache traffic is direct evidence the upstream cache exists.
 			state.cacheWarmSlug = servedSlug ?? decision.slug;

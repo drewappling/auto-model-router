@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config/load.ts";
 import { createLedger, LATENCY_WINDOW_ROWS } from "../src/cost/ledger.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
+import { createConversationStore } from "../src/router/state.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
 const cfg = loadConfig({});
@@ -244,11 +245,24 @@ describe("v4 migration", () => {
 		}
 	});
 
-	test("schema is at user_version 16", () => {
+	test("a deferred upgrade tier survives a save/load round trip", () => {
+		const db = openDb(":memory:");
+		const store = createConversationStore(db);
+		const st = store.load("conv-defer");
+		st.upgradeDeferredTier = "hard";
+		store.save(st);
+		expect(store.load("conv-defer").upgradeDeferredTier).toBe("hard");
+		st.upgradeDeferredTier = null;
+		store.save(st);
+		expect(store.load("conv-defer").upgradeDeferredTier).toBeNull();
+		db.close();
+	});
+
+	test("schema is at user_version 17", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(16);
+			expect(row.user_version).toBe(17);
 		} finally {
 			db.close();
 		}

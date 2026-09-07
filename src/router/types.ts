@@ -186,6 +186,13 @@ export interface ConversationState {
 	compactionPlanTokens?: number;
 	/** When that block was fetched, for the staleness TTL. */
 	contextFetchedAtMs: number;
+	/**
+	 * The tier a low-confidence upgrade was deferred to on the previous turn
+	 * (`hysteresis.confirmUpgradesBelowConfidence`), or null. One-turn memory:
+	 * every turn overwrites it, so a second consecutive upgrade classification
+	 * confirms the switch and anything else forgets it.
+	 */
+	upgradeDeferredTier?: Tier | null;
 	updatedAtMs: number;
 }
 
@@ -270,6 +277,8 @@ export interface Decision {
 	explored: Exploration | null;
 	/** Budget guard forced a cheaper tier than the classifier asked for. */
 	budgetDowngraded: boolean;
+	/** A low-confidence upgrade to this tier was deferred one turn to keep the warm model. */
+	upgradeDeferred: Tier | null;
 }
 
 /** Why a guarded probe rejected an attempt. */

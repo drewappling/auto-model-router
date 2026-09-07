@@ -102,6 +102,12 @@ function wideningOrder(tier: Tier, minTier: Tier, maxTier: Tier): Tier[] {
 	return out;
 }
 
+/** Evidence that an upgrade will stick: the conversation is failing or asked for deep reasoning. */
+function hardSignal(f: Features): boolean {
+	const reasoning: string = f.requestedReasoning ?? "";
+	return f.lastToolFailed || f.circularToolCall || f.repeatedToolCall || reasoning === "high" || reasoning === "xhigh" || reasoning === "max";
+}
+
 export function select(args: SelectArgs): Decision {
 	const { req, features, classification, profile, state, snapshot, ledger, cfg, nowMs } = args;
 	const reasons: string[] = [];
@@ -160,6 +166,42 @@ export function select(args: SelectArgs): Decision {
 	// Whether a usable warm prompt cache exists right now. Shared by
 	// exploration (2c) and candidate building (3) so both agree on the term.
 	const cacheWarm = state.cacheWarmSlug !== null && nowMs - state.cacheWarmAtMs <= cfg.hysteresis.cacheWarmTtlMs;
+
+	// 2a. Cache-aware upgrade confirmation. A low-confidence heuristic upgrade
+	//     from a warm model waits one turn; the next turn's classification
+	//     confirms or forgets it. Measured on 7 days of live traffic: 65 of 67
+	//     moderate→hard upgrades bounced back within 3 turns, 50 of them below
+	//     0.6 confidence, and each paid a cold hard-tier read of a ~120k prompt
+	//     ($17.90 in total against $0.23 for staying warm). Step 4's stay/switch
+	//     comparison never sees these — the warm cheap model is below the new
+	//     tier's floor, so it is not a candidate there. Escalations, explicit
+	//     high reasoning and failing tool loops bypass the wait: those are the
+	//     upgrades that stick.
+	let upgradeDeferred: Tier | null = null;
+	const confirmBelow = cfg.hysteresis.confirmUpgradesBelowConfidence;
+	if (
+		confirmBelow > 0 &&
+		cls.source === "heuristic" &&
+		classification.confidence < confirmBelow &&
+		state.currentTier !== null &&
+		state.currentSlug !== null &&
+		tierIdx(effective) > tierIdx(clampTier(state.currentTier)) &&
+		cacheWarm &&
+		state.cacheWarmSlug === state.currentSlug &&
+		(args.excludeSlugs === undefined || args.excludeSlugs.length === 0) &&
+		!hardSignal(features)
+	) {
+		const held = clampTier(state.currentTier);
+		if (state.upgradeDeferredTier !== undefined && state.upgradeDeferredTier !== null) {
+			reasons.push(`upgrade ${held} → ${effective} confirmed: classified above ${held} on consecutive turns`);
+		} else {
+			reasons.push(
+				`upgrade ${held} → ${effective} deferred one turn: heuristic confidence ${classification.confidence.toFixed(2)} < ${confirmBelow} with ${state.currentSlug} warm`,
+			);
+			upgradeDeferred = effective;
+			effective = held;
+		}
+	}
 
 	// 2b. Context compaction: shrink stale tool output before dispatch when the
 	//     prompt exceeds the token budget (or would overflow the profile window).
@@ -531,5 +573,6 @@ export function select(args: SelectArgs): Decision {
 		reasons,
 		explored,
 		budgetDowngraded,
+		upgradeDeferred,
 	};
 }

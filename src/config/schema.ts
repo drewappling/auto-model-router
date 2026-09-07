@@ -136,6 +136,7 @@ const hysteresis = z.strictObject({
 	holdTurnsAfterEscalation: z.number().int().nonnegative().optional(),
 	switchMargin: z.number().positive().optional(),
 	switchHorizonTurns: z.number().int().positive().optional(),
+	confirmUpgradesBelowConfidence: z.number().min(0).max(1).optional(),
 	cacheWarmTtlMs: z.number().nonnegative().optional(),
 	maxDowngradePerTurn: z.number().int().nonnegative().optional(),
 	breakHoldOnMechanical: z.boolean().optional(),

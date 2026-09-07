@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 16;
+const USER_VERSION = 17;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -243,6 +243,12 @@ ALTER TABLE conversations ADD COLUMN compaction_plan_tokens INTEGER NOT NULL DEF
 DELETE FROM token_calibration;
 `;
 
+// v17: one-turn memory of a deferred low-confidence upgrade
+// (hysteresis.confirmUpgradesBelowConfidence).
+const MIGRATE_V17 = `
+ALTER TABLE conversations ADD COLUMN upgrade_deferred_tier TEXT;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -288,6 +294,7 @@ export function openDb(path: string): Database {
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
 		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);
 		if (!convCols.some((c) => c.name === "compaction_plan_tokens")) db.exec(MIGRATE_V16);
+		if (!convCols.some((c) => c.name === "upgrade_deferred_tier")) db.exec(MIGRATE_V17);
 		db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 	}
 	return db;

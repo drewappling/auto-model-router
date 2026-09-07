@@ -232,6 +232,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "hysteresis.holdTurnsAfterEscalation", label: "Hold turns after escalation", kind: "number", min: 0 },
 			{ path: "hysteresis.switchMargin", label: "Switch margin", kind: "number", min: 0 },
 			{ path: "hysteresis.switchHorizonTurns", label: "Switch horizon", kind: "number", min: 1, hint: "turns amortised" },
+			{ path: "hysteresis.confirmUpgradesBelowConfidence", label: "Confirm upgrades below confidence", kind: "number", min: 0, max: 1, hint: "0=off; low-confidence tier-ups wait a turn" },
 			{ path: "hysteresis.cacheWarmTtlMs", label: "Cache-warm TTL", kind: "number", min: 0, hint: "ms" },
 			{ path: "hysteresis.maxDowngradePerTurn", label: "Max downgrade per turn", kind: "number", min: 0, hint: "tiers" },
 			{ path: "hysteresis.breakHoldOnMechanical", label: "Break hold on mechanical turns", kind: "boolean" },

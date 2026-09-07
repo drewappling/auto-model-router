@@ -709,6 +709,7 @@ event has already arrived is treated as a completed turn, not an error.
 | `holdTurnsAfterEscalation` | `4` | Hold longer after an escalation. |
 | `switchMargin` | `1.3` | Switching must beat the warm-cache discount by this factor. Lower = switch away from a warm model more readily. |
 | `switchHorizonTurns` | `1` | Turns the stay/switch comparison is amortised over: `H × stayWarm` vs `switchCold + (H − 1) × newWarm`. `1` is the one-turn comparison, which can keep a dear model warm indefinitely when the cheaper winner is itself dear cold; a small `H` lets a switch that pays for itself within a few turns go ahead. |
+| `confirmUpgradesBelowConfidence` | `0.6` | A heuristic tier upgrade classified below this confidence waits one turn while the current model's cache is warm; a second consecutive upgrade classification confirms it. Escalations, explicit high reasoning and failing tool loops bypass the wait. `0` disables. Measured: 65 of 67 moderate→hard upgrades in a week bounced back within 3 turns, each paying a cold hard-tier read of a ~120k prompt. |
 | `cacheWarmTtlMs` | `300000` (5 min) | How long a model's prompt cache is considered warm. |
 | `maxDowngradePerTurn` | `1` | Max tiers a turn may drop in one step (avoids quality cliffs). |
 | `breakHoldOnMechanical` | `false` | Let a tool-result continuation that classifies *below* the held tier escape the hold (still bounded by `maxDowngradePerTurn`). Worth enabling when the held tier is expensive. |

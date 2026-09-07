@@ -392,6 +392,19 @@ export interface HysteresisConfig {
 	 * dispatches per user-visible turn, so single digits are conservative.
 	 */
 	switchHorizonTurns: number;
+	/**
+	 * A heuristic tier UPGRADE whose classification confidence is below this
+	 * waits one turn when the current model's cache is warm; a second
+	 * consecutive upgrade classification confirms it. 0 disables. Escalations,
+	 * explicit high reasoning and failing tool loops bypass the wait.
+	 *
+	 * Measured on 7 days of live traffic: 65 of 67 moderate→hard upgrades
+	 * bounced back within 3 turns, 50 of them below 0.6 confidence, costing
+	 * $17.90 in cold hard-tier prompt reads against $0.23 for staying warm.
+	 * The stay/switch comparison never sees these because the warm cheap
+	 * model is below the new tier's floor.
+	 */
+	confirmUpgradesBelowConfidence: number;
 	/** Assume a warm cache expires after this long. OpenRouter sticky sessions: 5-10 min. */
 	cacheWarmTtlMs: number;
 	/** Downgrade at most this many tiers per turn, so quality never falls off a cliff. */

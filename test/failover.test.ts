@@ -70,7 +70,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			escalateOnLengthStop: false,
 			...escalation,
 		},
-		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1 },
+		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1, confirmUpgradesBelowConfidence: 0.6 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
 		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, maxQueue: 64 },
@@ -160,6 +160,7 @@ function mkDecision(tier: Tier, slug: string, probe: Partial<ProbePlan> = {}): D
 		reasons: ["test decision"],
 		explored: null,
 		budgetDowngraded: false,
+		upgradeDeferred: null,
 	};
 }
 
