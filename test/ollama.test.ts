@@ -12,11 +12,13 @@ import {
 	parseOllamaListing,
 	parseOllamaShow,
 	type OllamaListing,
+	loadOllamaCatalogCache,
 } from "../src/catalog/ollama-catalog.ts";
 import { bareCloudName, ollamaRateFor } from "../src/catalog/ollama-prices.ts";
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot, CatalogSource } from "../src/catalog/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
+import { openDb } from "../src/util/sqlite.ts";
 import type { OllamaConfig, RouterConfig } from "../src/config/types.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
@@ -193,6 +195,20 @@ describe("createOllamaCatalog", () => {
 		await src.get(OR_MODELS);
 		expect(calls).toHaveLength(3); // re-listed, show cached
 		expect(src.peek()).toHaveLength(1);
+	});
+
+	test("a built set is persisted, and a fresh source hydrates it before its first listing", async () => {
+		const db = openDb(":memory:");
+		const fetchImpl = async (url: string): Promise<Response> => Response.json({ models: url.endsWith("/api/tags") ? DAEMON_TAGS : [] });
+		const src = createOllamaCatalog(OLLAMA, log, fetchImpl, db);
+		const built = await src.get(OR_MODELS);
+		expect(built.length).toBeGreaterThan(0);
+		expect(loadOllamaCatalogCache(db).models.map((m) => m.slug)).toEqual(built.map((m) => m.slug));
+		// A new process: peek() answers from disk with no network at all.
+		const dead = async (): Promise<Response> => { throw new Error("offline"); };
+		const again = createOllamaCatalog(OLLAMA, log, dead, db);
+		expect(again.peek().map((m) => m.slug)).toEqual(built.map((m) => m.slug));
+		db.close();
 	});
 
 	test("a failed listing keeps the previous set", async () => {

@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS catalog_cache (
   key_scoped INTEGER NOT NULL DEFAULT 0
 );
 
+-- Last built Ollama Cloud model set, so a restart routes from disk and
+-- offline tools (tools/replay.ts) see the same composite catalog the router did.
+CREATE TABLE IF NOT EXISTS ollama_catalog_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS benchmark_cache (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   payload TEXT NOT NULL,

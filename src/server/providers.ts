@@ -43,7 +43,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 	});
 	return {
 		upstream: createMultiUpstream(openrouter, ollama),
-		catalog: createCompositeCatalog(openrouterCatalog, createOllamaCatalog(cfg.ollama, log), ollama, {
+		catalog: createCompositeCatalog(openrouterCatalog, createOllamaCatalog(cfg.ollama, log, fetch, db), ollama, {
 			costBias: cfg.ollama.costBias,
 			biasUntilUsage: cfg.ollama.biasUntilUsage,
 			usage: ollamaUsage,

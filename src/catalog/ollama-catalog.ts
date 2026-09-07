@@ -22,6 +22,7 @@
  * price and twin; the dispatch client strips the `ollama/` prefix.
  */
 
+import type { Database } from "bun:sqlite";
 import type { OllamaConfig } from "../config/types.ts";
 import type { Logger } from "../util/log.ts";
 import { normalizeModelKey } from "./benchmark-feeds.ts";
@@ -202,13 +203,35 @@ export function ollamaApiRoot(baseUrl: string): string {
 	return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
 }
 
-export function createOllamaCatalog(cfg: OllamaConfig, log: Logger, fetchImpl: FetchLike = fetch): OllamaCatalogSource {
+/** The persisted Ollama model set, or [] when none has been built yet. */
+export function loadOllamaCatalogCache(db: Database): { models: CatalogModel[]; fetchedAtMs: number } {
+	const row = db.query("SELECT payload, fetched_at_ms FROM ollama_catalog_cache WHERE id = 1").get() as
+		| { payload: string; fetched_at_ms: number }
+		| null;
+	if (row === null) return { models: [], fetchedAtMs: 0 };
+	try {
+		const parsed = JSON.parse(row.payload) as unknown;
+		return { models: Array.isArray(parsed) ? (parsed as CatalogModel[]) : [], fetchedAtMs: row.fetched_at_ms };
+	} catch {
+		return { models: [], fetchedAtMs: 0 };
+	}
+}
+
+export function createOllamaCatalog(cfg: OllamaConfig, log: Logger, fetchImpl: FetchLike = fetch, db?: Database): OllamaCatalogSource {
 	const root = ollamaApiRoot(cfg.baseUrl);
 	const direct = isOllamaDotCom(cfg.baseUrl);
 	const headers: Record<string, string> = {};
 	if (cfg.apiKey !== "") headers.authorization = `Bearer ${cfg.apiKey}`;
-	let models: CatalogModel[] = [];
+	// Hydrate from disk so a restart peeks a real set before the first listing;
+	// listedAtMs stays 0 so the first get() still refreshes.
+	let models: CatalogModel[] = db === undefined ? [] : loadOllamaCatalogCache(db).models;
 	let listedAtMs = 0;
+	const persist = db === undefined
+		? null
+		: db.query(
+				`INSERT INTO ollama_catalog_cache (id, payload, fetched_at_ms) VALUES (1, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, fetched_at_ms = excluded.fetched_at_ms`,
+			);
 	let inflight: Promise<CatalogModel[]> | null = null;
 	// `/api/show` results are stable per id; fetched once per process.
 	const shown = new Map<string, { contextLength: number | null; capabilities: string[] }>();
@@ -257,6 +280,11 @@ export function createOllamaCatalog(cfg: OllamaConfig, log: Logger, fetchImpl: F
 				log.warn("ollama listing yielded no priced cloud models; keeping the previous set", { listed: listings.length });
 			} else {
 				models = built;
+				try {
+					persist?.run(JSON.stringify(models), Date.now());
+				} catch (err) {
+					log.debug("ollama catalog persist failed", { error: err instanceof Error ? err.message : String(err) });
+				}
 			}
 			listedAtMs = Date.now();
 		} catch (err) {
