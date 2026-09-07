@@ -35,7 +35,24 @@ export interface OllamaUsage {
 	activityCostUsd: number | null;
 	/** Requests this billing month, summed over models. */
 	requestsThisMonth: number;
+	/** Subscription name from `POST /api/me` (`pro`, `max`, …), or null when unknown. */
+	plan: string | null;
 	fetchedAtMs: number;
+}
+
+/**
+ * Included monthly credits per plan, USD, from ollama.com/pricing (2026-09-07):
+ * Pro $20/mo carries $60 of usage, Max $100/mo carries $300. The dashboard's
+ * dollar figure is `limits.monthly.usage` × this. A plan not listed here
+ * (free, team, an unseen tier) yields no dollar reading rather than a guess.
+ */
+export const PLAN_CREDITS_USD: Readonly<Record<string, number>> = { pro: 60, max: 300 };
+
+/** The plan named by an `/api/me` payload, lower-cased, or null. */
+export function parseOllamaPlan(json: unknown): string | null {
+	const root = asRec(json);
+	const plan = root?.Plan ?? root?.plan;
+	return typeof plan === "string" && plan.trim() !== "" ? plan.trim().toLowerCase() : null;
 }
 
 function asRec(v: unknown): Record<string, unknown> | null {
@@ -72,6 +89,7 @@ export function parseOllamaUsage(json: unknown, nowMs = Date.now()): OllamaUsage
 		monthlyUsageRaw: usageRaw,
 		activityCostUsd: Number.isFinite(cost) ? cost : null,
 		requestsThisMonth: requests,
+		plan: null,
 		fetchedAtMs: nowMs,
 	};
 }
@@ -98,8 +116,35 @@ export function createOllamaUsageSource(
 	let checkedAtMs = 0;
 	let inflight: Promise<OllamaUsage | null> | null = null;
 	let warned = false;
+	let plan: string | null = null;
+	let planWarned = false;
+
+	/** Best-effort: a missing plan only costs the dollar reading, never the bias. */
+	async function refreshPlan(): Promise<void> {
+		try {
+			const res = await fetchImpl(`${root}/api/me`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${opts.apiKey}` },
+				signal: AbortSignal.timeout(opts.timeoutMs),
+			});
+			if (res.ok) {
+				const parsed = parseOllamaPlan(await res.json());
+				if (parsed !== null) plan = parsed;
+			} else if (!planWarned) {
+				planWarned = true;
+				opts.log.warn("ollama account endpoint unavailable; plan stays unknown", { status: res.status });
+			}
+		} catch (err) {
+			if (!planWarned) {
+				planWarned = true;
+				opts.log.warn("ollama account fetch failed; plan stays unknown", { error: err instanceof Error ? err.message : String(err) });
+			}
+		}
+	}
 
 	async function refresh(): Promise<OllamaUsage | null> {
+		// The plan changes rarely, but the call is one small request per poll.
+		await refreshPlan();
 		try {
 			const res = await fetchImpl(`${root}/api/usage`, {
 				headers: { authorization: `Bearer ${opts.apiKey}` },
@@ -108,7 +153,7 @@ export function createOllamaUsageSource(
 			if (res.ok) {
 				const parsed = parseOllamaUsage(await res.json());
 				if (parsed !== null) {
-					current = parsed;
+					current = { ...parsed, plan };
 					warned = false;
 				} else if (!warned) {
 					warned = true;
@@ -156,8 +201,21 @@ export function effectiveOllamaBias(costBias: number, biasUntilUsage: number, us
 	return used >= biasUntilUsage ? 1 : costBias;
 }
 
+/**
+ * Included credits for this account: the configured override when set, else
+ * the detected plan's published allowance, else null.
+ */
+export function ollamaPlanCredits(usage: OllamaUsage | null, overrideUsd: number): number | null {
+	if (overrideUsd > 0) return overrideUsd;
+	const plan = usage?.plan ?? null;
+	if (plan === null) return null;
+	return PLAN_CREDITS_USD[plan] ?? null;
+}
+
 /** The dashboard's dollar reading: plan share × included credits, when both are known. */
-export function ollamaMeter(usage: OllamaUsage | null, planCreditsUsd: number): { usedUsd: number; creditsUsd: number } | null {
-	if (usage === null || usage.monthlyUsedFraction === null || !(planCreditsUsd > 0)) return null;
-	return { usedUsd: Math.round(usage.monthlyUsedFraction * planCreditsUsd * 100) / 100, creditsUsd: planCreditsUsd };
+export function ollamaMeter(usage: OllamaUsage | null, overrideUsd: number): { usedUsd: number; creditsUsd: number; plan: string | null } | null {
+	if (usage === null || usage.monthlyUsedFraction === null) return null;
+	const credits = ollamaPlanCredits(usage, overrideUsd);
+	if (credits === null) return null;
+	return { usedUsd: Math.round(usage.monthlyUsedFraction * credits * 100) / 100, creditsUsd: credits, plan: usage.plan };
 }

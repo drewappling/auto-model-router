@@ -115,9 +115,9 @@ export interface OllamaConfig {
 	/** How long to route around Ollama after a 429 (concurrency cap), ms. */
 	rateLimitCooldownMs: number;
 	/**
-	 * Dollar value of the plan's included monthly credits (Pro 60, Max 300), so
-	 * the plan-relative usage reading can be shown as dollars beside the
-	 * ledger's own Ollama figure. 0 ⇒ unknown: usage is shown as a share only.
+	 * Override for the plan's included monthly credits, USD. 0 (default) reads
+	 * the plan from ollama.com (`POST /api/me`) and applies its published
+	 * allowance (Pro 60, Max 300); set this for a plan the router does not know.
 	 */
 	planCreditsUsd: number;
 }

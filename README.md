@@ -623,7 +623,7 @@ an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
 | `usagePollMs` | `600000` (10 min) | How often plan usage is re-read. `0` disables it (static bias). Needs the API key; the daemon path without one keeps a static bias. |
 | `quotaCooldownMs` | `900000` | Route around Ollama this long after a 402 (credits exhausted). |
 | `rateLimitCooldownMs` | `60000` | Route around Ollama this long after a 429 (concurrency cap). |
-| `planCreditsUsd` | `0` | Dollar value of the plan's included monthly credits (Pro 60, Max 300). Lets `/health` and `/router status` show ollama.com's plan reading as dollars next to the ledger's figure. `0` shows the share only. |
+| `planCreditsUsd` | `0` | Override for the plan's included monthly credits. `0` detects the plan from ollama.com (`POST /api/me`) and applies its published allowance (Pro $60, Max $300), so `/health` and `/router status` show ollama.com's reading as dollars next to the ledger's figure. Set it for a plan the router does not know. |
 
 ### `tiers` — per-tier economic envelope
 
@@ -824,8 +824,9 @@ What happens once it is on:
   previous prompt is taken as the cached prefix and priced at the cached
   rate; a first turn, a switch, or a longer gap is priced cold. The ledger
   flags these rows (`usage.cachedEstimated`) and reports show their cache
-  rate as `~N%`. Set `planCreditsUsd` (Pro 60, Max 300) to see ollama.com's
-  own dollar reading in `/router status` as the cross-check.
+  rate as `~N%`. `/router status` shows ollama.com's own dollar reading as
+  the cross-check: the plan is read from `POST /api/me` and its published
+  allowance applied (`planCreditsUsd` overrides it).
 - **Same economics, same failover.** Candidates from both providers are ranked
   together; `costBias` tilts the comparison while a plan's included credits
   would otherwise go unused. **Credit-aware by default:** the router reads the

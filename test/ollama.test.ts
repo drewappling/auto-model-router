@@ -22,7 +22,7 @@ import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { createMultiUpstream } from "../src/upstream/multi.ts";
 import { classifyOllamaStatus, createOllamaClient, toOllamaBody } from "../src/upstream/ollama.ts";
-import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, ollamaMeter, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
+import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, ollamaMeter, parseOllamaPlan, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
 import type { Dispatch, DispatchOptions, UpstreamClient } from "../src/upstream/types.ts";
 import { createLogger } from "../src/util/log.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
@@ -444,7 +444,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 	});
 
 	test("the bias holds under the threshold, switches to list price above it, and stays on when usage is unknown", () => {
-		const at = (f: number | null) => (f === null ? null : { monthlyUsedFraction: f, monthlyUsageRaw: f, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 });
+		const at = (f: number | null) => (f === null ? null : { monthlyUsedFraction: f, monthlyUsageRaw: f, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 });
 		expect(effectiveOllamaBias(0.1, 0.9, at(0.5))).toBe(0.1);
 		expect(effectiveOllamaBias(0.1, 0.9, at(0.9))).toBe(1);
 		expect(effectiveOllamaBias(0.1, 0.9, at(1))).toBe(1);
@@ -457,15 +457,21 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		let calls = 0;
 		let fail = false;
 		const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+			expect((init?.headers as Record<string, string>).authorization).toBe("Bearer k");
+			// The plan rides along on every poll: POST /api/me (GET answers 405).
+			if (url === "https://ollama.com/api/me") {
+				expect(init?.method).toBe("POST");
+				return Response.json({ ID: "x", Email: "e", Plan: "Pro" });
+			}
 			calls++;
 			expect(url).toBe("https://ollama.com/api/usage");
-			expect((init?.headers as Record<string, string>).authorization).toBe("Bearer k");
 			if (fail) return new Response("down", { status: 503 });
 			return Response.json({ ...PAYLOAD, limits: { monthly: { usage: 42, models: [] } } });
 		};
 		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 20, timeoutMs: 1000, log, fetchImpl });
 		expect(src.peek()).toBeNull();
 		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6);
+		expect(src.peek()?.plan).toBe("pro");
 		await src.get();
 		expect(calls).toBe(1); // within the interval
 		fail = true;
@@ -482,7 +488,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		const source = { get: async () => ollamaModels, peek: () => ollamaModels, invalidate: () => {} };
 		const breaker = { available: () => true, cooldownUntilMs: () => null, lastTrip: () => null };
 		let used = 0.2;
-		const usage = { get: async () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 }), peek: () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, fetchedAtMs: 0 }) };
+		const usage = { get: async () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }), peek: () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }) };
 		const catalog = createCompositeCatalog(openrouter, source, breaker, { costBias: 0.1, biasUntilUsage: 0.9, usage });
 
 		const a = await catalog.get();
@@ -506,16 +512,29 @@ describe("ollama plan usage (credit-aware bias)", () => {
 
 
 describe("ollamaMeter", () => {
-	test("plan share times credits is the dashboard's dollar figure", () => {
-		const usage = { monthlyUsedFraction: 0.104, monthlyUsageRaw: 0.104, activityCostUsd: 0, requestsThisMonth: 1250, fetchedAtMs: 1 };
-		// 10.4% of Pro's $60 is the $6.24 ollama.com shows.
-		expect(ollamaMeter(usage, 60)).toEqual({ usedUsd: 6.24, creditsUsd: 60 });
+	const usage = (plan: string | null, frac: number | null = 0.104) => ({ monthlyUsedFraction: frac, monthlyUsageRaw: frac, activityCostUsd: 0, requestsThisMonth: 1250, plan, fetchedAtMs: 1 });
+
+	test("a detected plan applies its published allowance: 10.4% of Pro's $60 is the $6.24 ollama.com shows", () => {
+		expect(ollamaMeter(usage("pro"), 0)).toEqual({ usedUsd: 6.24, creditsUsd: 60, plan: "pro" });
+		expect(ollamaMeter(usage("max"), 0)).toEqual({ usedUsd: 31.2, creditsUsd: 300, plan: "max" });
 	});
 
-	test("unknown credits or usage yields no meter", () => {
-		const usage = { monthlyUsedFraction: 0.5, monthlyUsageRaw: 0.5, activityCostUsd: 0, requestsThisMonth: 1, fetchedAtMs: 1 };
-		expect(ollamaMeter(usage, 0)).toBeNull();
+	test("a configured override wins over the detected plan; an unknown plan without one yields no meter", () => {
+		expect(ollamaMeter(usage("pro"), 100)).toEqual({ usedUsd: 10.4, creditsUsd: 100, plan: "pro" });
+		expect(ollamaMeter(usage("team"), 0)).toBeNull();
+		expect(ollamaMeter(usage("team"), 500)?.creditsUsd).toBe(500);
+		expect(ollamaMeter(usage(null), 0)).toBeNull();
+	});
+
+	test("no usage reading yields no meter", () => {
 		expect(ollamaMeter(null, 60)).toBeNull();
-		expect(ollamaMeter({ ...usage, monthlyUsedFraction: null }, 60)).toBeNull();
+		expect(ollamaMeter(usage("pro", null), 60)).toBeNull();
+	});
+
+	test("parseOllamaPlan reads the account payload case-insensitively", () => {
+		expect(parseOllamaPlan({ ID: "x", Plan: "Pro" })).toBe("pro");
+		expect(parseOllamaPlan({ plan: "max" })).toBe("max");
+		expect(parseOllamaPlan({ Plan: "" })).toBeNull();
+		expect(parseOllamaPlan("nope")).toBeNull();
 	});
 });

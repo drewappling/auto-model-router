@@ -65,7 +65,7 @@ describe("renderStatus", () => {
 				apiKeySource: "omp",
 				lastTrip: { kind: "quota", atMs: now - 120_000, message: "402" },
 				usage: { monthlyUsedFraction: 0.42, activityCostUsd: 3.1, fetchedAtMs: now },
-				meter: { usedUsd: 25.2, creditsUsd: 60 },
+				meter: { usedUsd: 25.2, creditsUsd: 60, plan: "pro" },
 				costBias: { configured: 0.1, effective: 0.1, biasUntilUsage: 0.9 },
 			},
 			catalog: { models: 240, ageMs: 5 * 60_000, keyScoped: true, shrink: { fromModels: 300, toModels: 120, atMs: now } },
@@ -76,7 +76,7 @@ describe("renderStatus", () => {
 		expect(text).toContain("refreshed 5m ago");
 		expect(text).toContain("SHRANK 300 -> 120");
 		expect(text).toContain("COOLING DOWN");
-		expect(text).toContain("plan usage 42.0% ($25.20 of $60)");
+		expect(text).toContain("pro plan usage 42.0% ($25.20 of $60)");
 		expect(text).toContain("cost bias ×0.1 (until 90%)");
 		expect(text).toContain("last trip quota 2m ago");
 		expect(text).toContain("scope omp-router");
