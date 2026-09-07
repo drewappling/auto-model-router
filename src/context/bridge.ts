@@ -121,7 +121,15 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 				return { ...pinned, fetchedAtMs: input.pinnedFetchedAtMs };
 			}
 
-			const raw = await client.assemble(input.scope, input.query, { memoryLimit, docsLimit, sessionLimit, briefChars });
+			// Recent sessions only on a conversation's first block: after that they
+			// are this conversation's own recorded turns, duplicating the prompt
+			// and changing on every refresh (measured 1.4-1.9k chars per block).
+			const raw = await client.assemble(input.scope, input.query, {
+				memoryLimit,
+				docsLimit,
+				sessionLimit: input.firstFetch ? sessionLimit : 0,
+				briefChars,
+			});
 			if (raw === null) {
 				// agentdox unreachable or empty. Keep serving the pinned block if we
 				// have one: stale shared context beats none, and re-using it also

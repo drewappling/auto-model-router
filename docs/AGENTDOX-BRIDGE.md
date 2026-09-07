@@ -175,8 +175,14 @@ would fix that, at the cost of one credential reaching every project.
   so router test turns feed back into the next block. The omp-router scope had accumulated 19
   sessions of which 18 were noise (`hi`, `say hello`, `Reply with exactly the word: PONG`,
   injection probes, `bridge e2e …`); they were deleted, and `tools/agentdox-e2e.ts` writes two
-  more every run. Consider a `sessionLimit` override for the bridge, or excluding
-  router-authored sessions.
+  more every run. **Done 2026-09-07:** recent sessions ride only on a conversation's FIRST
+  block (`ContextResolveInput.firstFetch`); refreshes ask for `sessionLimit: 0`, since by then
+  the section was this conversation's own turns (1.4-1.9k chars per block, changing every
+  refresh). In the same change the relevance query became `context/query.ts`
+  `relevanceQuery`: the last user message with real content after omp's wrapper elements
+  (`<system-reminder>`, `<recap>`, `<chat>`, image stubs) are stripped, capped at 400 chars —
+  live blocks had been queried with those wrappers verbatim, one header running to 2k chars.
+  Recorded user turns use the same cleaner.
 - **`context.timeoutMs` is 3000ms** and failures degrade silently at `debug` level by design.
   If agentdox is cold this can no-op invisibly. Consider logging the first failure at `warn`.
 - **Four copies of this project exist** on this machine: this repo, the research checkout,

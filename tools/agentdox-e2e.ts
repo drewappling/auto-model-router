@@ -58,6 +58,7 @@ function input(over: Partial<ContextResolveInput> = {}): ContextResolveInput {
 		modelSwitching: false,
 		retrying: false,
 		query: "cache prompt context injection",
+		firstFetch: true,
 		...over,
 	};
 }

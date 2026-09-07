@@ -38,8 +38,15 @@ export interface ContextResolveInput {
 	modelSwitching: boolean;
 	/** An escalation or failover retry — the prefix is cold either way. */
 	retrying: boolean;
-	/** Latest user text, used to bias agentdox relevance ranking. */
+	/** The user's ask this turn (see `context/query.ts`), used to bias agentdox relevance ranking. */
 	query: string;
+	/**
+	 * This conversation has not been given a block before. Recent sessions
+	 * are included only then: they carry a previous conversation forward, but
+	 * on a refresh they would mostly be this conversation's own turns, which
+	 * the prompt already holds.
+	 */
+	firstFetch: boolean;
 }
 
 /** One settled turn, recorded to agentdox with the model that served it. */

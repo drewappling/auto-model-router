@@ -72,11 +72,23 @@ function input(over: Partial<ContextResolveInput> = {}): ContextResolveInput {
 		modelSwitching: false,
 		retrying: false,
 		query: "movement rules",
+		firstFetch: true,
 		...over,
 	};
 }
 
 describe("context bridge refresh policy", () => {
+	test("recent sessions ride only on a conversation's first block; refreshes ask for none", async () => {
+		const client = mkClient();
+		const { bridge } = mkBridge(client, { sessionLimit: 6 });
+		await bridge.resolve(input({ firstFetch: true }));
+		expect(client.lastLimits?.sessionLimit).toBe(6);
+		// A refresh (model switch) on a conversation that already had a block.
+		await bridge.resolve(input({ firstFetch: false, modelSwitching: true, pinnedVersion: "stale", pinnedFetchedAtMs: 1 }));
+		expect(client.lastLimits?.sessionLimit).toBe(0);
+		expect(client.assembleCalls).toBe(2);
+	});
+
 	test("fetches on the first turn, then pins without re-fetching", async () => {
 		const client = mkClient();
 		const { bridge, db } = mkBridge(client);

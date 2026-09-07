@@ -9,6 +9,7 @@
  */
 
 import type { CatalogSource } from "../catalog/types.ts";
+import { relevanceQuery, userContent } from "../context/query.ts";
 import type { ContextBridge } from "../context/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { estimateUnreportedCache } from "../cost/cache-estimate.ts";
@@ -159,7 +160,8 @@ export async function runTurn(
 				pinnedFetchedAtMs: state.contextFetchedAtMs,
 				modelSwitching: state.currentSlug !== null && state.currentSlug !== decision.slug,
 				retrying: attempt > 0,
-				query: lastUserText(req),
+				query: relevanceQuery(req),
+				firstFetch: state.contextVersion === null,
 			});
 			if (pin !== null) {
 				contextBlock = pin.block;
@@ -589,7 +591,8 @@ export async function runTurn(
 		// tool-less session is therefore not transcribed: silence beats garbage,
 		// because every junk record is re-injected into every later turn.
 		if (doxActive && req.tools.length > 0) {
-			const userText = lastUserText(req);
+			// Record the user's words, not omp's wrappers (recap prompts, reminders).
+			const userText = userContent(lastUserText(req));
 			const turnEnded = finishReason !== "tool_calls";
 			log.debug("agentdox record turn", {
 				conversationKey: req.conversationKey.slice(0, 8),
