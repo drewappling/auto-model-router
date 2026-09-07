@@ -67,10 +67,16 @@ const DIGEST_SYSTEM = `You condense tool output for a coding agent that is mid-t
 const tierIdx = (t: string): number => TIER_ORDER.indexOf(t as Tier);
 
 /** Whether a session's current model is expensive enough for a digest to pay off. */
+/** The canonical tool name a harness-specific one maps to (`digest.toolAliases`); lower-cased. */
+export function canonicalTool(cfg: Pick<DigestConfig, "toolAliases">, toolName: string): string {
+	const lower = toolName.toLowerCase();
+	return cfg.toolAliases[lower] ?? lower;
+}
+
 export function digestApplies(cfg: DigestConfig, toolName: string, bytes: number, isError: boolean, currentTier: string | null): { ok: true } | { ok: false; reason: string } {
 	if (!cfg.enabled) return { ok: false, reason: "digest disabled" };
 	if (isError) return { ok: false, reason: "error results are never digested" };
-	if (!cfg.tools.includes(toolName.toLowerCase())) return { ok: false, reason: `tool ${toolName} not in digest.tools` };
+	if (!cfg.tools.includes(canonicalTool(cfg, toolName))) return { ok: false, reason: `tool ${toolName} not in digest.tools` };
 	if (bytes < cfg.minBytes) return { ok: false, reason: `${bytes} bytes < minBytes ${cfg.minBytes}` };
 	if (bytes > cfg.maxBytes) return { ok: false, reason: `${bytes} bytes > maxBytes ${cfg.maxBytes}` };
 	if (currentTier === null) return { ok: false, reason: "no routed turn in this session yet" };

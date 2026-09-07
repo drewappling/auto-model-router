@@ -9,8 +9,8 @@ import { createSessionOverrides } from "./overrides.ts";
 import { createDigester } from "./digest.ts";
 import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
-import { baselinePrices, buildUsageReport } from "../cost/report.ts";
-import { buildDailySummary, createKv, markSummaryShown, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
+import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
+import { buildDailySummary, createKv, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
@@ -414,7 +414,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const parsedDays = rawDays === null ? 7 : Number.parseInt(rawDays, 10);
 					const windowDays = Number.isInteger(parsedDays) ? Math.min(Math.max(parsedDays, 1), 365) : 7;
 					const harnessId = url.searchParams.get("harness") ?? "";
-					return json(buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) }));
+					const report = buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) });
+					// ?format=text: the rendered report for harnesses without a renderer of their own (the Hermes plugin).
+					if (url.searchParams.get("format") === "text") return new Response(renderUsageReport(report), { headers: { "content-type": "text/plain; charset=utf-8" } });
+					return json(report);
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/advise/policy") {
 					const h = cfg.harnessSwitch;
@@ -456,6 +459,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					});
 					if (auto && !summaryHasNews(summary)) return json({ due: false, reason: "nothing to report", summary: null });
 					if (auto) markSummaryShown(kv, harnessId);
+					if (url.searchParams.get("format") === "text") return new Response(renderDailySummary(summary), { headers: { "content-type": "text/plain; charset=utf-8" } });
 					return json({ due: true, summary });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
@@ -500,7 +504,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/digest/policy") {
 					const d = cfg.digest;
-					return json({ enabled: d.enabled, minBytes: d.minBytes, maxBytes: d.maxBytes, tools: d.tools, fromTier: d.fromTier });
+					return json({ enabled: d.enabled, minBytes: d.minBytes, maxBytes: d.maxBytes, tools: d.tools, toolAliases: d.toolAliases, fromTier: d.fromTier });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/digest") {
 					const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;

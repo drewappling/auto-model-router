@@ -587,6 +587,14 @@ export interface DigestConfig {
 	/** Skip when the digest itself would cost more than this, USD. */
 	maxCostUsd: number;
 	timeoutMs: number;
+	/**
+	 * Harness tool names → the canonical names `tools` lists (read, grep,
+	 * glob, bash, ls, web_fetch, …). Hermes calls its reader `read_file`,
+	 * Cline `execute_command`, OpenCode `webfetch`; the alias table lets one
+	 * `tools` list serve every harness. Lower-case keys; unknown names pass
+	 * through unchanged.
+	 */
+	toolAliases: Record<string, string>;
 }
 
 /** Usage-report options. */

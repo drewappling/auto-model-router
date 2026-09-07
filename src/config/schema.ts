@@ -296,6 +296,7 @@ export const configInputSchema = z.strictObject({
 			maxOutputTokens: z.number().int().positive().optional(),
 			maxCostUsd: z.number().nonnegative().optional(),
 			timeoutMs: z.number().int().positive().optional(),
+			toolAliases: z.record(z.string(), z.string()).optional(),
 		})
 		.optional(),
 	ledger: ledger.optional(),

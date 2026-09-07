@@ -371,6 +371,107 @@ providers:
     default_model: auto
 ```
 
+**Native features (Hermes plugin API).** The provider plugin above only
+registers the model provider; Hermes never calls `register(ctx)` on
+provider plugins, so the features that need hooks live in a second,
+standalone plugin:
+
+```bash
+cp -r hermes-plugin/native "$HERMES_HOME/plugins/auto-model-router"
+hermes plugins enable auto-model-router
+```
+
+It adds, through Hermes middleware and hooks:
+
+- **Session identity** — `X-Omp-Session` and `X-Omp-Subagent` on every router
+  request (a session that reported a parent session is a subagent), so
+  per-session reports, `/router why`, feedback and the router's
+  `server.subagentProfile` work as in omp. `X-Omp-Harness` is `hermes` (or
+  `OMP_HARNESS_ID`).
+- **Tool-result digest** — large `read_file`, `search_files` and `terminal`
+  results go to `/v1/router/digest` and the model gets the digest (see
+  [`digest`](#digest--cheap-model-digest-of-large-tool-results); Hermes tool
+  names are mapped by `digest.toolAliases`). Off unless `digest.enabled`.
+- **`/router`** — `report [days] [--all]`, `summary`, `status`, `why`,
+  `good`/`bad [note]`, `pin <model|off>`, `tier <tier|off> [turns]`, as text.
+
+Point Hermes's side jobs at the cheap profile so they cost what omp's do:
+
+```yaml
+# $HERMES_HOME/config.yaml
+auxiliary:
+  vision:      { provider: auto-model-router, model: auto-cheap }
+  compression: { provider: auto-model-router, model: auto-cheap }
+```
+
+Not available in Hermes: a per-turn routing toast (its plugin API has no
+user-visible notice channel; use `/router why`), the automatic daily summary
+(`/router summary` on demand), and the harness-side model switch.
+
+### Codex CLI
+
+Codex talks to custom providers over the chat-completions wire. Run the
+router (`auto-model-router serve --port 8788`) and add a provider:
+
+```toml
+# ~/.codex/config.toml
+model = "auto"
+model_provider = "auto-model-router"
+
+[model_providers.auto-model-router]
+name = "auto-model-router"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "chat"
+http_headers = { "X-Omp-Harness" = "codex" }
+```
+
+The router drops the OpenAI-platform-only parameters Codex sends (`store`,
+`prompt_cache_key`, `service_tier`) before dispatch. No session id or hooks:
+reports are per harness, and there is no toast, digest or `/router`.
+
+### Aider
+
+```bash
+export OPENAI_API_BASE=http://127.0.0.1:8788/v1
+export OPENAI_API_KEY=local
+aider --model openai/auto
+```
+
+Aider sends no tool calls, so every turn classifies on its text alone. No
+session id or hooks.
+
+### Cline, Roo Code, Kilo Code
+
+Choose the *OpenAI Compatible* provider in the extension's settings, set the
+base URL to `http://127.0.0.1:8788/v1`, any API key, and the model id `auto`
+(or `auto-cheap` / `auto-max`). Where the extension offers custom headers,
+add `X-Omp-Harness` with the harness name. Their tool names
+(`read_file`, `search_files`, `execute_command`, `list_files`) are already
+in `digest.toolAliases`, but with no hook to intercept tool results the
+digest applies only through summarising compaction
+(`compaction.digestToolResults`), which runs inside the router.
+
+### OpenCode
+
+```json
+// ~/.config/opencode/opencode.json
+{
+  "provider": {
+    "auto-model-router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "auto-model-router",
+      "options": { "baseURL": "http://127.0.0.1:8788/v1", "apiKey": "local", "headers": { "X-Omp-Harness": "opencode" } },
+      "models": { "auto": { "name": "auto" }, "auto-cheap": { "name": "auto-cheap" }, "auto-max": { "name": "auto-max" } }
+    }
+  },
+  "model": "auto-model-router/auto"
+}
+```
+
+OpenCode's tool names (`read`, `grep`, `glob`, `bash`, `webfetch`) match the
+router's canonical list. Its plugin API has tool and message hooks, so a
+native port (session identity, digest) is the next candidate after Hermes.
+
 ### The OpenRouter key
 
 **omp does not need to be authenticated to OpenRouter.** On a routed turn omp
@@ -818,6 +919,7 @@ is a ledger row (`requestedModel` `digest`) and the report totals them.
 | `enabled` | `false` | Master switch; the extension polls it every minute. |
 | `minBytes` / `maxBytes` | `12000` / `400000` | Result size window that gets digested. |
 | `tools` | `read, grep, glob, bash, web_fetch, webfetch, ls, find` | Eligible tool names (lower-case). |
+| `toolAliases` | Hermes, Cline/Roo/Kilo, Codex and OpenCode spellings (`read_file` → `read`, `search_files` → `grep`, `terminal`/`execute_command`/`shell` → `bash`, …) | Harness tool names mapped onto the canonical `tools` list, so one list serves every harness. |
 | `fromTier` | `moderate` | Digest only when the session's current model is at or above this tier. |
 | `tier` / `model` | `simple` / unset | Where the digest model is picked from, or a pinned slug. |
 | `maxOutputTokens` | `700` | Digest length cap. |
@@ -967,6 +1069,19 @@ calls in stays on the router (the router's own escalation still applies
 there); and the switch happens at prompt boundaries, never mid-turn.
 
 ## Multiple coding harnesses, one router
+
+What each harness gets today. "Config only" means the OpenAI-compatible wire
+plus a harness header; the rest needs the harness's own hook API.
+
+| Harness | Wire | Harness id | Session id | Subagent flag | Toast | `/router` | Digest | Daily summary | Model switch |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| omp | native provider | yes | yes | yes | yes | full hub | yes | yes | experimental |
+| Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
+| Codex CLI | config only | yes | no | no | no | no | compaction only | no | no |
+| Aider | config only | yes | no | no | no | no | no tools | no | no |
+| Cline / Roo / Kilo | config only | if headers supported | no | no | no | no | compaction only | no | no |
+| OpenCode | config only | yes | no | no | no | no | compaction only | no | no |
+| Claude Code | needs an Anthropic Messages wire module | — | — | — | — | — | — | — | — |
 
 A single embedded router can serve several omp sessions without them stepping
 on each other:

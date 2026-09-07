@@ -1,0 +1,5 @@
+name: auto-model-router
+kind: standalone
+version: 1.0.0
+description: auto-model-router native features — session identity, tool-result digest, /router command
+author: drewappling

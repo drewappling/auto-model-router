@@ -213,6 +213,9 @@ function applyCompaction(messages: Record<string, unknown>[], edits: readonly Co
 	}
 }
 
+/** Request parameters that exist only on OpenAI's own platform; dropped before dispatch. */
+export const OPENAI_ONLY_PARAMS: readonly string[] = ["store", "prompt_cache_key", "safety_identifier", "service_tier", "metadata", "web_search_options"];
+
 function renderUpstreamBody(
 	original: Record<string, unknown>,
 	m: UpstreamMutations,
@@ -227,6 +230,10 @@ function renderUpstreamBody(
 	body.stream = true;
 	// OpenRouter returns usage unconditionally and the parameter is deprecated.
 	delete body.stream_options;
+	// OpenAI-platform-only parameters other harnesses send (Codex, Aider,
+	// Cline): storage, cache keys, tiers and abuse ids mean nothing upstream
+	// and some providers reject unknown fields.
+	for (const key of OPENAI_ONLY_PARAMS) delete body[key];
 
 	if (m.maxTokens !== undefined) {
 		// Respect whichever max-token spelling the client used.

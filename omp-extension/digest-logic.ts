@@ -8,10 +8,12 @@ export interface DigestPolicy {
 	minBytes: number;
 	maxBytes: number;
 	tools: string[];
+	/** Harness tool name → canonical name in `tools`. */
+	toolAliases: Record<string, string>;
 	fromTier: string;
 }
 
-export const DISABLED_POLICY: DigestPolicy = { enabled: false, minBytes: 0, maxBytes: 0, tools: [], fromTier: "hard" };
+export const DISABLED_POLICY: DigestPolicy = { enabled: false, minBytes: 0, maxBytes: 0, tools: [], toolAliases: {}, fromTier: "hard" };
 
 /** The text of a tool result's content parts; images are left alone (and block digesting). */
 export function textOf(content: ReadonlyArray<{ type: string; text?: string }>): { text: string; hasImage: boolean } {
@@ -27,7 +29,8 @@ export function textOf(content: ReadonlyArray<{ type: string; text?: string }>):
 /** Client-side gate: cheap checks before anything is sent to the router. */
 export function shouldSend(policy: DigestPolicy, toolName: string, isError: boolean, text: string, hasImage: boolean): boolean {
 	if (!policy.enabled || isError || hasImage) return false;
-	if (!policy.tools.includes(toolName.toLowerCase())) return false;
+	const lower = toolName.toLowerCase();
+	if (!policy.tools.includes(policy.toolAliases[lower] ?? lower)) return false;
 	const bytes = Buffer.byteLength(text);
 	return bytes >= policy.minBytes && bytes <= policy.maxBytes;
 }
@@ -42,6 +45,10 @@ export function parsePolicy(json: unknown): DigestPolicy {
 		minBytes: typeof p.minBytes === "number" ? p.minBytes : 12_000,
 		maxBytes: typeof p.maxBytes === "number" ? p.maxBytes : 400_000,
 		tools: Array.isArray(p.tools) ? p.tools.filter((t): t is string => typeof t === "string").map((t) => t.toLowerCase()) : [],
+		toolAliases:
+			p.toolAliases !== null && typeof p.toolAliases === "object"
+				? Object.fromEntries(Object.entries(p.toolAliases as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string").map(([k, v]) => [k.toLowerCase(), v.toLowerCase()]))
+				: {},
 		fromTier: typeof p.fromTier === "string" ? p.fromTier : "hard",
 	};
 }

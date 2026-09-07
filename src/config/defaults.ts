@@ -309,6 +309,20 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		maxOutputTokens: 700,
 		maxCostUsd: 0.02,
 		timeoutMs: 25_000,
+		// Hermes, Cline/Roo/Kilo, Codex and OpenCode spellings of the same tools.
+		toolAliases: {
+			read_file: "read",
+			search_files: "grep",
+			list_files: "ls",
+			list_dir: "ls",
+			list: "ls",
+			terminal: "bash",
+			execute_command: "bash",
+			execute_code: "bash",
+			shell: "bash",
+			web_extract: "web_fetch",
+			fetch_url: "web_fetch",
+		},
 	},
 	report: {
 		// The frontier pair most omp users would otherwise run on.

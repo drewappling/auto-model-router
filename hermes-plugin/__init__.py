@@ -105,5 +105,8 @@ profile = ProviderProfile(
     fallback_models=("auto", "auto-cheap", "auto-max"),
     display_name="auto-model-router",
     description="Per-turn cost/complexity-aware model routing",
+    # The harness id the router records on every row (per-harness budgets and
+    # reports). The native plugin adds the per-session headers on top.
+    default_headers={"X-Omp-Harness": os.environ.get("OMP_HARNESS_ID", "hermes")},
 )
 register_provider(profile)
