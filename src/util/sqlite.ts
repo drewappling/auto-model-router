@@ -119,6 +119,20 @@ CREATE TABLE IF NOT EXISTS context_blocks (
   fetched_at_ms INTEGER NOT NULL
 );
 
+-- User verdicts on routed turns (/router feedback), tied to the ledger row judged.
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  ledger_id TEXT NOT NULL,
+  omp_session_id TEXT NOT NULL DEFAULT '',
+  slug TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback (created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_feedback_ledger ON feedback (ledger_id);
+
 CREATE TABLE IF NOT EXISTS agentdox_sessions (
   conversation_key TEXT PRIMARY KEY,
   scope TEXT NOT NULL,

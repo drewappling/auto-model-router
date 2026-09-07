@@ -325,6 +325,14 @@ export interface Router {
 	 */
 	route(
 		req: NormRequest,
-		opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] },
+		opts: {
+			attempt: number;
+			escalateFrom?: Tier;
+			excludeSlugs?: readonly string[];
+			/** Session override (/router tier): classify as this tier. */
+			forceTier?: Tier;
+			/** Session override (/router pin): route to this slug when it exists in the catalog. */
+			forceSlug?: string;
+		},
 	): Promise<Decision>;
 }

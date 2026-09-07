@@ -9,6 +9,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { createFeedbackStore, type FeedbackCounts } from "./feedback.ts";
 
 export interface ReportTotals {
 	dispatches: number;
@@ -50,6 +51,8 @@ export interface ModelRow extends ReportRow {
 	provider: string;
 	/** Dispatch counts per tier, e.g. `{ trivial: 12, moderate: 3 }`. */
 	tiers: Record<string, number>;
+	/** User verdicts from /router good|bad on turns this model served, in the window. */
+	feedback: FeedbackCounts;
 }
 
 export interface DayRow {
@@ -212,10 +215,12 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		rec[m.tier] = m.n;
 		mixByModel.set(m.key, rec);
 	}
+	const feedbackBySlug = createFeedbackStore(db).countsBySlug(sinceMs, harnessId);
 	const models: ModelRow[] = modelRows.map((r) => ({
 		...toRow(r, windowSpend),
 		provider: r.key.startsWith("ollama/") ? "ollama" : "openrouter",
 		tiers: mixByModel.get(r.key) ?? {},
+		feedback: feedbackBySlug.get(r.key) ?? { good: 0, bad: 0 },
 	}));
 
 	const tiers = (
@@ -357,7 +362,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 		tables.push({
 			id: "models",
 			title: `models (top ${Math.min(maxModels, r.models.length)} of ${r.models.length} by spend)`,
-			headers: ["model", "dispatches", "spend", "share", "cache", "ttft", "speed", "tiers"],
+			headers: ["model", "dispatches", "spend", "share", "cache", "ttft", "speed", "feedback", "tiers"],
 			rows: r.models.slice(0, maxModels).map((m) => [
 				m.key,
 				num(m.dispatches),
@@ -366,6 +371,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 				pct(m.cacheHitRate, m.cacheEstimated),
 				ms(m.avgTtftMs),
 				tps(m.tokensPerSec),
+				m.feedback.good + m.feedback.bad === 0 ? "" : `+${m.feedback.good}/-${m.feedback.bad}`,
 				Object.entries(m.tiers)
 					.sort((a, b) => b[1] - a[1])
 					.map(([k, v]) => `${k}:${v}`)

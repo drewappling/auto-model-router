@@ -3,7 +3,10 @@ import { dirname } from "node:path";
 import type { Server } from "bun";
 import { createProviders } from "./providers.ts";
 import { createBridgeFromConfig } from "../context/index.ts";
+import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
+import { createSessionOverrides } from "./overrides.ts";
+import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { buildUsageReport } from "../cost/report.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
@@ -177,7 +180,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
-	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context };
+	const overrides = createSessionOverrides();
+	const feedback = createFeedbackStore(db);
+	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides };
 
 	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
 	// effect on the next turn without a restart, because every consumer reads
@@ -383,7 +388,64 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const rawLimit = url.searchParams.get("limit");
 					const parsed = rawLimit === null ? 50 : Number.parseInt(rawLimit, 10);
 					const limit = Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), 1_000) : 50;
-					return json({ entries: ledger.recentEntries(limit) });
+					// ?session=<omp session id> narrows to one session (/router why).
+					const session = url.searchParams.get("session") ?? "";
+					const entries = session === "" ? ledger.recentEntries(limit) : (ledger.entriesForSession?.(session, limit) ?? []);
+					return json({ entries: entries.map((e) => ({ ...e, feedback: feedback.forLedgerId(e.id) })) });
+				}
+				if (url.pathname === "/v1/router/override") {
+					// Per-session pin / tier overrides from omp. GET shows, POST sets or clears.
+					if (req.method === "GET") {
+						const session = url.searchParams.get("session") ?? "";
+						return json(session === "" ? { overrides: overrides.list() } : { override: overrides.get(session) });
+					}
+					if (req.method === "POST") {
+						const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+						const session = typeof body?.ompSessionId === "string" ? body.ompSessionId : "";
+						if (session === "") return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "ompSessionId required" });
+						if (body?.clear === true) {
+							overrides.clear(session);
+							return json({ override: null });
+						}
+						const tier = body?.tier;
+						if (tier !== undefined && tier !== null && !(TIER_ORDER as readonly string[]).includes(String(tier))) {
+							return wireErrorResponse({ status: 400, code: "invalid_request_error", message: `unknown tier ${String(tier)}` });
+						}
+						const slug = body?.slug;
+						if (typeof slug === "string" && slug !== "" && catalog.find(slug) === undefined) {
+							return wireErrorResponse({ status: 404, code: "not_found", message: `no model ${slug} in the catalog` });
+						}
+						const turns = typeof body?.turns === "number" ? body.turns : undefined;
+						const set = overrides.set(session, {
+							...(tier === undefined ? {} : { tier: tier === null ? null : (String(tier) as Tier) }),
+							...(slug === undefined ? {} : { slug: typeof slug === "string" && slug !== "" ? slug : null }),
+							...(turns === undefined ? {} : { turns }),
+						});
+						return json({ override: set });
+					}
+				}
+				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
+					// A user verdict on the newest routed turn of an omp session.
+					const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+					const session = typeof body?.ompSessionId === "string" ? body.ompSessionId : "";
+					const verdict = body?.verdict;
+					if (session === "" || (verdict !== "good" && verdict !== "bad")) {
+						return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "ompSessionId and verdict (good|bad) required" });
+					}
+					const target =
+						typeof body?.ledgerId === "string"
+							? (ledger.recentEntries(1_000).find((e) => e.id === body.ledgerId) ?? null)
+							: (ledger.latestForSession?.(session) ?? null);
+					if (target === null) return wireErrorResponse({ status: 404, code: "not_found", message: "no routed turn for that session yet" });
+					const id = feedback.record({
+						ledgerId: target.id,
+						ompSessionId: session,
+						slug: target.servedSlug ?? target.slug,
+						tier: target.tier,
+						verdict: verdict as Verdict,
+						note: typeof body?.note === "string" ? body.note : "",
+					});
+					return json({ id, ledgerId: target.id, slug: target.servedSlug ?? target.slug, tier: target.tier, verdict });
 				}
 				if (req.method === "GET" && url.pathname === "/health") {
 					const snap = catalog.peek();

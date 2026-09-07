@@ -52,7 +52,7 @@ export function createRouter(deps: RouterDeps): Router {
 	return {
 		async route(
 			req: NormRequest,
-			opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] },
+			opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[]; forceTier?: Tier; forceSlug?: string },
 		): Promise<Decision> {
 			const state = conversations.get(req.conversationKey) ?? conversations.load(req.conversationKey);
 			const snapshot = await catalog.get();
@@ -78,6 +78,16 @@ export function createRouter(deps: RouterDeps): Router {
 					score: 1,
 					reasons: [`escalated from ${opts.escalateFrom} after attempt ${opts.attempt - 1} was rejected`],
 				};
+			} else if (opts.forceTier !== undefined) {
+				// A session override from omp: the user chose the tier for a while.
+				classification = {
+					tier: opts.forceTier,
+					task: classifyTask(features),
+					confidence: 1,
+					source: "forced",
+					score: 1,
+					reasons: [`tier ${opts.forceTier} forced by session override (/router tier)`],
+				};
 			} else {
 				classification = await classify(req, features, config, { upstream, ledger, catalog });
 			}
@@ -93,6 +103,7 @@ export function createRouter(deps: RouterDeps): Router {
 				cfg: config,
 				nowMs: Date.now(),
 				...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
+				...(opts.forceSlug === undefined ? {} : { forceSlug: opts.forceSlug }),
 			});
 		},
 	};

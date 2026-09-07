@@ -43,6 +43,12 @@ export interface SelectArgs {
 	 * `buildCandidates` so a failover retry lands on a different model.
 	 */
 	excludeSlugs?: readonly string[];
+	/**
+	 * Session override (/router pin): route to this slug. Admitted into the
+	 * tier as if pinned there, then chosen over ranking, hysteresis and the
+	 * stay/switch comparison. Ignored when the catalog has no such model.
+	 */
+	forceSlug?: string;
 }
 
 /**
@@ -350,6 +356,11 @@ export function select(args: SelectArgs): Decision {
 		cfg.filters.escalationCostWeight > 0
 			? (ledger?.escalationCost?.(cfg.ledger.blendWindowDays)?.usdPerPromptToken ?? null)
 			: null;
+	// A pinned slug is admitted the way a config pin is: into the tier's pin
+	// list for this call only, so the quality floor cannot keep it out.
+	const pinSlug = args.forceSlug !== undefined && snapshot.models.some((m) => m.slug === args.forceSlug) ? args.forceSlug : undefined;
+	const buildCfg = pinSlug === undefined ? cfg : { ...cfg, tiers: { ...cfg.tiers, [effective]: { ...cfg.tiers[effective], pin: [...cfg.tiers[effective].pin, pinSlug] } } };
+	if (args.forceSlug !== undefined && pinSlug === undefined) reasons.push(`pin ${args.forceSlug} ignored: not in the catalog`);
 	const build = (t: Tier, relaxLevel = 0): { candidates: Candidate[]; rejected: Rejection[] } =>
 		buildCandidates({
 			req,
@@ -358,7 +369,7 @@ export function select(args: SelectArgs): Decision {
 			task: classification.task,
 			snapshot,
 			ledger,
-			cfg,
+			cfg: buildCfg,
 			expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 			warmSlug,
 			relaxLevel,
@@ -372,7 +383,9 @@ export function select(args: SelectArgs): Decision {
 	// search must rebuild at the same level, or it re-applies the strict config
 	let rescuedRelax = 0;
 	for (const t of wideningOrder(effective, profile.minTier, profile.maxTier)) {
-		const b = build(t);
+		// A session pin is absolute: price ceiling, quality floor and trust all
+		// relax so the pinned model is admitted; hard exclusions still apply.
+		const b = build(t, pinSlug === undefined ? 0 : 3);
 		if (b.candidates.length > 0) {
 			built = b;
 			chosenTier = t;
@@ -425,6 +438,11 @@ export function select(args: SelectArgs): Decision {
 	const first = candidates[0];
 	if (first === undefined) throw new Error(`no viable model: catalog exhausted across profile ${profile.id}`);
 	let chosen = first;
+	const pinnedCandidate = pinSlug === undefined ? undefined : candidates.find((c) => c.model.slug === pinSlug);
+	if (pinnedCandidate !== undefined) {
+		chosen = pinnedCandidate;
+		reasons.push(`pinned to ${pinSlug} by session override (/router pin)`);
+	}
 
 	// 4. Cache-aware switch decision. Staying prices the previous turn's prompt
 	//    at the warm model's cache-read rate; switching prices the full current
@@ -432,7 +450,7 @@ export function select(args: SelectArgs): Decision {
 	//    assume the whole prompt is written). Switch only when the saving
 	//    clears switchMargin.
 	let sticky = false;
-	if (warmSlug !== null && chosen.model.slug !== warmSlug) {
+	if (pinnedCandidate === undefined && warmSlug !== null && chosen.model.slug !== warmSlug) {
 		const warm = candidates.find((c) => c.model.slug === warmSlug);
 		if (warm !== undefined) {
 			const warmPrice = priceAt(warm.model, Math.max(1, state.lastPromptTokens));

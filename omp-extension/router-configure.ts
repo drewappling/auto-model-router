@@ -12,6 +12,15 @@
  *                           them. Headless sessions get the text instead.
  *   /router status          the router's /health: keys, catalog, Ollama
  *                           availability and plan usage, agentdox.
+ *   /router why             explain this session's last routed turn: model,
+ *                           tier, confidence, cost, cache, the decision trail.
+ *   /router good | bad [note]
+ *                           judge that turn; recorded against the model that
+ *                           served it (/router feedback good|bad is the same).
+ *   /router pin <model|off> route this session to one model until cleared.
+ *   /router tier <tier|off> [turns]
+ *                           force a tier for N turns (default 10; 0 = until
+ *                           cleared). Escalations and failovers still apply.
  *
  * Configuration walks the same sections and fields as `auto-model-router
  * config` (reusing `WIZARD_SECTIONS` / `PROFILE_FIELDS` from the router's
@@ -49,7 +58,17 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 
 import { editProfile, editSectionMenu, type ConfigUi, type SelectOption } from "./configure-logic.ts";
 import { ReportHub } from "./report-hub.ts";
-import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot, type ReportRequest } from "./report-logic.ts";
+import {
+	describeOverride,
+	fetchReport,
+	parseOverrideArgs,
+	parseReportArgs,
+	renderStatus,
+	renderWhy,
+	type HealthSnapshot,
+	type ReportRequest,
+	type WhyEntry,
+} from "./report-logic.ts";
 import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
 
 // This harness's id, matching the X-Omp-Harness header the router records.
@@ -76,10 +95,28 @@ export default function (pi: ExtensionAPI): void {
 				case "status":
 				case "health":
 					return status(pi, ctx);
+				case "why":
+				case "explain":
+					return why(pi, ctx);
+				case "good":
+				case "bad":
+					return feedback(ctx, verb.toLowerCase() as "good" | "bad", tail);
+				case "feedback": {
+					const [v = "", ...note] = rest;
+					if (v !== "good" && v !== "bad") {
+						ctx.ui.notify("usage: /router feedback good|bad [note]", "warn");
+						return;
+					}
+					return feedback(ctx, v, note.join(" "));
+				}
+				case "pin":
+					return override(ctx, "pin", tail);
+				case "tier":
+					return override(ctx, "tier", tail);
 				case "":
 					break;
 				default:
-					ctx.ui.notify(`unknown /router subcommand "${verb}" (config | report [7d] [--all] | status)`, "warn");
+					ctx.ui.notify(`unknown /router subcommand "${verb}" (config | report | status | why | good | bad | pin | tier)`, "warn");
 					return;
 			}
 
@@ -87,11 +124,15 @@ export default function (pi: ExtensionAPI): void {
 				{ label: "Configure", description: "edit any router setting" },
 				{ label: "Report", description: "usage analytics; window and scope adjustable inside" },
 				{ label: "Status", description: "keys, catalog, Ollama, agentdox" },
+				{ label: "Why", description: "explain this session's last routed turn" },
+				{ label: "Override", description: "pin a model or force a tier for this session" },
 			]);
 			if (chosen === undefined) return;
 			if (chosen === "Configure") return configure(ctx);
 			if (chosen === "Status") return status(pi, ctx);
 			if (chosen === "Report") return report(pi, ctx, "");
+			if (chosen === "Why") return why(pi, ctx);
+			if (chosen === "Override") return override(ctx, "tier", "");
 		},
 	});
 }
@@ -171,6 +212,91 @@ async function report(pi: ExtensionAPI, ctx: ExtensionContext, argText: string):
 		return;
 	}
 	post(pi, renderUsageReport(data));
+}
+
+/** POST JSON to the router; throws on a non-2xx with the router's message. */
+async function routerPost<T>(path: string, body: unknown): Promise<T> {
+	const res = await fetch(`${routerBaseUrl()}${path}`, {
+		method: "POST",
+		headers: { ...routerAuthHeaders(), "content-type": "application/json" },
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(5_000),
+	});
+	const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+	if (!res.ok) {
+		const err = json?.error as { message?: string } | undefined;
+		throw new Error(err?.message ?? `router returned ${res.status}`);
+	}
+	return json as T;
+}
+
+async function why(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	const session = ctx.sessionManager.getSessionId();
+	try {
+		const res = await fetch(`${routerBaseUrl()}/v1/router/decisions?limit=1&session=${encodeURIComponent(session)}`, {
+			headers: routerAuthHeaders(),
+			signal: AbortSignal.timeout(5_000),
+		});
+		if (!res.ok) throw new Error(`router returned ${res.status}`);
+		const body = (await res.json()) as { entries: WhyEntry[] };
+		const entry = body.entries[0];
+		if (entry === undefined) {
+			ctx.ui.notify("no routed turn in this session yet", "info");
+			return;
+		}
+		post(pi, renderWhy(entry));
+	} catch (err) {
+		ctx.ui.notify(`router unreachable: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
+}
+
+async function feedback(ctx: ExtensionContext, verdict: "good" | "bad", note: string): Promise<void> {
+	try {
+		const r = await routerPost<{ slug: string; tier: string }>("/v1/router/feedback", { ompSessionId: ctx.sessionManager.getSessionId(), verdict, note });
+		ctx.ui.notify(`recorded ${verdict} for ${r.slug} [${r.tier}]${note !== "" ? `: ${note}` : ""}`, "info");
+	} catch (err) {
+		ctx.ui.notify(`feedback not recorded: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
+}
+
+async function override(ctx: ExtensionContext, verb: "pin" | "tier", text: string): Promise<void> {
+	const session = ctx.sessionManager.getSessionId();
+	let req = parseOverrideArgs(verb, text);
+	if (req.kind === "show" && verb === "tier" && text === "") {
+		// Menu path: pick a tier interactively.
+		const chosen = await ctx.ui.select("Force a tier for this session", [
+			{ label: "trivial", description: "cheapest models" },
+			{ label: "simple", description: "" },
+			{ label: "moderate", description: "" },
+			{ label: "hard", description: "strongest models" },
+			{ label: "off", description: "clear any override" },
+		]);
+		if (chosen === undefined) return;
+		req = parseOverrideArgs("tier", chosen);
+	}
+	if (req.kind === "error") {
+		ctx.ui.notify(req.message, "warn");
+		return;
+	}
+	try {
+		if (req.kind === "show") {
+			const res = await fetch(`${routerBaseUrl()}/v1/router/override?session=${encodeURIComponent(session)}`, { headers: routerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
+			const body = (await res.json()) as { override: { slug: string | null; tier: string | null; turnsLeft: number } | null };
+			ctx.ui.notify(describeOverride(body.override), "info");
+			return;
+		}
+		const payload: Record<string, unknown> = { ompSessionId: session };
+		if (req.kind === "clear") payload.clear = true;
+		else if (req.kind === "pin") payload.slug = req.slug;
+		else {
+			payload.tier = req.tier;
+			payload.turns = req.turns;
+		}
+		const r = await routerPost<{ override: { slug: string | null; tier: string | null; turnsLeft: number } | null }>("/v1/router/override", payload);
+		ctx.ui.notify(describeOverride(r.override), "info");
+	} catch (err) {
+		ctx.ui.notify(`override not applied: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
 }
 
 async function status(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {

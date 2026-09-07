@@ -1105,3 +1105,30 @@ describe("cache reliability in the stay/switch comparison", () => {
 		expect(d.reasons.some((r) => r.includes("warm hit 50% over 40"))).toBe(true);
 	});
 });
+
+describe("session pin (forceSlug)", () => {
+	test("a pinned catalog model wins over ranking and the warm model; an unknown pin is ignored with a reason", () => {
+		const warmSlug = run({ tier: "moderate" }).slug;
+		const pinSlug = run({ tier: "hard" }).slug; // a real, differently-ranked model
+		const req = request("tidy the retry helper");
+		const features = extractFeatures(req, 50_000);
+		const base = {
+			req,
+			features,
+			classification: scoreHeuristic(features, BASE),
+			profile: PROFILE,
+			state: state({ currentSlug: warmSlug, currentTier: "moderate", cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 50_000 }),
+			snapshot: SNAPSHOT,
+			ledger: null,
+			cfg: { ...BASE, hysteresis: { ...BASE.hysteresis, switchMargin: 1e6 } },
+			nowMs: Date.now(),
+		};
+		const pinned = select({ ...base, forceSlug: pinSlug });
+		expect(pinned.slug).toBe(pinSlug);
+		expect(pinned.sticky).toBe(false);
+		expect(pinned.reasons.some((r) => r.includes(`pinned to ${pinSlug} by session override`))).toBe(true);
+		const unknown = select({ ...base, forceSlug: "nope/model" });
+		expect(unknown.slug).toBe(warmSlug); // the huge switch margin keeps the warm model
+		expect(unknown.reasons.some((r) => r.includes("pin nope/model ignored"))).toBe(true);
+	});
+});

@@ -502,7 +502,7 @@ What it shows, for the window:
 | totals | spend, dispatches, conversations, $/dispatch, prompt and completion tokens, cache hit rate, model switches, escalations, failovers, errors (aborted separately) |
 | prompt anatomy | mean share of prompt bytes by role (tool results, assistant, user, system), tool schemas beside them, the older half of the conversation, and tool results older than the newest 20 messages — what compaction can reach. Recorded per turn from v0.3.5. |
 | providers | per upstream (`openrouter`, `ollama`): dispatches, spend, share, cache hit, mean TTFT, tokens/s, escalations, errors |
-| models | per served slug (top 12 by spend): the same plus the tier mix it was routed for |
+| models | per served slug (top 12 by spend): the same plus user feedback (`+good/-bad` from `/router good\|bad`) and the tier mix it was routed for |
 | tiers | per tier: dispatches, spend, share, cache hit, mean prompt tokens, escalations |
 | by day | UTC calendar days: dispatches, spend, cache hit |
 
@@ -531,6 +531,10 @@ Status); the subcommands go straight there:
 | `/router config` | Section picker over **every** config key: Server, OpenRouter, Ollama Cloud, Benchmarks, Tiers, Tasks, Filters, Classifier, Escalation, Hysteresis, Exploration, Cache, Compaction, Context (agentdox), Budget, Ledger, Logging, Profiles. Only `ollama.prices` and `ollama.twins` (maps) stay YAML-only. |
 | `/router report` | Usage analytics in a fullscreen hub styled like `/models`: pick a view in the sidebar, set the window (24h / 7d / 30d / 90d) and the harness scope there too. `/router report 30d --all` presets them. See [Usage reports](#usage-reports). |
 | `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, agentdox bridge. |
+| `/router why` | Explain this session's last routed turn: model and provider, tier, classification source and confidence, cost, cache hit, latency, the full decision trail and classifier reasons, any feedback already given. |
+| `/router good` / `/router bad [note]` | Judge that turn. Recorded against the model that served it (`POST /v1/router/feedback`), shown per model in the report's `feedback` column, and the label the de-escalation work needs. `/router feedback good\|bad` is the same. |
+| `/router pin <model\|off>` | Route this session to one model until cleared (admitted past price, quality and trust filters; tool support and context window still apply). Escalations and failovers after the first attempt still run. |
+| `/router tier <tier\|off> [turns]` | Force a tier for N committed turns (default 10; 0 = until cleared). Shown with no argument. Overrides are per omp session, live in the router process only, and lapse after 12 idle hours. |
 
 Picking a section lists its fields with their current values (pending edits
 marked), so you see the settings before choosing one to change. Each field

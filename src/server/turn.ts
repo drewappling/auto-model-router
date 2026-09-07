@@ -27,6 +27,7 @@ import {
 	type Tier,
 } from "../router/types.ts";
 import { UpstreamError, type Dispatch, type UpstreamClient } from "../upstream/types.ts";
+import type { SessionOverrides } from "./overrides.ts";
 import { createLogger } from "../util/log.ts";
 import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk } from "../wire/types.ts";
 
@@ -66,6 +67,8 @@ export interface TurnDeps {
 	catalog: CatalogSource;
 	/** agentdox bridge. The disabled bridge makes every call here a no-op. */
 	context: ContextBridge;
+	/** Per-session pin/tier overrides from omp. Absent ⇒ none. */
+	overrides?: SessionOverrides;
 }
 
 /** A dead client connection surfaces as the sink throwing mid-stream. */
@@ -117,6 +120,9 @@ export async function runTurn(
 	else triggers.delete("length_stop");
 
 	const maxAttempts = Math.max(1, config.escalation.maxAttempts);
+	// A session override applies to the first attempt only: an escalation or
+	// failover after it is the router's business, not the pin's.
+	const override = deps.overrides?.get(req.ompSessionId) ?? null;
 	let escalateFrom: Tier | undefined;
 	let escalations = 0;
 	// Slugs that returned a retryable upstream error on THIS turn, fed back
@@ -138,9 +144,13 @@ export async function runTurn(
 			pendingDecision = null;
 		} else {
 			try {
-				const opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[] } = { attempt };
+				const opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[]; forceTier?: Tier; forceSlug?: string } = { attempt };
 				if (escalateFrom !== undefined) opts.escalateFrom = escalateFrom;
 				if (failedSlugs.length > 0) opts.excludeSlugs = failedSlugs;
+				if (override !== null && attempt === 0) {
+					if (override.tier !== null) opts.forceTier = override.tier;
+					if (override.slug !== null) opts.forceSlug = override.slug;
+				}
 				decision = await router.route(req, opts);
 			} catch (err) {
 				await sink.error({ status: 500, code: "router_error", message: err instanceof Error ? err.message : String(err) });
@@ -538,6 +548,7 @@ export async function runTurn(
 
 		state.turn = turnNumber;
 		state.currentSlug = servedSlug ?? decision.slug;
+		if (override !== null) deps.overrides?.consume(req.ompSessionId);
 		// Capture the previously-served tier BEFORE overwriting it, so the
 		// hysteresis re-arm below can tell whether this turn changed tier.
 		const prevTier = state.currentTier;

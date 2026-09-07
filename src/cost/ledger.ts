@@ -320,6 +320,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
+	const sessionStmt = db.query("SELECT * FROM ledger WHERE omp_session_id = ? AND wasted = 0 ORDER BY created_at_ms DESC LIMIT ?");
 	// What an escalated retry actually bills, per prompt token, over a window.
 	// attempt > 0 rows are the re-dispatches that followed a rejected attempt;
 	// errored ones carry no usage and are excluded.
@@ -514,6 +515,15 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		recentEntries(limit: number): LedgerEntry[] {
 			const rows = recentStmt.all(limit) as LedgerRow[];
 			return rows.map(toEntry);
+		},
+		latestForSession(ompSessionId: string): LedgerEntry | null {
+			if (ompSessionId === "") return null;
+			const row = sessionStmt.get(ompSessionId, 1) as LedgerRow | null;
+			return row === null ? null : toEntry(row);
+		},
+		entriesForSession(ompSessionId: string, limit: number): LedgerEntry[] {
+			if (ompSessionId === "") return [];
+			return (sessionStmt.all(ompSessionId, Math.max(1, limit)) as LedgerRow[]).map(toEntry);
 		},
 	};
 }

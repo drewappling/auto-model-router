@@ -79,8 +79,8 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 		},
 		providers: [row("openrouter", 2), row("ollama", 1)],
 		models: [
-			{ ...row("z-ai/glm", 2), provider: "openrouter", tiers: { simple: 6, moderate: 4 } },
-			{ ...row("ollama/kimi", 1), provider: "ollama", tiers: { hard: 10 } },
+			{ ...row("z-ai/glm", 2), provider: "openrouter", tiers: { simple: 6, moderate: 4 }, feedback: { good: 0, bad: 0 } },
+			{ ...row("ollama/kimi", 1), provider: "ollama", tiers: { hard: 10 }, feedback: { good: 0, bad: 0 } },
 		],
 		tiers: [row("simple", 2), row("hard", 1)],
 		days: [

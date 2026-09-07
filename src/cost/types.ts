@@ -266,4 +266,8 @@ export interface Ledger {
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];
+	/** Newest kept (non-wasted) entry for an omp session, for /router why and feedback. Optional so fakes need not implement it. */
+	latestForSession?(ompSessionId: string): LedgerEntry | null;
+	/** Newest entries for an omp session, newest first. Optional. */
+	entriesForSession?(ompSessionId: string, limit: number): LedgerEntry[];
 }
