@@ -94,6 +94,15 @@ interface TrustRow {
 	mean_cost_error: number | null;
 }
 
+interface FeedbackRow {
+	good: number | null;
+	bad: number | null;
+}
+
+/** Verdict counts per served slug since a cutoff (optionally one harness). */
+const FEEDBACK_SELECT = `COALESCE(SUM(CASE WHEN f.verdict = 'good' THEN 1 ELSE 0 END), 0) AS good,
+		COALESCE(SUM(CASE WHEN f.verdict = 'bad' THEN 1 ELSE 0 END), 0) AS bad`;
+
 interface LatencyRow {
 	samples: number;
 	ttft_ms: number | null;
@@ -186,15 +195,23 @@ function errorKindOf(error: string | null): string | null {
 	return error.slice(0, sep);
 }
 
-function toTrust(slug: string, row: TrustRow): ModelTrust {
+function toTrust(slug: string, row: TrustRow, fb: FeedbackRow | null = null, feedbackWeight = 0): ModelTrust {
 	// Laplace smoothing: an untried model scores a neutral 1/2, and a failure
 	// is an attempt superseded by an escalation or ended in an upstream error.
+	// A user verdict counts as feedbackWeight extra attempts of that outcome.
+	const good = fb?.good ?? 0;
+	const bad = fb?.bad ?? 0;
+	const w = feedbackWeight > 0 ? feedbackWeight : 0;
+	const attempts = row.attempts + w * (good + bad);
+	const failures = row.failures + w * bad;
 	return {
 		slug,
 		attempts: row.attempts,
 		escalations: row.escalations,
 		errors: row.errors,
-		successRate: (row.attempts - row.failures + 1) / (row.attempts + 2),
+		feedbackGood: good,
+		feedbackBad: bad,
+		successRate: (attempts - failures + 1) / (attempts + 2),
 		meanCostError: row.mean_cost_error ?? 0,
 	};
 }
@@ -312,6 +329,17 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const trustStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND created_at_ms > ?`);
 	const trustHarnessStmt = db.query(`SELECT ${TRUST_SELECT} FROM ledger WHERE slug = ? AND harness_id = ? AND created_at_ms > ?`);
 	const allTrustStmt = db.query(`SELECT slug, ${TRUST_SELECT} FROM ledger WHERE created_at_ms > ? GROUP BY slug`);
+	const feedbackStmt = db.query(`SELECT ${FEEDBACK_SELECT} FROM feedback f WHERE f.slug = ? AND f.created_at_ms > ?`);
+	const feedbackHarnessStmt = db.query(
+		`SELECT ${FEEDBACK_SELECT} FROM feedback f JOIN ledger l ON l.id = f.ledger_id WHERE f.slug = ? AND l.harness_id = ? AND f.created_at_ms > ?`,
+	);
+	const allFeedbackStmt = db.query(`SELECT f.slug, ${FEEDBACK_SELECT} FROM feedback f WHERE f.created_at_ms > ? GROUP BY f.slug`);
+	const feedbackFor = (slug: string, harnessId: string | undefined, cutoff: number): FeedbackRow | null => {
+		if (cfg.filters.feedbackWeight <= 0) return null;
+		return harnessId !== undefined && harnessId !== ""
+			? (feedbackHarnessStmt.get(slug, harnessId, cutoff) as FeedbackRow | null)
+			: (feedbackStmt.get(slug, cutoff) as FeedbackRow | null);
+	};
 	const latencyStmt = db.query(
 		`SELECT ${LATENCY_SELECT} FROM (SELECT * FROM ledger WHERE slug = ? ORDER BY created_at_ms DESC LIMIT ${LATENCY_WINDOW_ROWS})`,
 	);
@@ -447,13 +475,17 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 					? (trustHarnessStmt.get(slug, harnessId, cutoff) as TrustRow | null)
 					: (trustStmt.get(slug, cutoff) as TrustRow | null);
 			if (row === null || row.attempts === 0) return null;
-			return toTrust(slug, row);
+			return toTrust(slug, row, feedbackFor(slug, harnessId, cutoff), cfg.filters.feedbackWeight);
 		},
 
 		allTrust(): ModelTrust[] {
 			const cutoff = cfg.filters.trustWindowDays > 0 ? Date.now() - cfg.filters.trustWindowDays * DAY_MS : 0;
 			const rows = allTrustStmt.all(cutoff) as (TrustRow & { slug: string })[];
-			return rows.map((row) => toTrust(row.slug, row));
+			const fb = new Map<string, FeedbackRow>();
+			if (cfg.filters.feedbackWeight > 0) {
+				for (const r of allFeedbackStmt.all(cutoff) as (FeedbackRow & { slug: string })[]) fb.set(r.slug, r);
+			}
+			return rows.map((row) => toTrust(row.slug, row, fb.get(row.slug) ?? null, cfg.filters.feedbackWeight));
 		},
 
 		latency(slug: string, harnessId?: string): ModelLatency | null {
@@ -476,7 +508,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 					? (latencyHarnessStmt.get(slug, harnessId) as LatencyRow | null)
 					: (latencyStmt.get(slug) as LatencyRow | null);
 				out.set(slug, {
-					trust: trustRow === null || trustRow.attempts === 0 ? null : toTrust(slug, trustRow),
+					trust: trustRow === null || trustRow.attempts === 0 ? null : toTrust(slug, trustRow, feedbackFor(slug, harnessId, cutoff), cfg.filters.feedbackWeight),
 					latency: latencyRow === null ? null : toLatency(slug, latencyRow),
 				});
 			}

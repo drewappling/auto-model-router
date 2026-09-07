@@ -166,6 +166,9 @@ export function scoreHeuristic(f: Features, cfg: RouterConfig): Classification {
 	// the served model must still accept image input — is enforced separately
 	// on `req.hasImages` in candidate selection, exactly as `classifyTask` does.
 	if (f.hasNewImage) add(W_IMAGES, "new image input");
+	if (f.readOnlyToolTail === true && cfg.classifier.readOnlyToolWeight > 0) {
+		add(-cfg.classifier.readOnlyToolWeight, "read-only tool loop (the model is looking, not deciding)");
+	}
 	if (f.toolCount > 0) add(W_TOOLS_OFFERED, `${f.toolCount} tools offered`);
 
 	score = Math.min(1, Math.max(0, score));

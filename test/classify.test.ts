@@ -458,3 +458,16 @@ describe("classifyTask", () => {
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "explain the architecture of the system" }], []))).toBe("documentation");
 	});
 });
+
+describe("classifier.readOnlyToolWeight", () => {
+	test("subtracts only when enabled and the tail is a read-only loop", () => {
+		const base = { ...featuresFor([{ role: "user", content: "look" }]), isToolResultContinuation: true, readOnlyToolTail: true };
+		const off = scoreHeuristic(base, DEFAULT_CONFIG);
+		const cfg = structuredClone(DEFAULT_CONFIG);
+		cfg.classifier.readOnlyToolWeight = 0.1;
+		const on = scoreHeuristic(base, cfg);
+		expect(on.score).toBeCloseTo(Math.max(0, off.score - 0.1), 6);
+		expect(on.reasons.some((r) => r.includes("read-only tool loop"))).toBe(true);
+		expect(scoreHeuristic({ ...base, readOnlyToolTail: false }, cfg).score).toBeCloseTo(off.score, 6);
+	});
+});

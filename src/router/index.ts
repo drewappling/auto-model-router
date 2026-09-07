@@ -38,11 +38,18 @@ export interface RouterDeps {
  */
 const NEUTRAL_TOKENIZER = "gpt";
 
-function resolveProfile(cfg: RouterConfig, requestedModel: string): ProfileConfig {
-	const exact = cfg.profiles.find((p) => p.id === requestedModel);
-	if (exact !== undefined) return exact;
+export function resolveProfile(cfg: RouterConfig, requestedModel: string, isSubagent = false): ProfileConfig {
 	const fallback = cfg.profiles[0];
 	if (fallback === undefined) throw new Error("no router profiles configured");
+	// A subagent asking for the default profile is routed under the subagent
+	// profile when one is configured and exists; an explicit other profile
+	// (auto-max, auto-cheap) is honoured as asked.
+	const exact = cfg.profiles.find((p) => p.id === requestedModel);
+	if (isSubagent && cfg.server.subagentProfile !== "" && (exact === undefined || exact.id === fallback.id)) {
+		const sub = cfg.profiles.find((p) => p.id === cfg.server.subagentProfile);
+		if (sub !== undefined) return sub;
+	}
+	if (exact !== undefined) return exact;
 	return fallback;
 }
 
@@ -96,7 +103,7 @@ export function createRouter(deps: RouterDeps): Router {
 				req,
 				features,
 				classification,
-				profile: resolveProfile(config, req.requestedModel),
+				profile: resolveProfile(config, req.requestedModel, req.isSubagent),
 				state,
 				snapshot,
 				ledger,

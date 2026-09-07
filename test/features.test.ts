@@ -337,3 +337,35 @@ describe("prompt anatomy", () => {
 		expect(a.olderHalfBytes).toBe(0);
 	});
 });
+
+describe("subagent and read-only tool loop signals", () => {
+	test("a tool-result tail behind read-only calls is flagged; a write call clears it", () => {
+		const reads = req([
+			SYSTEM,
+			{ role: "user", content: "find the retry helper" },
+			{ role: "assistant", content: null, tool_calls: [
+				{ id: "a", type: "function", function: { name: "grep", arguments: "{\"pattern\":\"retry\"}" } },
+				{ id: "b", type: "function", function: { name: "read", arguments: "{\"path\":\"x.ts\"}" } },
+			] },
+			{ role: "tool", tool_call_id: "a", content: "x.ts:12" },
+			{ role: "tool", tool_call_id: "b", content: "export function retry() {}" },
+		]);
+		expect(extractFeatures(reads, 1000).readOnlyToolTail).toBe(true);
+		const write = req([
+			SYSTEM,
+			{ role: "user", content: "fix it" },
+			toolCall("c", "edit", "{\"path\":\"x.ts\"}"),
+			{ role: "tool", tool_call_id: "c", content: "ok" },
+		]);
+		expect(extractFeatures(write, 1000).readOnlyToolTail).toBe(false);
+		// A fresh user turn is never a read-only tail, whatever came before.
+		expect(extractFeatures(req([SYSTEM, { role: "user", content: "now what?" }]), 100).readOnlyToolTail).toBe(false);
+	});
+
+	test("the subagent marker rides on the request", () => {
+		const r = parseChatRequest({ model: "auto", messages: [SYSTEM, { role: "user", content: "hi" }], tools: TOOLS }, new Headers({ "x-omp-subagent": "1" }));
+		expect(r.isSubagent).toBe(true);
+		expect(extractFeatures(r, 100).isSubagent).toBe(true);
+		expect(req([SYSTEM, { role: "user", content: "hi" }]).isSubagent).toBe(false);
+	});
+});

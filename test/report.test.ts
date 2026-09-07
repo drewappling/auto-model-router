@@ -197,6 +197,18 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
+	test("subagent turns are counted with their spend", () => {
+		const { db, ledger } = seeded();
+		ledger.record(entry({ reportedUsd: 0.01, features: { isSubagent: true } }));
+		ledger.record(entry({ reportedUsd: 0.03, features: { isSubagent: false } }));
+		ledger.record(entry({ reportedUsd: 0.06 }));
+		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		expect(r.totals.subagentDispatches).toBe(1);
+		expect(r.totals.subagentSpendUsd).toBeCloseTo(0.01, 6);
+		expect(renderUsageReport(r)).toContain("subagents: 1 dispatches, $0.0100 (10% of spend)");
+		db.close();
+	});
+
 	test("empty ledger yields zeroed totals and null speeds", () => {
 		const { db } = seeded();
 		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
@@ -213,6 +225,8 @@ describe("buildUsageReport", () => {
 			aborted: 0,
 			modelSwitches: 0,
 			cacheEstimated: false,
+			subagentDispatches: 0,
+			subagentSpendUsd: 0,
 		});
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);

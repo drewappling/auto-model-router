@@ -499,7 +499,7 @@ What it shows, for the window:
 
 | Block | Columns |
 | --- | --- |
-| totals | spend, dispatches, conversations, $/dispatch, prompt and completion tokens, cache hit rate, model switches, escalations, failovers, errors (aborted separately) |
+| totals | spend, dispatches, conversations, $/dispatch, prompt and completion tokens, cache hit rate, model switches, escalations, failovers, errors (aborted separately), subagent dispatches and their share of spend |
 | prompt anatomy | mean share of prompt bytes by role (tool results, assistant, user, system), tool schemas beside them, the older half of the conversation, and tool results older than the newest 20 messages — what compaction can reach. Recorded per turn from v0.3.5. |
 | providers | per upstream (`openrouter`, `ollama`): dispatches, spend, share, cache hit, mean TTFT, tokens/s, escalations, errors |
 | models | per served slug (top 12 by spend): the same plus user feedback (`+good/-bad` from `/router good\|bad`) and the tier mix it was routed for |
@@ -592,6 +592,7 @@ what each one does. All values are optional; omit a key to use its default.
 | `host` | `127.0.0.1` | Bind address. `0.0.0.0`/`::` listen on all interfaces (the provider still advertises loopback). |
 | `port` | `0` | Bind port. `0` = let the OS pick a free ephemeral port (the embedded router's default). |
 | `apiKey` | unset | Optional client bearer token. When set, every request must send `Authorization: Bearer <key>`. |
+| `subagentProfile` | `auto-sub` | Profile omp subagents are routed under when they ask for the default one. The embed extension marks sessions without a UI with `X-Omp-Subagent: 1`; delegated work (reads, searches, summaries) never needs the top tier. Empty disables the remap. |
 | `harnessId` | unset | Harness identity sent as `X-Omp-Harness`; scopes per-harness daily budgets and toasts. |
 
 ### `openrouter`
@@ -663,6 +664,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `deny` | `[]` | Glob denylist; matching slugs are excluded. |
 | `includeFree` | `false` | Include free models (rate-limited hard; usually excluded). |
 | `requireToolSupport` | `true` | Only models that support tool calls. |
+| `feedbackWeight` | `0` | How much a `/router good\|bad` verdict weighs in a model's trust rate: a bad verdict counts as this many failures, a good one as this many successes. `0` records verdicts without acting on them. |
 | `minTrust` | `0.7` | Minimum success rate; models below this (after `minTrustSamples`) are demoted. |
 | `minTrustSamples` | `12` | Attempts before trust is enforced. |
 | `trustScopedByHarness` | `false` | `true` = each harness reads only its own trust rows. |
@@ -688,6 +690,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `toolAxis` | `coding` | Quality axis for tool-heavy turns. |
 | `chatAxis` | `intelligence` | Quality axis for chat turns. |
 | `agenticLoopDepth` | `3` | Tool-loop depth at which a turn is treated as agentic. |
+| `readOnlyToolWeight` | `0` | Score subtracted when a tool-result continuation follows an assistant turn that used only read-only tools (read, grep, glob, ls, lsp…). Recorded as `features.readOnlyToolTail` either way; enable after `tools/replay.ts` prices it. |
 | `mechanicalRetryFactor` | `0.2` | Fraction of the failed-tool and circular-call weights kept on a tool-result continuation; `1` disables the damping. |
 
 ### `escalation` — mid-stream retry upward
@@ -767,7 +770,7 @@ Each profile is a complete entry (arrays replace wholesale):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `id` | `auto` / `auto-cheap` / `auto-max` | Model id omp selects. |
+| `id` | `auto` / `auto-cheap` / `auto-max` / `auto-sub` | Model id omp selects. `auto-sub` (trivial..moderate) is what subagents get via `server.subagentProfile`. |
 | `name` | `Auto (auto-model-router)` etc. | Display name. |
 | `minTier` / `maxTier` | `trivial`/`hard`, `trivial`/`simple`, `moderate`/`hard` | Tier envelope. |
 | `contextWindow` | `400000` | Advertised context window (drives omp's compaction). |

@@ -27,6 +27,9 @@ export interface ReportTotals {
 	modelSwitches: number;
 	/** Any row in the window carries an estimated cache count. */
 	cacheEstimated: boolean;
+	/** Turns from omp subagents (`features.isSubagent`), and their spend. */
+	subagentDispatches: number;
+	subagentSpendUsd: number;
 }
 
 export interface ReportRow {
@@ -196,6 +199,8 @@ export function buildUsageReport(
 				COALESCE(SUM(${CT}), 0) AS cached_tokens,
 				COALESCE(SUM(${COMP}), 0) AS completion_tokens,
 				SUM(CASE WHEN ${EST} THEN 1 ELSE 0 END) AS estimated_rows,
+				SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN 1 ELSE 0 END) AS subagent_rows,
+				COALESCE(SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN ${USD} ELSE 0 END), 0) AS subagent_spend,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN instr(reasons, 'failover:') > 0 THEN 1 ELSE 0 END) AS failovers,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
@@ -210,6 +215,8 @@ export function buildUsageReport(
 		cached_tokens: number;
 		completion_tokens: number;
 		estimated_rows: number | null;
+		subagent_rows: number | null;
+		subagent_spend: number;
 		escalations: number | null;
 		failovers: number | null;
 		errors: number | null;
@@ -327,6 +334,8 @@ export function buildUsageReport(
 			aborted: t.aborted ?? 0,
 			modelSwitches: switches,
 			cacheEstimated: (t.estimated_rows ?? 0) > 0,
+			subagentDispatches: t.subagent_rows ?? 0,
+			subagentSpendUsd: t.subagent_spend,
 		},
 		providers,
 		models,
@@ -390,6 +399,9 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 				.map((b) => `${b.slug} ${usd(b.usd)} (router ${b.savedShare >= 0 ? "saved" : "cost extra"} ${pct(Math.abs(b.savedShare))})`)
 				.join(" · ")}`,
 		);
+	}
+	if (t.subagentDispatches > 0) {
+		summary.push(`subagents: ${num(t.subagentDispatches)} dispatches, ${usd(t.subagentSpendUsd)} (${pct(t.spendUsd > 0 ? t.subagentSpendUsd / t.spendUsd : 0)} of spend)`);
 	}
 	const a = r.anatomy;
 	if (a !== null) {

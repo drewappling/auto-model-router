@@ -292,6 +292,9 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	// ⇒ the server falls back to its configured default scope.
 	const agentdoxScope = (headers.get("x-agentdox-scope") ?? "").trim();
 
+	// Subagent marker from the embed extension (sessions without a UI).
+	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
+
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
 	}
@@ -352,6 +355,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		harnessId,
 		ompSessionId,
 		agentdoxScope,
+		isSubagent,
 		requestedModel,
 		messages,
 		tools,

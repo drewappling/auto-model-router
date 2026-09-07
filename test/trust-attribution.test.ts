@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createFeedbackStore } from "../src/cost/feedback.ts";
 
 import { loadConfig } from "../src/config/load.ts";
 import { createLedger, LATENCY_WINDOW_ROWS } from "../src/cost/ledger.ts";
@@ -407,6 +408,58 @@ describe("cache reliability signal", () => {
 		]);
 		expect(ledger.cacheReliability?.("x/m")).toBeNull();
 		expect(ledger.cacheReliability?.("y/m")).toBeNull();
+		db.close();
+	});
+});
+
+describe("feedback in trust", () => {
+	// A user verdict counts as filters.feedbackWeight attempts of that outcome.
+	function trustWith(weight: number, verdicts: Array<"good" | "bad">): { rate: number; good: number; bad: number } {
+		const db = openDb(":memory:");
+		try {
+			const c = structuredClone(cfg);
+			c.filters.feedbackWeight = weight;
+			const ledger = createLedger(db, c);
+			const fb = createFeedbackStore(db);
+			let last = "";
+			for (let i = 0; i < 10; i++) {
+				const e = entry({ error: null });
+				last = e.id;
+				ledger.record(e);
+			}
+			for (const v of verdicts) fb.record({ ledgerId: last, ompSessionId: "s", slug: "vendor/model", tier: "simple", verdict: v, note: "" });
+			const t = ledger.trust("vendor/model")!;
+			return { rate: t.successRate, good: t.feedbackGood ?? -1, bad: t.feedbackBad ?? -1 };
+		} finally {
+			db.close();
+		}
+	}
+
+	test("weight 0 records verdicts without moving the rate", () => {
+		const base = trustWith(0, []);
+		expect(base.rate).toBeCloseTo(11 / 12, 6); // (10 - 0 + 1) / (10 + 2)
+		expect(trustWith(0, ["bad", "bad"]).rate).toBeCloseTo(base.rate, 6);
+	});
+
+	test("a bad verdict counts as `weight` failures, a good one as `weight` successes", () => {
+		// 10 clean attempts + one bad verdict at weight 3: attempts 13, failures 3.
+		const bad = trustWith(3, ["bad"]);
+		expect(bad.rate).toBeCloseTo((13 - 3 + 1) / (13 + 2), 6);
+		expect(bad.bad).toBe(1);
+		const good = trustWith(3, ["good"]);
+		expect(good.rate).toBeCloseTo((13 - 0 + 1) / (13 + 2), 6);
+		expect(good.good).toBe(1);
+		// allTrust and signals agree with trust().
+		const db = openDb(":memory:");
+		const c = structuredClone(cfg);
+		c.filters.feedbackWeight = 3;
+		const ledger = createLedger(db, c);
+		const fb = createFeedbackStore(db);
+		const e = entry({ error: null });
+		ledger.record(e);
+		fb.record({ ledgerId: e.id, ompSessionId: "s", slug: "vendor/model", tier: "simple", verdict: "bad", note: "" });
+		expect(ledger.allTrust()[0]?.successRate).toBeCloseTo(ledger.trust("vendor/model")!.successRate, 9);
+		expect(ledger.signals?.(["vendor/model"]).get("vendor/model")?.trust?.successRate).toBeCloseTo(ledger.trust("vendor/model")!.successRate, 9);
 		db.close();
 	});
 });

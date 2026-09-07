@@ -20,6 +20,7 @@ const server = z.strictObject({
 	port: z.number().int().min(0).max(65_535).optional(),
 	apiKey: z.string().optional(),
 	harnessId: z.string().optional(),
+	subagentProfile: z.string().optional(),
 	maxConcurrentTurns: z.number().int().positive().max(1_000).optional(),
 });
 
@@ -88,6 +89,7 @@ const filters = z.strictObject({
 	includeFree: z.boolean().optional(),
 	requireToolSupport: z.boolean().optional(),
 	minTrust: z.number().min(0).max(1).optional(),
+	feedbackWeight: z.number().nonnegative().optional(),
 	minTrustSamples: z.number().int().nonnegative().optional(),
 	trustScopedByHarness: z.boolean().optional(),
 	trustWindowDays: z.number().nonnegative().optional(),
@@ -114,6 +116,7 @@ const classifier = z.strictObject({
 	chatAxis: qualityAxis.optional(),
 	agenticLoopDepth: z.number().int().nonnegative().optional(),
 	mechanicalRetryFactor: z.number().min(0).max(1).optional(),
+	readOnlyToolWeight: z.number().nonnegative().optional(),
 	reasoningWeights: z
 		.strictObject({
 			medium: z.number().nonnegative().optional(),

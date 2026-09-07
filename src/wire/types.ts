@@ -82,6 +82,8 @@ export interface NormRequest {
 	 * and if that is empty too the bridge stays inert for this request.
 	 */
 	agentdoxScope: string;
+	/** `X-Omp-Subagent: 1`: the caller is an omp subagent (a session without a UI). */
+	isSubagent: boolean;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	messages: NormMessage[];

@@ -29,7 +29,7 @@ import type {
 
 function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
-		server: { host: "127.0.0.1", port: 8787, maxConcurrentTurns: 24 },
+		server: { host: "127.0.0.1", port: 8787, maxConcurrentTurns: 24, subagentProfile: "auto-sub" },
 		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000, catalogRefreshMs: 0 },
 		ollama: { enabled: false, baseUrl: "http://127.0.0.1:11434/v1", apiKey: "", timeoutMs: 30_000, catalogTtlMs: 300_000, includeLocal: false, prices: {}, twins: {}, costBias: 1, biasUntilUsage: 0.9, usagePollMs: 0, quotaCooldownMs: 0, rateLimitCooldownMs: 0, planCreditsUsd: 0 },
 		benchmarks: { enabled: false, artificialAnalysisApiKey: "", benchlm: true, refreshMs: 86_400_000, timeoutMs: 30_000, useLocalScores: false },
@@ -46,7 +46,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, feedbackWeight: 0, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator", learnedModelPath: "",
@@ -57,7 +57,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			toolAxis: "coding",
 			chatAxis: "intelligence",
 			agenticLoopDepth: 3,
-			mechanicalRetryFactor: 0.2,
+			mechanicalRetryFactor: 0.2, readOnlyToolWeight: 0,
 			reasoningWeights: { medium: 0.14, high: 0.24, xhigh: 0.3, max: 0.34 },
 		},
 		escalation: {
@@ -92,6 +92,7 @@ function mkReq(): NormRequest {
 		harnessId: "",
 		ompSessionId: "",
 		agentdoxScope: "",
+		isSubagent: false,
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],
 		tools: [],

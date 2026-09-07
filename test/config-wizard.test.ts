@@ -280,6 +280,7 @@ describe("runWizard", () => {
 			"", // keep apiKey
 			"", // keep harnessId
 			"", // keep maxConcurrentTurns
+			"", // keep subagentProfile
 			"s",
 		]);
 		expect(partial).toEqual({ server: { port: 9000 } });
@@ -358,7 +359,7 @@ describe("runWizard: profiles", () => {
 		const profiles = (partial ?? {})["profiles"];
 		expect(Array.isArray(profiles)).toBe(true);
 		if (!Array.isArray(profiles)) return;
-		expect(profiles).toHaveLength(3);
+		expect(profiles).toHaveLength(4);
 		expect(profiles[0]).toMatchObject({ id: "auto", contextWindow: 500000 });
 		expect(profiles[1]).toMatchObject({ id: "auto-cheap", contextWindow: 400000 });
 	});
@@ -379,8 +380,8 @@ describe("runWizard: profiles", () => {
 		const profiles = (partial ?? {})["profiles"];
 		expect(Array.isArray(profiles)).toBe(true);
 		if (!Array.isArray(profiles)) return;
-		expect(profiles).toHaveLength(4);
-		expect(profiles[3]).toEqual({
+		expect(profiles).toHaveLength(5);
+		expect(profiles[4]).toEqual({
 			id: "auto-fast",
 			name: "Auto Fast",
 			minTier: "trivial",
@@ -400,11 +401,11 @@ describe("runWizard: profiles", () => {
 		const profiles = (partial ?? {})["profiles"];
 		expect(Array.isArray(profiles)).toBe(true);
 		if (!Array.isArray(profiles)) return;
-		expect(profiles.map((p) => (p as Record<string, unknown>)["id"])).toEqual(["auto", "auto-max"]);
+		expect(profiles.map((p) => (p as Record<string, unknown>)["id"])).toEqual(["auto", "auto-max", "auto-sub"]);
 	});
 
 	test("refuses to delete the last remaining profile", async () => {
-		const { out } = await drive(["p", "x3", "x2", "x1", "b", "q"]);
+		const { out } = await drive(["p", "x4", "x3", "x2", "x1", "b", "q"]);
 		expect(out).toContain("cannot delete the last profile");
 	});
 

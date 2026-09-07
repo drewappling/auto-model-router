@@ -89,7 +89,7 @@ function trackProcessExit(): void {
  * Registers the auto-model-router provider (and its virtual models) into omp's model
  * registry at a specific bound port.
  */
-function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig, sessionId: string): void {
+function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig, sessionId: string, subagent: boolean): void {
 	// cwd is omp's workspace, which is what the agentdox scope is derived from
 	// when none is configured explicitly.
 	const providerConfig = buildProviderConfig(port, cfg, process.cwd());
@@ -100,6 +100,9 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 	// Per-session scoping: lets the toast surface only this session's decisions
 	// even when several omp sessions share one embedded router's ledger.
 	if (sessionId !== "") headers["X-Omp-Session"] = sessionId;
+	// A session without a UI is a subagent (or a headless run): the router
+	// routes its turns under server.subagentProfile.
+	if (subagent) headers["X-Omp-Subagent"] = "1";
 	// Which agentdox project's shared context this workspace's turns draw on.
 	if (providerConfig.agentdoxScope !== undefined && providerConfig.agentdoxScope !== "") {
 		headers["X-Agentdox-Scope"] = providerConfig.agentdoxScope;
@@ -171,7 +174,7 @@ export default function (pi: ExtensionAPI): void {
 		// second bind would take a different port and orphan every model handle
 		// omp already resolved against the first one.
 		if (app !== null && boundPort !== null) {
-			registerRouterProvider(pi, boundPort, cfg, sessionId);
+			registerRouterProvider(pi, boundPort, cfg, sessionId, !ctx.hasUI);
 			return;
 		}
 
@@ -181,7 +184,7 @@ export default function (pi: ExtensionAPI): void {
 			// The main writes the port file before spawning subagents.
 			const shared = readEmbedPort(portFile);
 			if (shared !== null && (await probeEmbed(shared))) {
-				registerRouterProvider(pi, shared, cfg, sessionId);
+				registerRouterProvider(pi, shared, cfg, sessionId, !ctx.hasUI);
 				return;
 			}
 			// No live interactive session (headless batch runs, CI, the
@@ -193,7 +196,7 @@ export default function (pi: ExtensionAPI): void {
 			if (started.server.port === undefined) return;
 			app = started;
 			boundPort = started.server.port;
-			registerRouterProvider(pi, boundPort, cfg, sessionId);
+			registerRouterProvider(pi, boundPort, cfg, sessionId, !ctx.hasUI);
 			return;
 		}
 
@@ -207,7 +210,7 @@ export default function (pi: ExtensionAPI): void {
 		// default — never take this path, so sessions stay independent.
 		if (requestedPort !== 0 && (await probeEmbed(requestedPort))) {
 			writeEmbedPort(portFile, requestedPort);
-			registerRouterProvider(pi, requestedPort, cfg, sessionId);
+			registerRouterProvider(pi, requestedPort, cfg, sessionId, !ctx.hasUI);
 			pi.setLabel(`auto-model-router embed (shared :${requestedPort})`);
 			return;
 		}
@@ -266,7 +269,7 @@ export default function (pi: ExtensionAPI): void {
 
 		// Register BEFORE any await: everything omp resolves after this point
 		// picks up the live URL, so the registration must not sit behind I/O.
-		registerRouterProvider(pi, actualPort, cfg, sessionId);
+		registerRouterProvider(pi, actualPort, cfg, sessionId, !ctx.hasUI);
 		pi.setLabel(`auto-model-router embed :${actualPort}`);
 
 		// NO `session_shutdown` teardown. That event is emitted from session

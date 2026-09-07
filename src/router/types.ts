@@ -97,6 +97,14 @@ export interface Features {
 	 * recorded before it existed.
 	 */
 	anatomy?: PromptAnatomy;
+	/** The request came from an omp subagent (`X-Omp-Subagent`). */
+	isSubagent?: boolean;
+	/**
+	 * This is a tool-result continuation and the newest assistant turn issued
+	 * only read-only tools (read, grep, glob, ls, lsp…): the model is looking,
+	 * not deciding. Recorded for replay; scored at classifier.readOnlyToolWeight.
+	 */
+	readOnlyToolTail?: boolean;
 }
 
 /** Prompt bytes by message role and by age, plus the tool-schema bytes beside them. */

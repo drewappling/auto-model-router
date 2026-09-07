@@ -177,8 +177,11 @@ export interface ModelTrust {
 	escalations: number;
 	/** Attempts that ended in an upstream error. */
 	errors: number;
-	/** Laplace-smoothed success rate, 0-1. */
+	/** Laplace-smoothed success rate, 0-1; user verdicts weigh in at filters.feedbackWeight. */
 	successRate: number;
+	/** User verdicts in the window (/router good|bad). */
+	feedbackGood?: number;
+	feedbackBad?: number;
 	/** Mean absolute relative prediction error, for forecast calibration. */
 	meanCostError: number;
 }

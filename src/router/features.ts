@@ -242,6 +242,19 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		else anatomy.toolBytes += m.textBytes;
 	}
 
+	// Read-only tool loop: the assistant call behind a tool-result tail used
+	// only tools that look at things. Tool names are the harness's own; the
+	// set covers omp's built-ins and their common aliases.
+	let readOnlyToolTail = false;
+	if (isToolResultContinuation) {
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const m = messages[i];
+			if (m === undefined || m.role !== "assistant") continue;
+			if (m.toolCalls.length > 0) readOnlyToolTail = m.toolCalls.every((tc) => READ_ONLY_TOOLS.has(tc.name.toLowerCase()));
+			break;
+		}
+	}
+
 	return {
 		promptTokens,
 		newContentTokens,
@@ -265,5 +278,31 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		questionCount,
 		isTerseInstruction,
 		anatomy,
+		isSubagent: req.isSubagent,
+		readOnlyToolTail,
 	};
 }
+
+/** Tools that read state without changing it, in omp, Claude Code and Hermes naming. */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+	"read",
+	"read_file",
+	"grep",
+	"glob",
+	"ls",
+	"list",
+	"list_dir",
+	"find",
+	"lsp",
+	"ast_grep",
+	"search",
+	"web_search",
+	"web_fetch",
+	"webfetch",
+	"websearch",
+	"fetch",
+	"cat",
+	"view",
+	"inspect_image",
+	"todo",
+]);

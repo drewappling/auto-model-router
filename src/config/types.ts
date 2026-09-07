@@ -39,6 +39,14 @@ export interface ServerConfig {
 	 */
 	harnessId?: string;
 	/**
+	 * Profile that requests from omp subagents (`X-Omp-Subagent: 1`, set by
+	 * the embed extension for sessions without a UI) are routed under when they
+	 * ask for the default profile. Subagents do delegated, bounded work — file
+	 * reads, searches, summaries — that rarely needs the top tier. Empty
+	 * disables the remap; a name with no matching profile is ignored.
+	 */
+	subagentProfile: string;
+	/**
 	 * Concurrent in-flight turns this router process will accept; excess gets a
 	 * 429 rather than being queued, so a local flood cannot pile up unbounded
 	 * upstream spend. The budget is per PROCESS, and one process now serves
@@ -215,6 +223,15 @@ export interface FilterConfig {
 	requireToolSupport: boolean;
 	/** Drop models whose ledger success rate is below this, once `minTrustSamples` is met. */
 	minTrust: number;
+	/**
+	 * How much a user verdict (/router good|bad) weighs in a model's trust
+	 * rate: each bad verdict counts as this many failures and each good one as
+	 * this many successes, beside escalations and errors. 0 (default) records
+	 * verdicts without acting on them. A person judging an answer wrong is a
+	 * stronger signal than a probe rejection, so values of 2-5 are sensible
+	 * once a week of verdicts is in the report.
+	 */
+	feedbackWeight: number;
 	/** Attempts required before `minTrust` is enforced against a model. */
 	minTrustSamples: number;
 	/**
@@ -347,6 +364,13 @@ export interface ClassifierConfig {
 	 * loops buy the hard tier. 1 preserves the shipped behaviour.
 	 */
 	mechanicalRetryFactor: number;
+	/**
+	 * Score subtracted when the newest assistant turn issued only read-only
+	 * tools (read, grep, glob, ls, lsp…) and this is the tool-result
+	 * continuation: the model is looking, not deciding. 0 (default) records
+	 * the feature without acting on it — enable after a replay prices it.
+	 */
+	readOnlyToolWeight: number;
 	/**
 	 * Score added when the CLIENT asks for a reasoning effort, per level. The
 	 * premise is that asking for reasoning states expected difficulty directly.

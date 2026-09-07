@@ -15,6 +15,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// is deterministic, so peers reuse it), so this covers N sessions plus
 		// their subagents. Was effectively 8 per session when each bound its own.
 		maxConcurrentTurns: 24,
+		// omp subagents (no UI) route under this profile: delegated work, capped at moderate.
+		subagentProfile: "auto-sub",
 	},
 	openrouter: {
 		baseUrl: "https://openrouter.ai/api/v1",
@@ -99,6 +101,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		includeFree: false,
 		requireToolSupport: true,
 		minTrust: 0.7,
+		// Verdicts are recorded and reported first; weigh them once there are some.
+		feedbackWeight: 0,
 		minTrustSamples: 12,
 		// Shared trust by default: more samples, demotion guard stays effective
 		// even with a tiny guardrail-narrowed catalog.
@@ -142,6 +146,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// A mechanical retry (failed tool call + tool-result continuation) keeps
 		// only a fifth of the +0.26; a user-visible failure keeps the full weight.
 		mechanicalRetryFactor: 0.2,
+		// Recorded, not acted on, until replay prices it. See ClassifierConfig.readOnlyToolWeight.
+		readOnlyToolWeight: 0,
 		// Shipped reasoning values, unchanged. See ClassifierConfig.reasoningWeights:
 		// a harness that pins the level for a whole session turns these into a
 		// constant tier offset, in which case `medium` belongs near 0.
@@ -298,6 +304,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		{ id: "auto", name: "Auto (auto-model-router)", minTier: "trivial", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
 		{ id: "auto-cheap", name: "Auto Cheap (auto-model-router)", minTier: "trivial", maxTier: "simple", contextWindow: 400_000, maxTokens: 32_000 },
 		{ id: "auto-max", name: "Auto Max (auto-model-router)", minTier: "moderate", maxTier: "hard", contextWindow: 400_000, maxTokens: 32_000 },
+		// Subagent envelope (server.subagentProfile): never the top tier for delegated work.
+		{ id: "auto-sub", name: "Auto Subagent (auto-model-router)", minTier: "trivial", maxTier: "moderate", contextWindow: 400_000, maxTokens: 32_000 },
 	],
 	ledger: {
 		// Resolved by loadConfig: empty ⇒ `$AUTO_MODEL_ROUTER_HOME/router.db`.

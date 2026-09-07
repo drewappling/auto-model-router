@@ -6,6 +6,7 @@ import { createFeedbackStore } from "../src/cost/feedback.ts";
 import { createLedger } from "../src/cost/ledger.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { startServer, type StartedServer } from "../src/server/http.ts";
+import { resolveProfile } from "../src/router/index.ts";
 import { ollamaRunway } from "../src/server/http.ts";
 import { createSessionOverrides, OVERRIDE_TTL_MS } from "../src/server/overrides.ts";
 import { openDb } from "../src/util/sqlite.ts";
@@ -121,7 +122,7 @@ describe("override and feedback endpoints", () => {
 	beforeAll(() => {
 		const cfg: RouterConfig = {
 			...structuredClone(DEFAULT_CONFIG),
-			server: { host: "127.0.0.1", port: 0, maxConcurrentTurns: 24 },
+			server: { host: "127.0.0.1", port: 0, maxConcurrentTurns: 24, subagentProfile: "auto-sub" },
 			ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" },
 			logLevel: "silent",
 		};
@@ -219,5 +220,19 @@ describe("ollamaRunway", () => {
 		expect(r.days).toBeCloseTo(53.7 / 1.25, 6);
 		expect(ollamaRunway({ usedUsd: 6.3, creditsUsd: 60 }, 0, 1)!.days).toBeNull();
 		expect(ollamaRunway(null, 7, 1)).toBeNull();
+	});
+});
+
+describe("subagent profile", () => {
+	test("a subagent asking for the default profile is routed under server.subagentProfile; explicit profiles are honoured", () => {
+		const cfg = structuredClone(DEFAULT_CONFIG);
+		expect(resolveProfile(cfg, "auto", true).id).toBe("auto-sub");
+		expect(resolveProfile(cfg, "auto", false).id).toBe("auto");
+		expect(resolveProfile(cfg, "auto-max", true).id).toBe("auto-max");
+		expect(resolveProfile(cfg, "unknown", true).id).toBe("auto-sub"); // unknown ids fall back to the default, which a subagent remaps
+		cfg.server.subagentProfile = "";
+		expect(resolveProfile(cfg, "auto", true).id).toBe("auto");
+		cfg.server.subagentProfile = "nope";
+		expect(resolveProfile(cfg, "auto", true).id).toBe("auto");
 	});
 });
