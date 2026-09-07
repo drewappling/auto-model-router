@@ -24,6 +24,8 @@ export interface ReportTotals {
 	aborted: number;
 	/** Turns that switched model mid-conversation. */
 	modelSwitches: number;
+	/** Any row in the window carries an estimated cache count. */
+	cacheEstimated: boolean;
 }
 
 export interface ReportRow {
@@ -33,6 +35,8 @@ export interface ReportRow {
 	/** Share of window spend, 0-1. */
 	share: number;
 	cacheHitRate: number;
+	/** Some rows carry router-estimated cache counts (Ollama); the rate is then an estimate. */
+	cacheEstimated: boolean;
 	avgPromptTokens: number;
 	/** Mean time to first token, ms, over streamed non-error rows; null without samples. */
 	avgTtftMs: number | null;
@@ -75,12 +79,14 @@ const CT = "json_extract(usage, '$.cachedTokens')";
 const COMP = "json_extract(usage, '$.completionTokens')";
 const PROVIDER = "CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ELSE 'openrouter' END";
 const STREAMED = "ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL";
+const EST = "json_extract(usage, '$.cachedEstimated') = 1";
 
 const ROW_SELECT = `
 	COUNT(*) AS dispatches,
 	COALESCE(SUM(${USD}), 0) AS spend,
 	COALESCE(SUM(${PT}), 0) AS prompt_tokens,
 	COALESCE(SUM(${CT}), 0) AS cached_tokens,
+	SUM(CASE WHEN ${EST} THEN 1 ELSE 0 END) AS estimated_rows,
 	COALESCE(AVG(${PT}), 0) AS avg_prompt_tokens,
 	AVG(CASE WHEN ${STREAMED} THEN ttft_ms END) AS ttft_ms,
 	SUM(CASE WHEN ${STREAMED} AND latency_ms > ttft_ms AND ${COMP} > 0 THEN ${COMP} END) AS ctok_sum,
@@ -94,6 +100,7 @@ interface RawRow {
 	spend: number;
 	prompt_tokens: number;
 	cached_tokens: number;
+	estimated_rows: number | null;
 	avg_prompt_tokens: number;
 	ttft_ms: number | null;
 	ctok_sum: number | null;
@@ -109,6 +116,7 @@ function toRow(r: RawRow, windowSpend: number): ReportRow {
 		spendUsd: r.spend,
 		share: windowSpend > 0 ? r.spend / windowSpend : 0,
 		cacheHitRate: r.prompt_tokens > 0 ? r.cached_tokens / r.prompt_tokens : 0,
+		cacheEstimated: (r.estimated_rows ?? 0) > 0,
 		avgPromptTokens: Math.round(r.avg_prompt_tokens),
 		avgTtftMs: r.ttft_ms === null ? null : Math.round(r.ttft_ms),
 		tokensPerSec: r.elapsed_ms !== null && r.elapsed_ms > 0 && r.ctok_sum !== null ? (r.ctok_sum * 1000) / r.elapsed_ms : null,
@@ -137,6 +145,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 				COALESCE(SUM(${PT}), 0) AS prompt_tokens,
 				COALESCE(SUM(${CT}), 0) AS cached_tokens,
 				COALESCE(SUM(${COMP}), 0) AS completion_tokens,
+				SUM(CASE WHEN ${EST} THEN 1 ELSE 0 END) AS estimated_rows,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN instr(reasons, 'failover:') > 0 THEN 1 ELSE 0 END) AS failovers,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
@@ -150,6 +159,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		prompt_tokens: number;
 		cached_tokens: number;
 		completion_tokens: number;
+		estimated_rows: number | null;
 		escalations: number | null;
 		failovers: number | null;
 		errors: number | null;
@@ -228,6 +238,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 			errors: t.errors ?? 0,
 			aborted: t.aborted ?? 0,
 			modelSwitches: switches,
+			cacheEstimated: (t.estimated_rows ?? 0) > 0,
 		},
 		providers,
 		models,
@@ -241,7 +252,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 // ---------------------------------------------------------------------------
 
 const usd = (v: number): string => (v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(4)}`);
-const pct = (v: number): string => `${(v * 100).toFixed(0)}%`;
+const pct = (v: number, estimated = false): string => `${estimated ? "~" : ""}${(v * 100).toFixed(0)}%`;
 const num = (v: number): string => v.toLocaleString("en-US");
 const ms = (v: number | null): string => (v === null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`);
 const tps = (v: number | null): string => (v === null ? "–" : `${v.toFixed(0)} tok/s`);
@@ -281,7 +292,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 	const heading = `last ${r.windowDays}d${r.harnessId === "" ? "" : ` · harness ${r.harnessId}`} · ${new Date(r.generatedAtMs).toISOString().slice(0, 16).replace("T", " ")}Z`;
 	const summary = [
 		`spend ${usd(t.spendUsd)} over ${num(t.dispatches)} dispatches in ${num(t.conversations)} conversations · ${usd(t.dispatches > 0 ? t.spendUsd / t.dispatches : 0)}/dispatch`,
-		`prompt ${num(t.promptTokens)} tok (cache hit ${pct(t.cacheHitRate)}) · completion ${num(t.completionTokens)} tok · switches ${num(t.modelSwitches)} · escalations ${num(t.escalations)} · failovers ${num(t.failovers)} · errors ${num(t.errors)} (${num(t.aborted)} aborted)`,
+		`prompt ${num(t.promptTokens)} tok (cache hit ${pct(t.cacheHitRate, t.cacheEstimated)}) · completion ${num(t.completionTokens)} tok · switches ${num(t.modelSwitches)} · escalations ${num(t.escalations)} · failovers ${num(t.failovers)} · errors ${num(t.errors)} (${num(t.aborted)} aborted)`,
 	];
 	const tables: ReportTable[] = [];
 	if (r.providers.length > 0) {
@@ -289,7 +300,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 			id: "providers",
 			title: "providers",
 			headers: ["provider", "dispatches", "spend", "share", "cache", "ttft", "speed", "esc", "err"],
-			rows: r.providers.map((p) => [p.key, num(p.dispatches), usd(p.spendUsd), pct(p.share), pct(p.cacheHitRate), ms(p.avgTtftMs), tps(p.tokensPerSec), num(p.escalations), num(p.errors)]),
+			rows: r.providers.map((p) => [p.key, num(p.dispatches), usd(p.spendUsd), pct(p.share), pct(p.cacheHitRate, p.cacheEstimated), ms(p.avgTtftMs), tps(p.tokensPerSec), num(p.escalations), num(p.errors)]),
 		});
 	}
 	if (r.models.length > 0) {
@@ -302,7 +313,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 				num(m.dispatches),
 				usd(m.spendUsd),
 				pct(m.share),
-				pct(m.cacheHitRate),
+				pct(m.cacheHitRate, m.cacheEstimated),
 				ms(m.avgTtftMs),
 				tps(m.tokensPerSec),
 				Object.entries(m.tiers)
@@ -317,7 +328,7 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 			id: "tiers",
 			title: "tiers",
 			headers: ["tier", "dispatches", "spend", "share", "cache", "avg prompt", "esc"],
-			rows: r.tiers.map((x) => [x.key, num(x.dispatches), usd(x.spendUsd), pct(x.share), pct(x.cacheHitRate), num(x.avgPromptTokens), num(x.escalations)]),
+			rows: r.tiers.map((x) => [x.key, num(x.dispatches), usd(x.spendUsd), pct(x.share), pct(x.cacheHitRate, x.cacheEstimated), num(x.avgPromptTokens), num(x.escalations)]),
 		});
 	}
 	if (r.days.length > 1) {

@@ -31,7 +31,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 	return {
 		server: { host: "127.0.0.1", port: 8787, maxConcurrentTurns: 24 },
 		openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", title: "test", timeoutMs: 30_000, catalogTtlMs: 3_600_000, catalogRefreshMs: 0 },
-		ollama: { enabled: false, baseUrl: "http://127.0.0.1:11434/v1", apiKey: "", timeoutMs: 30_000, catalogTtlMs: 300_000, includeLocal: false, prices: {}, twins: {}, costBias: 1, biasUntilUsage: 0.9, usagePollMs: 0, quotaCooldownMs: 0, rateLimitCooldownMs: 0 },
+		ollama: { enabled: false, baseUrl: "http://127.0.0.1:11434/v1", apiKey: "", timeoutMs: 30_000, catalogTtlMs: 300_000, includeLocal: false, prices: {}, twins: {}, costBias: 1, biasUntilUsage: 0.9, usagePollMs: 0, quotaCooldownMs: 0, rateLimitCooldownMs: 0, planCreditsUsd: 0 },
 		benchmarks: { enabled: false, artificialAnalysisApiKey: "", benchlm: true, refreshMs: 86_400_000, timeoutMs: 30_000, useLocalScores: false },
 		tiers: {
 			trivial: { minQuality: 0, maxInputPerMtok: 0.3, qualityExponent: 0, pin: [] },
@@ -844,6 +844,55 @@ describe("latency measurement covers the work the router actually does", () => {
 		expect(entries[0]!.reportedUsd).toBeCloseTo(0.65, 6);
 		expect(entries[0]!.priceModel?.slug).toBe("ollama/glm-5.3-flash");
 		expect(finishes[0]!.reportedUsd).toBeCloseTo(0.65, 6);
+	});
+
+	test("an Ollama-served turn after another on the same model prices the previous prompt as cached", async () => {
+		// ollama.com caches prefixes and bills them at the cached rate without
+		// reporting a count; the router estimates it with its warm-cache rule.
+		const ollamaModel: CatalogModel = {
+			slug: "ollama/glm-5.3-flash",
+			provider: "ollama",
+			canonicalSlug: "ollama/glm-5.3-flash",
+			name: "glm",
+			contextLength: 1_000_000,
+			supportsTools: true,
+			supportsReasoning: true,
+			reasoningMandatory: false,
+			supportsToolChoice: false,
+			inputModalities: ["text"],
+			price: { prompt: 0.15 / 1e6, cacheRead: 0.03 / 1e6, completion: 0.5 / 1e6 },
+			priceTiers: [],
+			quality: {},
+			tokenizer: "Other",
+			isFree: false,
+			createdAtMs: 0,
+			author: "ollama",
+		};
+		const priced = { ...catalog, find: (slug: string) => (slug === ollamaModel.slug ? ollamaModel : undefined) };
+		const turn = (prompt: number) => ({
+			kind: "chunks" as const,
+			chunks: [startChunk(ollamaModel.slug), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: prompt, completionTokens: 0 }, null)],
+		});
+		const { router } = mkRouter([mkDecision("simple", ollamaModel.slug)]);
+		const { upstream } = mkUpstream([turn(100_000), turn(120_000)]);
+		const { ledger, entries } = mkLedger();
+		const { store, map } = mkConversations();
+		const deps = { config: mkConfig(), router, upstream, ledger, conversations: store, catalog: priced, context: createDisabledBridge() };
+
+		await runTurn(mkReq(), mkSink().sink, deps, new AbortController().signal);
+		// First turn: nothing to be cached yet, full input rate.
+		expect(entries[0]!.usage.cachedTokens).toBe(0);
+		expect(entries[0]!.usage.cachedEstimated).toBeUndefined();
+		expect(entries[0]!.reportedUsd).toBeCloseTo(0.015, 6);
+
+		await runTurn(mkReq(), mkSink().sink, deps, new AbortController().signal);
+		// Second turn on the same model: the 100k previous prompt is the cached
+		// prefix at $0.03/M, the 20k of growth is fresh at $0.15/M.
+		expect(entries[1]!.usage.cachedTokens).toBe(100_000);
+		expect(entries[1]!.usage.cachedEstimated).toBe(true);
+		expect(entries[1]!.reportedUsd).toBeCloseTo(0.003 + 0.003, 6);
+		// The estimate is evidence enough to keep the Ollama model warm for the stay/switch comparison.
+		expect(map.get("conv-test")!.cacheWarmSlug).toBe(ollamaModel.slug);
 	});
 
 });

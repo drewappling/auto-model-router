@@ -171,6 +171,7 @@ describe("buildUsageReport", () => {
 			errors: 0,
 			aborted: 0,
 			modelSwitches: 0,
+			cacheEstimated: false,
 		});
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);
@@ -189,6 +190,21 @@ describe("buildUsageReport", () => {
 });
 
 describe("renderUsageReport", () => {
+	test("router-estimated cache counts render as an estimate", async () => {
+		const { db, ledger } = seeded();
+		ledger.record(entry({ slug: "ollama/glm", servedSlug: "ollama/glm", usage: { promptTokens: 1000, cachedTokens: 900, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0, cachedEstimated: true } }));
+		ledger.record(entry({ usage: { promptTokens: 1000, cachedTokens: 500, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0 } }));
+		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		expect(r.totals.cacheEstimated).toBe(true);
+		expect(r.providers.find((p) => p.key === "ollama")!.cacheEstimated).toBe(true);
+		expect(r.providers.find((p) => p.key === "openrouter")!.cacheEstimated).toBe(false);
+		const text = renderUsageReport(r);
+		expect(text).toContain("(cache hit ~70%)");
+		expect(text).toMatch(/ollama\s+1\s+\S+\s+\S+\s+~90%/);
+		expect(text).toMatch(/openrouter\s+1\s+\S+\s+\S+\s+50%/);
+		db.close();
+	});
+
 	test("renders every section as plain fixed-width text", () => {
 		const { db, ledger } = seeded();
 		ledger.record(entry({ reportedUsd: 1.25, createdAtMs: NOW - HOUR }));

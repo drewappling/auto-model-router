@@ -53,6 +53,7 @@ const ollama = z.strictObject({
 	usagePollMs: z.number().nonnegative().optional(),
 	quotaCooldownMs: z.number().nonnegative().optional(),
 	rateLimitCooldownMs: z.number().nonnegative().optional(),
+	planCreditsUsd: z.number().nonnegative().optional(),
 });
 
 const benchmarks = z.strictObject({

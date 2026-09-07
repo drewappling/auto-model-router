@@ -508,8 +508,10 @@ What it shows, for the window:
 Spend follows the ledger's rule — the provider's reported cost when it gave
 one, else the usage-priced figure the router computed, else the forecast.
 Speed uses only clean streamed rows (TTFT recorded, no error); tokens/s is
-completion tokens over time after first token. Ollama Cloud does not report
-cached tokens, so its cache column reads 0% by construction.
+completion tokens over time after first token. Ollama Cloud caches prompt
+prefixes and bills them at its cached rate but reports no count, so the
+router estimates it (see [Ollama Cloud](#ollama-cloud)); cache rates that
+include such rows are shown with a `~`.
 
 ## Configuring the router
 
@@ -621,6 +623,7 @@ an OpenRouter sibling). See [Ollama Cloud](#ollama-cloud) below.
 | `usagePollMs` | `600000` (10 min) | How often plan usage is re-read. `0` disables it (static bias). Needs the API key; the daemon path without one keeps a static bias. |
 | `quotaCooldownMs` | `900000` | Route around Ollama this long after a 402 (credits exhausted). |
 | `rateLimitCooldownMs` | `60000` | Route around Ollama this long after a 429 (concurrency cap). |
+| `planCreditsUsd` | `0` | Dollar value of the plan's included monthly credits (Pro 60, Max 300). Lets `/health` and `/router status` show ollama.com's plan reading as dollars next to the ledger's figure. `0` shows the share only. |
 
 ### `tiers` — per-tier economic envelope
 
@@ -809,6 +812,20 @@ What happens once it is on:
   is what lets it serve `simple` and above. `ollama.twins` pins a match the
   name normaliser cannot make; an unmatched model is unscored and serves only
   `trivial`.
+- **Cached prefixes are estimated, not reported.** ollama.com caches prompt
+  prefixes automatically and bills them at the published cached-input rate,
+  but neither its OpenAI-compatible usage nor the native API carries a cached
+  token count. Measured 2026-09-07: twelve identical 162k-token requests to
+  `glm-5.3-flash` moved the plan meter by $0.06 against $0.29 at the full
+  input rate, and repeats answered in ~1.5 s. Pricing every token fresh had
+  overstated a week of Ollama spend 3.7x ($23.01 booked, $6.24 metered). The
+  router now applies its own warm-cache rule to Ollama turns: when the same
+  model served the previous turn within `hysteresis.cacheWarmTtlMs`, the
+  previous prompt is taken as the cached prefix and priced at the cached
+  rate; a first turn, a switch, or a longer gap is priced cold. The ledger
+  flags these rows (`usage.cachedEstimated`) and reports show their cache
+  rate as `~N%`. Set `planCreditsUsd` (Pro 60, Max 300) to see ollama.com's
+  own dollar reading in `/router status` as the cross-check.
 - **Same economics, same failover.** Candidates from both providers are ranked
   together; `costBias` tilts the comparison while a plan's included credits
   would otherwise go unused. **Credit-aware by default:** the router reads the

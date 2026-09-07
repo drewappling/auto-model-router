@@ -155,3 +155,9 @@ export function effectiveOllamaBias(costBias: number, biasUntilUsage: number, us
 	if (used === null) return costBias;
 	return used >= biasUntilUsage ? 1 : costBias;
 }
+
+/** The dashboard's dollar reading: plan share × included credits, when both are known. */
+export function ollamaMeter(usage: OllamaUsage | null, planCreditsUsd: number): { usedUsd: number; creditsUsd: number } | null {
+	if (usage === null || usage.monthlyUsedFraction === null || !(planCreditsUsd > 0)) return null;
+	return { usedUsd: Math.round(usage.monthlyUsedFraction * planCreditsUsd * 100) / 100, creditsUsd: planCreditsUsd };
+}

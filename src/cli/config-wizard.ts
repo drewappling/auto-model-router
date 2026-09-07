@@ -143,6 +143,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "ollama.usagePollMs", label: "Plan usage poll", kind: "number", min: 0, hint: "ms, 0=off" },
 			{ path: "ollama.quotaCooldownMs", label: "Quota (402) cooldown", kind: "number", min: 0, hint: "ms" },
 			{ path: "ollama.rateLimitCooldownMs", label: "Rate-limit (429) cooldown", kind: "number", min: 0, hint: "ms" },
+			{ path: "ollama.planCreditsUsd", label: "Plan credits per month $", kind: "number", min: 0, hint: "Pro 60, Max 300; 0=unknown" },
 		],
 	},
 	{

@@ -11,6 +11,7 @@
 import type { CatalogSource } from "../catalog/types.ts";
 import type { ContextBridge } from "../context/types.ts";
 import type { RouterConfig } from "../config/types.ts";
+import { estimateUnreportedCache } from "../cost/cache-estimate.ts";
 import { computeCost } from "../cost/forecast.ts";
 import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
@@ -462,7 +463,22 @@ export async function runTurn(
 		// in for a turn that produced 26.
 		if (reportedUsd === null && usage.promptTokens > 0) {
 			const served = deps.catalog.find(servedSlug ?? decision.slug);
-			if (served !== undefined) reportedUsd = computeCost(served, usage).total;
+			if (served !== undefined) {
+				// Ollama caches prompt prefixes and bills them at its cached rate
+				// without reporting a count; estimate it with the router's own
+				// warm-cache rule so the ledger stops booking every token fresh.
+				if (served.provider === "ollama") {
+					usage = estimateUnreportedCache(usage, {
+						previousSlug: state.currentSlug,
+						previousPromptTokens: state.lastPromptTokens,
+						previousAtMs: state.updatedAtMs,
+						servedSlug: served.slug,
+						nowMs: Date.now(),
+						cacheWarmTtlMs: config.hysteresis.cacheWarmTtlMs,
+					});
+				}
+				reportedUsd = computeCost(served, usage).total;
+			}
 		}
 
 		if (sinkDied) {

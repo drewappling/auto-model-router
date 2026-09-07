@@ -22,7 +22,7 @@ import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { createMultiUpstream } from "../src/upstream/multi.ts";
 import { classifyOllamaStatus, createOllamaClient, toOllamaBody } from "../src/upstream/ollama.ts";
-import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
+import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, ollamaMeter, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
 import type { Dispatch, DispatchOptions, UpstreamClient } from "../src/upstream/types.ts";
 import { createLogger } from "../src/util/log.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
@@ -314,7 +314,7 @@ describe("ollama client", () => {
 
 	test("a 429 with a zero cooldown does not trip the breaker", async () => {
 		const fetchImpl = (async (): Promise<Response> => new Response("slow down", { status: 429 }));
-		const client = createOllamaClient(cfgWith({ rateLimitCooldownMs: 0 }), fetchImpl);
+		const client = createOllamaClient(cfgWith({ rateLimitCooldownMs: 0, planCreditsUsd: 0 }), fetchImpl);
 		await client.dispatch({ body: { model: "ollama/x", messages: [] }, sessionId: "s", signal: new AbortController().signal }).catch(() => {});
 		expect(client.available()).toBe(true);
 	});
@@ -504,3 +504,18 @@ describe("ollama plan usage (credit-aware bias)", () => {
 	});
 });
 
+
+describe("ollamaMeter", () => {
+	test("plan share times credits is the dashboard's dollar figure", () => {
+		const usage = { monthlyUsedFraction: 0.104, monthlyUsageRaw: 0.104, activityCostUsd: 0, requestsThisMonth: 1250, fetchedAtMs: 1 };
+		// 10.4% of Pro's $60 is the $6.24 ollama.com shows.
+		expect(ollamaMeter(usage, 60)).toEqual({ usedUsd: 6.24, creditsUsd: 60 });
+	});
+
+	test("unknown credits or usage yields no meter", () => {
+		const usage = { monthlyUsedFraction: 0.5, monthlyUsageRaw: 0.5, activityCostUsd: 0, requestsThisMonth: 1, fetchedAtMs: 1 };
+		expect(ollamaMeter(usage, 0)).toBeNull();
+		expect(ollamaMeter(null, 60)).toBeNull();
+		expect(ollamaMeter({ ...usage, monthlyUsedFraction: null }, 60)).toBeNull();
+	});
+});

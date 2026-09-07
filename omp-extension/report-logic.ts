@@ -75,6 +75,7 @@ export interface HealthSnapshot {
 		cooldownUntilMs?: number | null;
 		lastTrip?: { kind?: string; atMs?: number; message?: string } | null;
 		usage?: { monthlyUsedFraction?: number | null; activityCostUsd?: number | null; fetchedAtMs?: number | null } | null;
+		meter?: { usedUsd?: number; creditsUsd?: number } | null;
 		costBias?: { configured?: number; effective?: number; biasUntilUsage?: number };
 	} | null;
 	catalog?: {
@@ -104,7 +105,8 @@ export function renderStatus(baseUrl: string, h: HealthSnapshot, nowMs = Date.no
 	} else {
 		const avail = o.available === true ? "available" : `COOLING DOWN${o.cooldownUntilMs ? ` until ${new Date(o.cooldownUntilMs).toLocaleTimeString()}` : ""}`;
 		const frac = o.usage?.monthlyUsedFraction;
-		const usage = frac === undefined || frac === null ? "plan usage unknown" : `plan usage ${(frac * 100).toFixed(0)}%`;
+		const meter = o.meter !== undefined && o.meter !== null && o.meter.usedUsd !== undefined ? ` ($${o.meter.usedUsd.toFixed(2)} of $${o.meter.creditsUsd ?? "?"})` : "";
+		const usage = frac === undefined || frac === null ? "plan usage unknown" : `plan usage ${(frac * 100).toFixed(1)}%${meter}`;
 		const bias = o.costBias === undefined ? "" : ` · cost bias ×${o.costBias.effective ?? o.costBias.configured ?? 1} (until ${((o.costBias.biasUntilUsage ?? 1) * 100).toFixed(0)}%)`;
 		const trip = o.lastTrip !== undefined && o.lastTrip !== null ? ` · last trip ${o.lastTrip.kind ?? "?"}${o.lastTrip.atMs ? ` ${mins(nowMs - o.lastTrip.atMs)} ago` : ""}` : "";
 		out.push(`ollama cloud: ${o.models ?? 0} models · ${avail} · key ${o.apiKeySource ?? "?"} · ${usage}${bias}${trip}`);

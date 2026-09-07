@@ -10,6 +10,7 @@ import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import { UpstreamError } from "../upstream/types.ts";
 import { apiKeySource, ollamaKeySource } from "../config/load.ts";
+import { ollamaMeter } from "../upstream/ollama-usage.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
 import { watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
@@ -410,6 +411,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 										// Plan usage as ollama.com reports it (share of included monthly
 										// credits) and the cost multiplier currently in force.
 										usage: ollamaUsage.peek(),
+										// The dashboard's dollar figure: plan share × included credits, when known.
+										meter: ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd),
 										costBias: { configured: cfg.ollama.costBias, effective: catalog.ollamaBias?.() ?? cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage },
 									},
 						catalog: snap === null

@@ -51,6 +51,7 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 		spendUsd: spend,
 		share: 0.5,
 		cacheHitRate: 0.8,
+		cacheEstimated: false,
 		avgPromptTokens: 1000,
 		avgTtftMs: 900,
 		tokensPerSec: 120,
@@ -74,6 +75,7 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 			errors: 0,
 			aborted: 0,
 			modelSwitches: 1,
+			cacheEstimated: false,
 		},
 		providers: [row("openrouter", 2), row("ollama", 1)],
 		models: [

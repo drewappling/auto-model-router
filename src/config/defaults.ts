@@ -56,6 +56,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		quotaCooldownMs: 15 * 60 * 1000,
 		// Concurrency caps clear as soon as an in-flight request finishes.
 		rateLimitCooldownMs: 60 * 1000,
+		// ollama.com reports usage as a share of the plan; the dollar figure on
+		// its dashboard is that share × the plan's credits. Unknown until set.
+		planCreditsUsd: 0,
 	},
 	benchmarks: {
 		// Keyless BenchLM alone fills real gaps, so this is on by default; the AA

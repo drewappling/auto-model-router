@@ -26,6 +26,12 @@ export interface UsageCounts {
 	reasoningTokens: number;
 	/** Images in the prompt, for per-image surcharges. */
 	images: number;
+	/**
+	 * `cachedTokens` was estimated by the router (see `cache-estimate.ts`)
+	 * because the upstream caches without reporting it (Ollama Cloud). Absent
+	 * or false ⇒ the count came from the provider.
+	 */
+	cachedEstimated?: boolean;
 }
 
 export const EMPTY_USAGE: UsageCounts = {
