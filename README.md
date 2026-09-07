@@ -837,6 +837,14 @@ task needed, and `digest.maxOutputTokens` or `digest.model` is the lever.
 | `baselines` | `anthropic/claude-opus-5`, `anthropic/claude-sonnet-5` | Models the report prices the window's traffic on as a single-model counterfactual. Unknown slugs are skipped. |
 | `dailySummary` | `true` | Post the daily summary (below) into the transcript at the first interactive omp session start of each day. Hot-reloads. |
 
+### `harnessSwitch` — harness-side model switch (experimental)
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Let the `router-switch` extension move omp's active model for mapped tiers. |
+| `models` | `{}` | Tier → harness model as `provider/id` in omp's own registry, e.g. `hard: anthropic/claude-opus-4-8`. A tier serves itself and every tier above it up to the next mapped one; unmapped tiers stay on the router. |
+| `minConfidence` | `0.6` | Advice below this heuristic confidence leaves the model where it is. |
+
 ### `ledger` — cost measurement
 
 | Key | Default | Meaning |
@@ -928,6 +936,35 @@ Ollama's compatibility layer differs from OpenRouter's in a few ways the
 router handles for you: no `models[]` fallback cascade, no `tool_choice`,
 `reasoning_effort` instead of the `reasoning` object, and no `cache_control`
 markers (they are stripped before dispatch).
+
+## Harness-side model switch (experimental)
+
+Most engineers reach Claude through a subscription, not an API key, and a
+subscription model cannot be proxied: the router would have to translate to
+Anthropic's wire format and carry omp's OAuth token through a third-party
+process. The `router-switch` extension takes the other route. Before omp
+starts a turn on a user prompt it asks the router which tier the prompt is
+(`POST /v1/router/advise`, the heuristic classifier over the prompt text,
+nothing dispatched or recorded). When that tier is mapped in
+`harnessSwitch.models`, the extension moves omp's active model to the mapped
+harness model; when a later prompt is advised below every mapped tier, it
+moves back to the router model it left. A model the user picked by hand is
+never touched. Native turns bill the subscription and never reach the
+ledger; the router serves and accounts for the rest.
+
+```yaml
+# ~/.auto-model-router/config.yml
+harnessSwitch:
+  enabled: true
+  models:
+    hard: anthropic/claude-opus-4-8
+```
+
+Install `omp-extension/router-switch.ts` beside the embed extension and
+restart omp. Known limits of the prototype: the advice sees only the prompt
+text, not the conversation, so a hard task that only becomes hard three tool
+calls in stays on the router (the router's own escalation still applies
+there); and the switch happens at prompt boundaries, never mid-turn.
 
 ## Multiple coding harnesses, one router
 

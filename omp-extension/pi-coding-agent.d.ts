@@ -109,6 +109,12 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		/** Interval whose errors omp isolates, and whose handle `clearTimer` cancels. */
 		setInterval(handler: () => void | Promise<void>, ms: number): unknown;
 		clearTimer(timer: unknown): void;
+		/** The active model, when one is set. (Real type: `Model`.) */
+		model: { provider: string; id: string } | undefined;
+		/** Looks a model up in omp's registry by provider and id. */
+		modelRegistry: { find(provider: string, modelId: string): unknown };
+		/** Sets the session's active model; false when omp has no key for it. */
+		setModel(model: unknown): Promise<boolean>;
 	}
 
 	export interface CommandDefinition {

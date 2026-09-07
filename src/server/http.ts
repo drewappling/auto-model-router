@@ -7,6 +7,7 @@ import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { createSessionOverrides } from "./overrides.ts";
 import { createDigester } from "./digest.ts";
+import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport } from "../cost/report.ts";
 import { buildDailySummary, createKv, markSummaryShown, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
@@ -414,6 +415,25 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const windowDays = Number.isInteger(parsedDays) ? Math.min(Math.max(parsedDays, 1), 365) : 7;
 					const harnessId = url.searchParams.get("harness") ?? "";
 					return json(buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) }));
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/advise/policy") {
+					const h = cfg.harnessSwitch;
+					return json({ enabled: h.enabled, models: h.models, minConfidence: h.minConfidence });
+				}
+				if (req.method === "POST" && url.pathname === "/v1/router/advise") {
+					// Harness-side switch: classify a prompt before the harness builds
+					// the request. Heuristic only; nothing is dispatched or recorded.
+					const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+					if (body === null || typeof body.text !== "string") {
+						return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "text required" });
+					}
+					return json(
+						advise(cfg, ledger, {
+							ompSessionId: typeof body.ompSessionId === "string" ? body.ompSessionId : "",
+							harnessId: typeof body.harnessId === "string" ? body.harnessId : "",
+							text: body.text.slice(0, 16_000),
+						}),
+					);
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/summary") {
 					// The last 24 hours in a few lines. `auto=1` is the session-start

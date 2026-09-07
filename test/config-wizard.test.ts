@@ -172,6 +172,7 @@ describe("WIZARD_SECTIONS coverage", () => {
 			]),
 			...["coding", "vision", "documentation", "data", "chat"].flatMap((t) => [`tasks.${t}.minQuality`, `tasks.${t}.requireImage`, `tasks.${t}.prefer`]),
 			...["trivial", "simple", "moderate", "hard"].map((t) => `exploration.rates.${t}`),
+			...["trivial", "simple", "moderate", "hard"].map((t) => `harnessSwitch.models.${t}`),
 		]);
 		const known = new Set(leaves(DEFAULT_CONFIG));
 		const unknown = WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path)).filter((p) => !known.has(p) && !KNOWN_OPTIONAL.has(p));

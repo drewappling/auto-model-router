@@ -607,6 +607,25 @@ export interface ReportConfig {
 	dailySummary: boolean;
 }
 
+/**
+ * Harness-side model switch (experimental): the router advises a tier for
+ * each user prompt and the harness moves its own active model to a
+ * harness-native one for the mapped tiers. See omp-extension/router-switch.ts.
+ */
+export interface HarnessSwitchConfig {
+	enabled: boolean;
+	/**
+	 * Tier → harness model as `provider/id` in the harness's own registry
+	 * (e.g. `hard: anthropic/claude-opus-4-8`). A tier serves itself and every
+	 * tier above it up to the next mapped one; unmapped low tiers stay on the
+	 * router. Turns on a native model bill the harness's own provider (a
+	 * subscription, typically) and never reach the ledger.
+	 */
+	models: Partial<Record<"trivial" | "simple" | "moderate" | "hard", string>>;
+	/** Advice below this heuristic confidence leaves the model where it is. */
+	minConfidence: number;
+}
+
 export interface BudgetConfig {
 	/** Reject or downgrade when a turn's cold forecast exceeds this, USD. */
 	perTurnUsd?: number;
@@ -802,6 +821,7 @@ export interface RouterConfig {
 	budget: BudgetConfig;
 	report: ReportConfig;
 	digest: DigestConfig;
+	harnessSwitch: HarnessSwitchConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
 	/**

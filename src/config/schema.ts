@@ -277,6 +277,13 @@ export const configInputSchema = z.strictObject({
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	report: z.strictObject({ baselines: z.array(z.string()).optional(), dailySummary: z.boolean().optional() }).optional(),
+	harnessSwitch: z
+		.strictObject({
+			enabled: z.boolean().optional(),
+			models: z.record(tier, z.string().regex(/^[^/]+\/.+$/, "provider/id")).optional(),
+			minConfidence: z.number().min(0).max(1).optional(),
+		})
+		.optional(),
 	digest: z
 		.strictObject({
 			enabled: z.boolean().optional(),

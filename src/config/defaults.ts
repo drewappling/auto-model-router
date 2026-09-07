@@ -316,6 +316,12 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// One transcript message per day, at the first interactive session start.
 		dailySummary: true,
 	},
+	harnessSwitch: {
+		// Off: moving the harness's own model is a visible change the operator opts into.
+		enabled: false,
+		models: {},
+		minConfidence: 0.6,
+	},
 	budget: {
 		// No caps by default; at a configured ceiling, downgrade rather than fail.
 		onExceeded: "downgrade",

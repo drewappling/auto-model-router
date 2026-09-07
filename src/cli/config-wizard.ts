@@ -336,6 +336,14 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 		],
 	},
 	{
+		title: "Harness switch",
+		fields: [
+			{ path: "harnessSwitch.enabled", label: "Switch omp's model for mapped tiers (experimental)", kind: "boolean" },
+			{ path: "harnessSwitch.minConfidence", label: "Minimum advice confidence to switch", kind: "number", min: 0, max: 1 },
+			...TIER_NAMES.map((t): FieldSpec => ({ path: `harnessSwitch.models.${t}`, label: `${t}: harness model (provider/id)`, kind: "string", optional: true, hint: "e.g. anthropic/claude-opus-4-8" })),
+		],
+	},
+	{
 		title: "Ledger",
 		fields: [
 			{ path: "ledger.path", label: "Ledger path", kind: "string", hint: "SQLite file" },
