@@ -1,0 +1,2 @@
+# SQLite fixtures must never get line-ending conversion (core.autocrlf is on for this checkout).
+*.db binary

@@ -8,7 +8,7 @@
 
 import type { CatalogSnapshot } from "../catalog/types.ts";
 import type { ProfileConfig, RouterConfig } from "../config/types.ts";
-import { priceAt } from "../cost/forecast.ts";
+import { forecast, priceAt } from "../cost/forecast.ts";
 import type { Ledger } from "../cost/types.ts";
 import { explorationDraw } from "./explore.ts";
 import type { CompactionEdit, NormRequest, ReasoningLevel } from "../wire/types.ts";
@@ -610,13 +610,33 @@ export function select(args: SelectArgs): Decision {
 	}
 	const stripAssistantReasoning = !(chosen.model.supportsReasoning && REASONING_REPLAY_AUTHORS[chosen.model.author] === true);
 
+	// The recorded forecast is the EXPECTED price of this dispatch, not the
+	// cold worst case candidates are ranked on. When the chosen model's cache
+	// is warm, the previous prompt's tokens are priced as cache reads at the
+	// model's measured hit rate; coldUsd stays the cold figure the budget
+	// guards used. Before this every recorded forecast was cold while nine
+	// turns in ten were warm: 89% over-predicted, median error 220%.
+	let expectedForecast = chosen.forecast;
+	if (warmSlug !== null && chosen.model.slug === warmSlug && effFeatures.promptTokens > 0 && state.lastPromptTokens > 0) {
+		const cachedShare = Math.min(1, state.lastPromptTokens / effFeatures.promptTokens);
+		let images = 0;
+		if (req.hasImages) for (const m of req.messages) images += m.images;
+		const warm = forecast(chosen.model, {
+			promptTokens: effFeatures.promptTokens,
+			completionTokens: EXPECTED_COMPLETION_TOKENS,
+			cacheHitRate: cacheHitExpectation(chosen.model.slug).rate * cachedShare,
+			images,
+		});
+		expectedForecast = { ...warm, coldUsd: chosen.forecast.coldUsd };
+	}
+
 	return {
 		slug: chosen.model.slug,
 		fallbacks,
 		tier: chosenTier,
 		classification: cls,
 		features,
-		forecast: chosen.forecast,
+		forecast: expectedForecast,
 		sessionId: state.sessionId,
 		sticky,
 		cacheBreakpointMessageIndices,

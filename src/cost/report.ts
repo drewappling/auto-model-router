@@ -34,6 +34,12 @@ export interface ReportTotals {
 	digests: number;
 	digestSpendUsd: number;
 	digestInputTokens: number;
+	/** Digests the agent went back on: the same tool re-run with the same primary argument afterwards (row marked wasted). */
+	digestReruns: number;
+	/** Forecast accuracy over clean kept rows with a reported cost: mean |predicted − reported| ÷ reported, and the share over-predicted. */
+	forecastSamples: number;
+	forecastMeanError: number;
+	forecastOverShare: number;
 }
 
 export interface ReportRow {
@@ -134,6 +140,8 @@ const COMP = "json_extract(usage, '$.completionTokens')";
 const PROVIDER = "CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ELSE 'openrouter' END";
 const STREAMED = "ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL";
 const EST = "json_extract(usage, '$.cachedEstimated') = 1";
+/** Rows a forecast can be judged on: a reported cost, a prediction, clean and kept, not a side call. */
+const FORECASTABLE = "reported_usd > 0 AND predicted_usd IS NOT NULL AND wasted = 0 AND error IS NULL AND requested_model <> 'digest'";
 
 const ROW_SELECT = `
 	COUNT(*) AS dispatches,
@@ -213,6 +221,10 @@ export function buildUsageReport(
 				SUM(CASE WHEN requested_model = 'digest' THEN 1 ELSE 0 END) AS digests,
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${USD} ELSE 0 END), 0) AS digest_spend,
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${PT} ELSE 0 END), 0) AS digest_input,
+				SUM(CASE WHEN requested_model = 'digest' AND wasted = 1 THEN 1 ELSE 0 END) AS digest_reruns,
+				SUM(CASE WHEN ${FORECASTABLE} THEN 1 ELSE 0 END) AS fc_n,
+				COALESCE(SUM(CASE WHEN ${FORECASTABLE} THEN ABS(predicted_usd - reported_usd) / reported_usd END), 0) AS fc_err,
+				SUM(CASE WHEN ${FORECASTABLE} AND predicted_usd > reported_usd THEN 1 ELSE 0 END) AS fc_over,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN instr(reasons, 'failover:') > 0 THEN 1 ELSE 0 END) AS failovers,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
@@ -232,6 +244,10 @@ export function buildUsageReport(
 		digests: number | null;
 		digest_spend: number;
 		digest_input: number;
+		digest_reruns: number | null;
+		fc_n: number | null;
+		fc_err: number;
+		fc_over: number | null;
 		escalations: number | null;
 		failovers: number | null;
 		errors: number | null;
@@ -354,6 +370,10 @@ export function buildUsageReport(
 			digests: t.digests ?? 0,
 			digestSpendUsd: t.digest_spend,
 			digestInputTokens: t.digest_input,
+			digestReruns: t.digest_reruns ?? 0,
+			forecastSamples: t.fc_n ?? 0,
+			forecastMeanError: (t.fc_n ?? 0) > 0 ? t.fc_err / (t.fc_n ?? 1) : 0,
+			forecastOverShare: (t.fc_n ?? 0) > 0 ? (t.fc_over ?? 0) / (t.fc_n ?? 1) : 0,
 		},
 		providers,
 		models,
@@ -419,7 +439,12 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 		);
 	}
 	if (t.digests > 0) {
-		summary.push(`digests: ${num(t.digests)} tool results condensed (${num(t.digestInputTokens)} tok read by a cheap model) for ${usd(t.digestSpendUsd)}`);
+		summary.push(
+			`digests: ${num(t.digests)} tool results condensed (${num(t.digestInputTokens)} tok read by a cheap model) for ${usd(t.digestSpendUsd)} · re-run rate ${pct(t.digestReruns / t.digests)} (${num(t.digestReruns)} fetched again in full)`,
+		);
+	}
+	if (t.forecastSamples > 0) {
+		summary.push(`forecast: mean error ${pct(t.forecastMeanError)} of reported cost over ${num(t.forecastSamples)} turns · ${pct(t.forecastOverShare)} over-predicted`);
 	}
 	if (t.subagentDispatches > 0) {
 		summary.push(`subagents: ${num(t.subagentDispatches)} dispatches, ${usd(t.subagentSpendUsd)} (${pct(t.spendUsd > 0 ? t.subagentSpendUsd / t.spendUsd : 0)} of spend)`);

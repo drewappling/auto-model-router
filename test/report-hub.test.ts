@@ -80,7 +80,7 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 			subagentSpendUsd: 0,
 			digests: 0,
 			digestSpendUsd: 0,
-			digestInputTokens: 0,
+			digestInputTokens: 0, digestReruns: 0, forecastSamples: 0, forecastMeanError: 0, forecastOverShare: 0,
 		},
 		providers: [row("openrouter", 2), row("ollama", 1)],
 		models: [

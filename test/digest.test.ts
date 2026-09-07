@@ -184,6 +184,28 @@ describe("createDigester", () => {
 		db.close();
 	});
 
+	test("a later call of the same tool with the same primary argument marks the digest wasted", async () => {
+		const cfg = cfgWith();
+		const db = openDb(":memory:");
+		const ledger = createLedger(db, cfg);
+		seedSession(ledger, "hard");
+		const dg = createDigester({ cfg, catalog, ledger, upstream: fakeUpstream(() => "Condensed.").upstream, log });
+		const r = await dg.digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: { path: "src/a.ts", offset: 1 }, content: BIG, query: "" });
+		expect(r.digested).toBe(true);
+		const row = () => ledger.recentEntries(10).find((e) => e.requestedModel === "digest")!;
+		expect(row().wasted).toBe(false);
+		// A different file, a different tool, another session: no match.
+		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/b.ts"}' }, { name: "grep", argsJson: '{"pattern":"src/a.ts"}' }])).toBe(0);
+		expect(dg.noteToolCalls("omp-2", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
+		expect(row().wasted).toBe(false);
+		// The same read again (case-insensitive tool name, any other args): the agent wanted the full output.
+		expect(dg.noteToolCalls("omp-1", [{ name: "Read", argsJson: '{"path":"src/a.ts","limit":50}' }])).toBe(1);
+		expect(row().wasted).toBe(true);
+		// Marked once; a third read does not count again.
+		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
+		db.close();
+	});
+
 	test("a pinned digest model is used as-is", async () => {
 		const pinned = MODELS.find((m) => m.price.prompt > 0)!.slug;
 		const cfg = cfgWith({ model: pinned });

@@ -229,6 +229,7 @@ const ledger = z.strictObject({
 	blendMinSamples: z.number().int().nonnegative().optional(),
 	fallbackBlend: fallbackBlend.optional(),
 	conversationTtlMs: z.number().positive().optional(),
+	retentionDays: z.number().int().nonnegative().optional(),
 });
 
 // Complete entries: arrays replace wholesale, so a partial profile would

@@ -303,4 +303,8 @@ export interface Ledger {
 	latestForSession?(ompSessionId: string): LedgerEntry | null;
 	/** Newest entries for an omp session, newest first. Optional. */
 	entriesForSession?(ompSessionId: string, limit: number): LedgerEntry[];
+	/** Deletes rows older than `retentionDays` (0 ⇒ none); returns how many. Optional. */
+	prune?(retentionDays: number, nowMs?: number): number;
+	/** Marks one row wasted after the fact (a digest the agent went back on). Optional. */
+	markWasted?(id: string): void;
 }

@@ -1052,6 +1052,30 @@ describe("hysteresis.confirmUpgradesBelowConfidence", () => {
 	});
 });
 
+describe("recorded forecast is the expected price, not the cold worst case", () => {
+	const warmSlug = "x-ai/grok-4.6";
+	test("a warm stay prices the previous prompt as cache reads; coldUsd keeps the cold figure", () => {
+		const cfg: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, switchMargin: 1e6 } };
+		const d = run({
+			tier: "hard",
+			promptTokens: 80_000,
+			cfg,
+			st: state({ currentSlug: warmSlug, currentTier: "hard", cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 60_000 }),
+		});
+		expect(d.slug).toBe(warmSlug);
+		// 60k of the 80k prompt is the cached prefix; no reliability sample ⇒ assumed reliable.
+		expect(d.forecast.assumedCacheHitRate).toBeCloseTo(0.75, 6);
+		expect(d.forecast.expectedUsd).toBeLessThan(d.forecast.coldUsd);
+		expect(d.forecast.breakdown.cacheRead).toBeGreaterThan(0);
+	});
+
+	test("a cold turn records the cold price", () => {
+		const d = run({ tier: "hard", promptTokens: 80_000 });
+		expect(d.forecast.assumedCacheHitRate).toBe(0);
+		expect(d.forecast.expectedUsd).toBeLessThanOrEqual(d.forecast.coldUsd);
+	});
+});
+
 describe("cache reliability in the stay/switch comparison", () => {
 	const warmSlug = "x-ai/grok-4.6";
 	function ledgerWithReliability(rate: number | null, samples = 50): Ledger {

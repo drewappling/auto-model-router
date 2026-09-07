@@ -64,7 +64,7 @@ export function validatePlan(
  * for the resource a call operates on (a `path`, `id`, `query`, ...). Used to
  * detect when a later call supersedes an earlier read of the same resource.
  */
-function primaryArg(argsJson: string): string | null {
+export function primaryArg(argsJson: string): string | null {
 	try {
 		const parsed: unknown = JSON.parse(argsJson);
 		if (parsed !== null && typeof parsed === "object") {

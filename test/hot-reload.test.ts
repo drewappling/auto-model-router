@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
-import { readValidatedConfig, watchConfig, type ConfigWatcher } from "../src/config/hot-reload.ts";
+import { PINNED_CONFIG_PATHS, readValidatedConfig, watchConfig, type ConfigWatcher } from "../src/config/hot-reload.ts";
 
 const DIR = join(import.meta.dir, ".tmp-hot-reload");
 const CFG = join(DIR, "config.yml");
@@ -127,5 +127,41 @@ describe("watchConfig", () => {
 		writeFileSync(CFG, yamlOf({ filters: { latencyWeight: 9.9 } }));
 		await settle();
 		expect(live.filters.latencyWeight).not.toBe(9.9);
+	});
+});
+
+describe("watchConfig pins by path", () => {
+	const CFG2 = join(DIR, "config-paths.yml");
+	const live: RouterConfig = structuredClone(DEFAULT_CONFIG);
+	let watcher: ConfigWatcher | null = null;
+
+	beforeAll(() => {
+		writeFileSync(CFG2, "");
+		const pinned = structuredClone(DEFAULT_CONFIG);
+		pinned.ollama.apiKey = "pinned-key";
+		watcher = watchConfig(CFG2, live, pinned, PINNED_CONFIG_PATHS);
+	});
+	afterAll(() => watcher?.close());
+
+	test("a pinned key inside a block keeps its construction value while its siblings hot-reload", async () => {
+		writeFileSync(CFG2, yamlOf({ ollama: { apiKey: "from-file", costBias: 0.25, biasUntilUsage: 0.5 }, server: { port: 1, subagentProfile: "auto" }, ledger: { retentionDays: 30 } }));
+		await settle();
+		expect(live.ollama.costBias).toBe(0.25);
+		expect(live.ollama.biasUntilUsage).toBe(0.5);
+		expect(live.ollama.apiKey).toBe("pinned-key");
+		expect(live.server.port).toBe(DEFAULT_CONFIG.server.port);
+		expect(live.server.subagentProfile).toBe("auto");
+		expect(live.ledger.retentionDays).toBe(30);
+		expect(live.ledger.path).toBe(DEFAULT_CONFIG.ledger.path);
+	});
+
+	test("the pinned path list names only real config keys", () => {
+		const root = DEFAULT_CONFIG as unknown as Record<string, Record<string, unknown>>;
+		for (const p of PINNED_CONFIG_PATHS) {
+			const [block = "", key] = p.split(".");
+			expect(block in root).toBe(true);
+			// Optional keys (server.apiKey, server.harnessId) are absent from the defaults but real.
+			if (key !== undefined && !["apiKey", "harnessId"].includes(key)) expect(key in root[block]!).toBe(true);
+		}
 	});
 });

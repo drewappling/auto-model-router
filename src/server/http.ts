@@ -17,7 +17,7 @@ import { UpstreamError } from "../upstream/types.ts";
 import { apiKeySource, ollamaKeySource } from "../config/load.ts";
 import { ollamaMeter } from "../upstream/ollama-usage.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
-import { watchConfig } from "../config/hot-reload.ts";
+import { PINNED_CONFIG_PATHS, watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
 import { openDb } from "../util/sqlite.ts";
@@ -202,15 +202,16 @@ export function startServer(cfg: RouterConfig): StartedServer {
 
 	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
 	// effect on the next turn without a restart, because every consumer reads
-	// the shared config object at call time. Construction-captured blocks
-	// (server socket, OpenRouter client, agentdox bridge) are pinned — editing
-	// those still requires a restart, and the watcher says so explicitly.
-	const pinned = { ...cfg };
+	// the shared config object at call time. Construction-captured settings
+	// (server socket, upstream clients, agentdox bridge, ledger file) are
+	// pinned by path (PINNED_CONFIG_PATHS); editing those still requires a
+	// restart. The blocks are deep-copied so a reload cannot mutate the pin.
+	const pinned = structuredClone(cfg);
 	const configWatcher = watchConfig(
 		routerConfigPath(),
 		cfg,
 		pinned,
-		["server", "openrouter", "ollama", "context", "ledger"],
+		PINNED_CONFIG_PATHS,
 		{
 			onReload: ({ changed }) => {
 				log.info("config reloaded", { changed: changed.join(", ") });
@@ -268,6 +269,20 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		}
 	}, 60_000);
 	pruneTimer.unref();
+
+	// Ledger retention: hourly, and once at boot so a lowered setting takes
+	// effect without waiting. Reads the live config, so it hot-reloads.
+	const retain = (): void => {
+		try {
+			const dropped = ledger.prune?.(cfg.ledger.retentionDays) ?? 0;
+			if (dropped > 0) log.info("pruned ledger rows past retention", { dropped, retentionDays: cfg.ledger.retentionDays });
+		} catch (err) {
+			log.warn("ledger retention prune failed", { error: err instanceof Error ? err.message : String(err) });
+		}
+	};
+	const retentionTimer = setInterval(retain, 3_600_000);
+	retentionTimer.unref();
+	setTimeout(retain, 5_000).unref();
 
 	// Periodically refetch the (key-scoped) catalog in the background so
 	// guardrail/preference changes are picked up without needing traffic and a

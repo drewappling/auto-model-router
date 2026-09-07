@@ -344,6 +344,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "ledger.fallbackBlend.inputPerMtok", label: "Fallback blend input $/Mtok", kind: "number", min: 0 },
 			{ path: "ledger.fallbackBlend.outputPerMtok", label: "Fallback blend output $/Mtok", kind: "number", min: 0 },
 			{ path: "ledger.conversationTtlMs", label: "Conversation TTL", kind: "number", min: 1, hint: "ms" },
+			{ path: "ledger.retentionDays", label: "Ledger retention", kind: "number", min: 0, hint: "days; 0 keeps everything" },
 		],
 	},
 	{

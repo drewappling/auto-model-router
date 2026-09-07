@@ -90,15 +90,47 @@ export interface WatchConfigOptions {
 }
 
 /**
- * Watches `path` and applies valid changes to `live` in place. `frozen` blocks
- * (top-level names) are re-copied from `pinned` after every reload so file
- * edits to construction-captured blocks cannot silently diverge.
+ * Config paths captured at construction, so a file edit cannot reach the
+ * running process: the socket, the upstream clients, the agentdox bridge, the
+ * ledger file. Everything else, including `ollama.costBias`,
+ * `ollama.biasUntilUsage`, `server.subagentProfile` and `ledger.retentionDays`,
+ * is read at call time and hot-reloads. A bare block name pins the whole
+ * block; `block.key` pins one key and lets its siblings through.
+ */
+export const PINNED_CONFIG_PATHS: readonly string[] = [
+	"server.host",
+	"server.port",
+	"server.apiKey",
+	"server.harnessId",
+	"server.maxConcurrentTurns",
+	"openrouter",
+	"ollama.enabled",
+	"ollama.baseUrl",
+	"ollama.apiKey",
+	"ollama.timeoutMs",
+	"ollama.catalogTtlMs",
+	"ollama.includeLocal",
+	"ollama.prices",
+	"ollama.twins",
+	"ollama.usagePollMs",
+	"ollama.quotaCooldownMs",
+	"ollama.rateLimitCooldownMs",
+	"ollama.planCreditsUsd",
+	"context",
+	"ledger.path",
+];
+
+/**
+ * Watches `path` and applies valid changes to `live` in place. `frozen`
+ * entries are re-copied from `pinned` after every reload so file edits to
+ * construction-captured settings cannot silently diverge: a top-level name
+ * pins the whole block, `block.key` pins one key of it.
  */
 export function watchConfig(
 	path: string,
 	live: RouterConfig,
 	pinned: RouterConfig,
-	frozen: readonly (keyof RouterConfig)[],
+	frozen: readonly string[],
 	opts: WatchConfigOptions = {},
 ): ConfigWatcher {
 	let closed = false;
@@ -119,14 +151,31 @@ export function watchConfig(
 		}
 		lastError = "";
 
-		const frozenSet = new Set(frozen);
+		const frozenBlocks = new Set(frozen.filter((f) => !f.includes(".")));
+		const frozenKeys = new Map<string, string[]>();
+		for (const f of frozen) {
+			const dot = f.indexOf(".");
+			if (dot < 0) continue;
+			const block = f.slice(0, dot);
+			frozenKeys.set(block, [...(frozenKeys.get(block) ?? []), f.slice(dot + 1)]);
+		}
 		const changed: string[] = [];
 		const next = result.cfg as unknown as Record<string, unknown>;
+		const pinnedRec = pinned as unknown as Record<string, unknown>;
 		for (const key of Object.keys(next)) {
-			// Frozen blocks belong to construction: keep the pinned values.
-			const value = frozenSet.has(key as keyof RouterConfig)
-				? (pinned as unknown as Record<string, unknown>)[key]
-				: next[key];
+			// Frozen blocks belong to construction: keep the pinned values. A
+			// partially frozen block takes the file's siblings and the pinned keys.
+			let value = frozenBlocks.has(key) ? pinnedRec[key] : next[key];
+			const keys = frozenKeys.get(key);
+			if (keys !== undefined && !frozenBlocks.has(key) && value !== null && typeof value === "object") {
+				const merged: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+				const pinnedBlock = (pinnedRec[key] ?? {}) as Record<string, unknown>;
+				for (const k of keys) {
+					if (pinnedBlock[k] === undefined) delete merged[k];
+					else merged[k] = pinnedBlock[k];
+				}
+				value = merged;
+			}
 			const before = JSON.stringify((live as unknown as Record<string, unknown>)[key]);
 			const after = JSON.stringify(value);
 			if (before !== after) changed.push(key);

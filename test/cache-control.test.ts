@@ -93,7 +93,7 @@ describe("planCacheBreakpoints", () => {
 	test("milestones follow post-compaction sizes", () => {
 		const req = loop(30);
 		const tail = req.messages.length - 1;
-		const plan = planCompaction(req.messages, BASE.compaction, req.promptBytes * 0.3, req.promptBytes);
+		const plan = planCompaction(req.messages, { ...BASE.compaction, enabled: true }, req.promptBytes * 0.3, req.promptBytes);
 		expect(plan.edits.length).toBeGreaterThan(0);
 		const options = cfg({ maxBreakpoints: 64, milestoneTokens: 4_000 });
 		const raw = planCacheBreakpoints(req, MODEL, options).filter((i) => i !== 0 && i !== tail);

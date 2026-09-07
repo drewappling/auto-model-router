@@ -337,6 +337,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// so early cost reporting never underreports.
 		fallbackBlend: { inputPerMtok: 1.5, outputPerMtok: 7.5 },
 		conversationTtlMs: 7 * 24 * 60 * 60 * 1000,
+		retentionDays: 365,
 	},
 	// On by default: an absolute floor that no available model meets is how the
 	// router ends up serving every turn from the cheapest tier.

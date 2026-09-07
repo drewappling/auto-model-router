@@ -23,6 +23,8 @@ export interface CompositeBias {
 	/** Plan usage fraction at which the bias switches off (list price). */
 	biasUntilUsage: number;
 	usage: OllamaUsageSource;
+	/** When given, read on every use instead of the static pair, so a config hot reload applies. */
+	live?: () => { costBias: number; biasUntilUsage: number };
 }
 
 export function createCompositeCatalog(
@@ -39,7 +41,8 @@ export function createCompositeCatalog(
 
 	/** The multiplier in force from the latest usage reading (no network). */
 	function currentBias(): number {
-		return effectiveOllamaBias(bias.costBias, bias.biasUntilUsage, bias.usage.peek());
+		const b = bias.live?.() ?? bias;
+		return effectiveOllamaBias(b.costBias, b.biasUntilUsage, bias.usage.peek());
 	}
 
 	function combine(base: CatalogSnapshot, models: readonly CatalogModel[]): CatalogSnapshot {

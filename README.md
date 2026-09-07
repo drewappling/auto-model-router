@@ -562,7 +562,9 @@ as the placeholder — empty input keeps it, `-` clears an optional field,
 credentials show as `set`/`unset` and are never echoed. `Save and exit` writes the merged config
 (schema-checked and backed up first). Tier, task, filter, classifier,
 hysteresis, exploration, compaction, cache and budget changes hot-reload;
-restart omp for `server`, `openrouter`, `ollama`, `context` and `ledger`.
+restart omp for `server` (except `subagentProfile`), `openrouter`, `context`,
+`ledger.path` and the Ollama connection keys; `ollama.costBias`,
+`ollama.biasUntilUsage` and `ledger.retentionDays` hot-reload too.
 
 ### Via `auto-model-router config` (text wizard / CLI)
 
@@ -822,6 +824,12 @@ is a ledger row (`requestedModel` `digest`) and the report totals them.
 | `maxCostUsd` | `0.02` | Skip when the digest itself would cost more. |
 | `timeoutMs` | `25000` | The raw result stands if the cheap model is slower. |
 
+Quality signal: when the agent later calls the same tool with the same
+primary argument (re-reads a digested file, re-runs a digested grep), the
+router marks that digest's ledger row wasted. The report's `digests` line
+shows the re-run rate; a high rate means the digest is dropping what the
+task needed, and `digest.maxOutputTokens` or `digest.model` is the lever.
+
 ### `report` — usage-report options
 
 | Key | Default | Meaning |
@@ -838,6 +846,7 @@ is a ledger row (`requestedModel` `digest`) and the report totals them.
 | `blendMinSamples` | `25` | Turns before the measured blend replaces the fallback. |
 | `fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend (USD/Mtok) for omp's cost display. |
 | `conversationTtlMs` | `604800000` (7 d) | Drop conversation state untouched this long. |
+| `retentionDays` | `365` | Delete ledger rows older than this, checked hourly; `0` keeps everything. The ledger grows about 2.5 MB a day under steady use. Freed pages are reused, so the file stops growing rather than shrinking. |
 
 ### Top-level
 

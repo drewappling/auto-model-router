@@ -657,6 +657,13 @@ export interface LedgerConfig {
 	fallbackBlend: { inputPerMtok: number; outputPerMtok: number };
 	/** Drop conversation state untouched for longer than this, ms. */
 	conversationTtlMs: number;
+	/**
+	 * Delete ledger rows older than this many days (checked hourly). 0 keeps
+	 * everything. The ledger grows ~2.5 MB a day under steady use; trust,
+	 * reports and replay only read windows well inside a year. Freed pages
+	 * are reused, so the file stops growing rather than shrinking.
+	 */
+	retentionDays: number;
 }
 
 /**

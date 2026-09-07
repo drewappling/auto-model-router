@@ -281,3 +281,27 @@ describe("ledger.softFailureSpikes", () => {
 		}
 	});
 });
+
+describe("ledger.prune and markWasted", () => {
+	test("prune deletes rows past retention and 0 keeps everything; markWasted flips one row", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			const now = 1_800_000_000_000;
+			const DAY = 86_400_000;
+			for (let i = 0; i < 5; i++) ledger.record(entry({ createdAtMs: now - i * 100 * DAY }));
+			expect(ledger.prune?.(0, now)).toBe(0);
+			expect(ledger.recentEntries(10)).toHaveLength(5);
+			expect(ledger.prune?.(365, now)).toBe(1); // only the 400-day-old row
+			expect(ledger.recentEntries(10)).toHaveLength(4);
+			expect(ledger.prune?.(150, now)).toBe(2); // 200 and 300 days old
+			const left = ledger.recentEntries(10);
+			expect(left).toHaveLength(2);
+			expect(left.every((e) => e.wasted === false)).toBe(true);
+			ledger.markWasted?.(left[0]!.id);
+			expect(ledger.recentEntries(10).find((e) => e.id === left[0]!.id)?.wasted).toBe(true);
+		} finally {
+			db.close();
+		}
+	});
+});

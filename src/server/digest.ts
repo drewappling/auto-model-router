@@ -23,6 +23,7 @@ import type { DigestConfig, RouterConfig } from "../config/types.ts";
 import { computeCost, forecast } from "../cost/forecast.ts";
 import type { Ledger, LedgerEntry } from "../cost/types.ts";
 import { buildCandidates } from "../router/candidates.ts";
+import { primaryArg } from "../router/compaction.ts";
 import { extractFeatures } from "../router/features.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { estimateTokens } from "../tokens/estimate.ts";
@@ -107,8 +108,31 @@ function syntheticRequest(req: DigestRequest, promptText: string): NormRequest {
 	};
 }
 
-export function createDigester(deps: DigesterDeps): { digest(req: DigestRequest): Promise<DigestResult> } {
+/** A digest the agent may still go back on: same tool, same primary argument, within RERUN_WINDOW_MS. */
+interface RecentDigest {
+	tool: string;
+	arg: string | null;
+	atMs: number;
+	ledgerId: string;
+	rerun: boolean;
+}
+const RERUN_WINDOW_MS = 2 * 3_600_000;
+const RECENT_PER_SESSION = 50;
+
+export interface Digester {
+	digest(req: DigestRequest): Promise<DigestResult>;
+	/**
+	 * Quality signal: the tool calls a session just made. One that repeats a
+	 * recent digest (same tool, same primary argument) means the agent went
+	 * back for the full output; that digest's ledger row is marked wasted and
+	 * the report shows the re-run rate. Returns how many were marked.
+	 */
+	noteToolCalls(ompSessionId: string, calls: readonly { name: string; argsJson: string }[], nowMs?: number): number;
+}
+
+export function createDigester(deps: DigesterDeps): Digester {
 	const { cfg, catalog, ledger, upstream, log } = deps;
+	const recent = new Map<string, RecentDigest[]>();
 
 	/** Cheapest simple-tier model that fits the prompt, or the configured one. */
 	async function pickModel(req: NormRequest, promptTokens: number): Promise<CatalogModel | null> {
@@ -229,6 +253,11 @@ export function createDigester(deps: DigesterDeps): { digest(req: DigestRequest)
 			}
 			if (error !== null) return { digested: false, reason: `digest model failed: ${error}` };
 			if (text === "" || text.length >= inputBytes * 0.9) return { digested: false, reason: "digest did not shrink the output" };
+			if (req.ompSessionId !== "") {
+				const list = recent.get(req.ompSessionId) ?? [];
+				list.push({ tool: req.toolName.toLowerCase(), arg: primaryArg(JSON.stringify(req.input)), atMs: startedAt, ledgerId: entry.id, rerun: false });
+				recent.set(req.ompSessionId, list.slice(-RECENT_PER_SESSION));
+			}
 			return {
 				digested: true,
 				text: `${digestMarker(req.toolName, req.input, model.slug, inputBytes, text.length)}\n${text}`,
@@ -238,6 +267,31 @@ export function createDigester(deps: DigesterDeps): { digest(req: DigestRequest)
 				outputChars: text.length,
 				ms,
 			};
+		},
+		noteToolCalls(ompSessionId, calls, nowMs = Date.now()) {
+			const list = recent.get(ompSessionId);
+			if (list === undefined || list.length === 0) return 0;
+			let marked = 0;
+			for (const c of calls) {
+				const tool = c.name.toLowerCase();
+				const arg = primaryArg(c.argsJson);
+				if (arg === null) continue;
+				for (const d of list) {
+					if (d.rerun || d.tool !== tool || d.arg !== arg || nowMs - d.atMs > RERUN_WINDOW_MS) continue;
+					d.rerun = true;
+					marked++;
+					try {
+						ledger.markWasted?.(d.ledgerId);
+					} catch (err) {
+						log.debug("digest re-run mark failed", { error: err instanceof Error ? err.message : String(err) });
+					}
+					log.info("digest re-run: the agent fetched the full output after all", { tool, arg: arg.slice(0, 80) });
+				}
+			}
+			const kept = list.filter((d) => nowMs - d.atMs <= RERUN_WINDOW_MS);
+			if (kept.length === 0) recent.delete(ompSessionId);
+			else recent.set(ompSessionId, kept);
+			return marked;
 		},
 	};
 }

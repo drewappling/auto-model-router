@@ -375,6 +375,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	);
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
+	const pruneStmt = db.query("DELETE FROM ledger WHERE created_at_ms < ?");
+	const wasteStmt = db.query("UPDATE ledger SET wasted = 1 WHERE id = ?");
 	const providerSpendStmt = db.query(
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND COALESCE(served_slug, slug) LIKE ?",
 	);
@@ -622,6 +624,13 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		providerSpendSince(slugPrefix: string, sinceMs: number): number {
 			const row = providerSpendStmt.get(sinceMs, `${slugPrefix}%`) as { total: number } | null;
 			return row?.total ?? 0;
+		},
+		prune(retentionDays: number, nowMs = Date.now()): number {
+			if (retentionDays <= 0) return 0;
+			return pruneStmt.run(nowMs - retentionDays * DAY_MS).changes;
+		},
+		markWasted(id: string): void {
+			wasteStmt.run(id);
 		},
 		latestForSession(ompSessionId: string): LedgerEntry | null {
 			if (ompSessionId === "") return null;

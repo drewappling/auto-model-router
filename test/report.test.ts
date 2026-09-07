@@ -229,7 +229,7 @@ describe("buildUsageReport", () => {
 			subagentSpendUsd: 0,
 			digests: 0,
 			digestSpendUsd: 0,
-			digestInputTokens: 0,
+			digestInputTokens: 0, digestReruns: 0, forecastSamples: 0, forecastMeanError: 0, forecastOverShare: 0,
 		});
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);
@@ -289,5 +289,33 @@ describe("renderUsageReport", () => {
 		const text = renderUsageReport(buildUsageReport(db, { windowDays: 7, nowMs: NOW }), { maxModels: 2 });
 		expect(text).toContain("models (top 2 of 5 by spend)");
 		db.close();
+	});
+});
+
+describe("digest re-runs and forecast accuracy", () => {
+	test("wasted digest rows count as re-runs; forecast error is judged on clean kept rows only", () => {
+		const { db, ledger } = seeded();
+		try {
+			ledger.record(entry({ requestedModel: "digest", conversationKey: "d1", reportedUsd: 0.001, predictedUsd: 0.001 }));
+			ledger.record(entry({ requestedModel: "digest", conversationKey: "d2", reportedUsd: 0.001, predictedUsd: 0.001, wasted: true }));
+			// Two clean turns: one predicted double, one predicted half.
+			ledger.record(entry({ predictedUsd: 0.02, reportedUsd: 0.01 }));
+			ledger.record(entry({ predictedUsd: 0.005, reportedUsd: 0.01 }));
+			// Excluded from the forecast judgement: wasted, errored, no reported cost.
+			ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, wasted: true }));
+			ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, error: "upstream_error: 500" }));
+			ledger.record(entry({ predictedUsd: 1, reportedUsd: null }));
+			const t = buildUsageReport(db, { windowDays: 1, nowMs: NOW }).totals;
+			expect(t.digests).toBe(2);
+			expect(t.digestReruns).toBe(1);
+			expect(t.forecastSamples).toBe(2);
+			expect(t.forecastMeanError).toBeCloseTo((1 + 0.5) / 2, 6);
+			expect(t.forecastOverShare).toBeCloseTo(0.5, 6);
+			const text = renderUsageReport(buildUsageReport(db, { windowDays: 1, nowMs: NOW }));
+			expect(text).toContain("re-run rate 50% (1 fetched again in full)");
+			expect(text).toContain("forecast: mean error 75% of reported cost over 2 turns · 50% over-predicted");
+		} finally {
+			db.close();
+		}
 	});
 });

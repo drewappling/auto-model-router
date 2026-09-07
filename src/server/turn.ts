@@ -114,6 +114,17 @@ export async function runTurn(
 	const log = createLogger(config.logLevel);
 	const state = conversations.load(req.conversationKey);
 	const turnNumber = state.turn + 1;
+	// Digest quality signal: the calls the agent just made, matched against
+	// recent digests of this session (a re-run of a digested read means the
+	// digest was not enough). The last assistant message holds this turn's calls.
+	if (deps.digester?.noteToolCalls !== undefined && req.ompSessionId !== "") {
+		for (let i = req.messages.length - 1; i >= 0; i--) {
+			const m = req.messages[i];
+			if (m === undefined || m.role !== "assistant") continue;
+			if (m.toolCalls.length > 0) deps.digester.noteToolCalls(req.ompSessionId, m.toolCalls.map((c) => ({ name: c.name, argsJson: c.argsJson })));
+			break;
+		}
+	}
 	// Request header wins; the configured default covers harnesses that send none.
 	const doxScope = req.agentdoxScope !== "" ? req.agentdoxScope : config.context.defaultScope;
 	const doxActive = bridge.enabled && doxScope !== "";
