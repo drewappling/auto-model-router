@@ -158,6 +158,13 @@ export interface CompactionEdit {
 	 * the edit instead of corrupting the prompt.
 	 */
 	bytes: number;
+	/**
+	 * A cheap-model digest of the original content (marker line first), set
+	 * by summarising compaction. When present it replaces the content outright
+	 * instead of the head/tail or stub breadcrumb, and persists with the plan
+	 * so the dispatched bytes stay identical turn to turn.
+	 */
+	digest?: string;
 }
 
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "error";

@@ -39,6 +39,14 @@ export interface DigestRequest {
 	content: string;
 	/** The user's current ask, so the digest keeps what matters for it. */
 	query: string;
+	/** The tier to judge `digest.fromTier` against; default: the session's last routed tier. */
+	tier?: string;
+	/**
+	 * Who asked. `tool_result` (default) is the omp extension and is gated on
+	 * `digest.enabled`; `compaction` is summarising compaction inside a turn
+	 * and is gated on `compaction.digestToolResults` instead.
+	 */
+	source?: "tool_result" | "compaction";
 }
 
 export type DigestResult =
@@ -129,8 +137,10 @@ export function createDigester(deps: DigesterDeps): { digest(req: DigestRequest)
 	return {
 		async digest(req) {
 			const inputBytes = Buffer.byteLength(req.content);
-			const currentTier = ledger.latestForSession?.(req.ompSessionId)?.tier ?? null;
-			const applies = digestApplies(cfg.digest, req.toolName, inputBytes, false, currentTier);
+			const source = req.source ?? "tool_result";
+			const currentTier = req.tier ?? ledger.latestForSession?.(req.ompSessionId)?.tier ?? null;
+			const gate = source === "compaction" ? { ...cfg.digest, enabled: cfg.compaction.digestToolResults } : cfg.digest;
+			const applies = digestApplies(gate, req.toolName, inputBytes, false, currentTier);
 			if (!applies.ok) return { digested: false, reason: applies.reason };
 
 			const promptText = `Task: ${req.query === "" ? "(unknown)" : req.query}\nTool: ${req.toolName} ${JSON.stringify(req.input)}\n--- output ---\n${req.content}`;
@@ -190,7 +200,7 @@ export function createDigester(deps: DigesterDeps): { digest(req: DigestRequest)
 				servedSlug: model.slug,
 				tier: cfg.digest.tier,
 				classificationSource: "forced",
-				reasons: [`digest: ${req.toolName} ${inputBytes} bytes → ${text.length} chars for a ${currentTier} session`],
+				reasons: [`digest (${source}): ${req.toolName} ${inputBytes} bytes → ${text.length} chars for a ${currentTier} ${source === "compaction" ? "turn" : "session"}`],
 				features: null,
 				score: null,
 				confidence: null,

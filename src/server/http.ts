@@ -9,6 +9,7 @@ import { createSessionOverrides } from "./overrides.ts";
 import { createDigester } from "./digest.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport } from "../cost/report.ts";
+import { buildDailySummary, createKv, markSummaryShown, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
@@ -195,8 +196,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const context = createBridgeFromConfig(cfg, db);
 	const overrides = createSessionOverrides();
 	const feedback = createFeedbackStore(db);
+	const kv = createKv(db);
 	const digester = createDigester({ cfg, catalog, ledger, upstream, log });
-	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale };
+	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale, digester };
 
 	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
 	// effect on the next turn without a restart, because every consumer reads
@@ -398,6 +400,29 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const harnessId = url.searchParams.get("harness") ?? "";
 					return json(buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) }));
 				}
+				if (req.method === "GET" && url.pathname === "/v1/router/summary") {
+					// The last 24 hours in a few lines. `auto=1` is the session-start
+					// caller: it gets `due: false` unless report.dailySummary is on, no
+					// summary was posted for this harness in the last 20h, and there is
+					// something to say; posting is then marked so other windows skip it.
+					const harnessId = url.searchParams.get("harness") ?? "";
+					const auto = url.searchParams.get("auto") === "1";
+					if (auto && !cfg.report.dailySummary) return json({ due: false, reason: "report.dailySummary is off", summary: null });
+					if (auto && !summaryDue(kv, harnessId)) return json({ due: false, reason: "posted in the last 20h", summary: null });
+					const meter = ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd);
+					const runway = ollamaRunway(meter, ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1);
+					const ollamaSummary: SummaryOllama | null =
+						ollama === null || meter === null ? null : { plan: meter.plan ?? null, usedUsd: meter.usedUsd, creditsUsd: meter.creditsUsd, runwayDays: runway?.days ?? null };
+					const summary = buildDailySummary(db, {
+						harnessId,
+						baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)),
+						spikes: ledger.softFailureSpikes?.() ?? [],
+						ollama: ollamaSummary,
+					});
+					if (auto && !summaryHasNews(summary)) return json({ due: false, reason: "nothing to report", summary: null });
+					if (auto) markSummaryShown(kv, harnessId);
+					return json({ due: true, summary });
+				}
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
 					const rawLimit = url.searchParams.get("limit");
 					const parsed = rawLimit === null ? 50 : Number.parseInt(rawLimit, 10);
@@ -514,6 +539,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 										runway: ollamaRunway(ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd), ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1),
 										costBias: { configured: cfg.ollama.costBias, effective: catalog.ollamaBias?.() ?? cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage },
 									},
+						// Models failing well above their own baseline in the last hour.
+						// Visibility only: nothing routes around a spike.
+						softFailures: { recentMs: 3_600_000, baselineDays: 7, spikes: ledger.softFailureSpikes?.() ?? [] },
 						catalog: snap === null
 							? null
 							: {

@@ -232,6 +232,15 @@ export interface FilterConfig {
 	 * once a week of verdicts is in the report.
 	 */
 	feedbackWeight: number;
+	/**
+	 * Count a verdict toward a model's trust only when routing the same task
+	 * type the judged turn was (the ledger's `task`: coding, vision,
+	 * documentation, data, chat). A model that writes good code but bad prose
+	 * then keeps its coding trust. Verdicts on turns with no recorded task
+	 * count for every task. Off by default: verdicts are scarce, and pooling
+	 * them converges sooner.
+	 */
+	feedbackByTask: boolean;
 	/** Attempts required before `minTrust` is enforced against a model. */
 	minTrustSamples: number;
 	/**
@@ -589,6 +598,13 @@ export interface ReportConfig {
 	 * are skipped.
 	 */
 	baselines: string[];
+	/**
+	 * Post a one-screen summary of the last 24 hours (spend, top models, cache
+	 * hit, escalations, soft-failure spikes, Ollama meter) into the transcript
+	 * at the first omp session start of each day. `/router summary` shows it
+	 * on demand regardless.
+	 */
+	dailySummary: boolean;
 }
 
 export interface BudgetConfig {
@@ -746,6 +762,17 @@ export interface CompactionConfig {
 	keepTailBytes: number;
 	/** Elide an older tool result when a newer call to the same resource supersedes it. */
 	elideSupersededReads: boolean;
+	/**
+	 * Summarising compaction: when the plan gains an edit, a cheap model
+	 * (`digest.tier` / `digest.model`, under `digest.maxCostUsd` and
+	 * `digest.timeoutMs`) digests the tool result instead of it being cut to
+	 * head+tail or a stub. The digest is stored on the edit, so the bytes sent
+	 * stay identical on later turns. Applies when the turn routed at or above
+	 * `digest.fromTier`; does not need `digest.enabled`.
+	 */
+	digestToolResults: boolean;
+	/** Digests per turn at most; the rest of a plan's new edits stay plain until a later turn. */
+	digestMaxPerTurn: number;
 	/** Collapse byte-identical repeated tool results to a single copy. */
 	collapseDuplicateResults: boolean;
 }

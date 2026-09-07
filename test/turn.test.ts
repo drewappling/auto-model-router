@@ -46,7 +46,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, feedbackWeight: 0, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, feedbackWeight: 0, feedbackByTask: false, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator", learnedModelPath: "",
@@ -74,9 +74,9 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
 		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, maxQueue: 64 },
-		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1 },
+		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1, digestToolResults: false, digestMaxPerTurn: 2 },
 		budget: { onExceeded: "downgrade" },
-		report: { baselines: [] },
+		report: { baselines: [], dailySummary: false },
 		digest: { enabled: false, minBytes: 12_000, maxBytes: 400_000, tools: ["read"], fromTier: "moderate", tier: "simple", model: "", maxOutputTokens: 700, maxCostUsd: 0.02, timeoutMs: 25_000 },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
@@ -929,4 +929,69 @@ describe("latency measurement covers the work the router actually does", () => {
 		expect(entries[0]!.reportedUsd).toBeCloseTo(0.01875, 6);
 	});
 
+});
+
+describe("summarising compaction in a turn", () => {
+	function reqWithTool(): NormRequest {
+		const content = "line\n".repeat(400);
+		const req = mkReq();
+		req.messages = [
+			{ role: "user", text: "fix it", images: 0, textBytes: 6, toolCalls: [] },
+			{ role: "assistant", text: "", images: 0, textBytes: 0, toolCalls: [{ id: "c1", name: "read", argsJson: '{"path":"a.ts"}' }] },
+			{ role: "tool", text: content, images: 0, textBytes: Buffer.byteLength(content), toolCalls: [], toolCallId: "c1" },
+			{ role: "user", text: "go on", images: 0, textBytes: 5, toolCalls: [] },
+		];
+		req.promptBytes = req.messages.reduce((s, m) => s + m.textBytes, 0);
+		return req;
+	}
+	function decisionWithPlan(): Decision {
+		const d = mkDecision("hard", "dear/model", { escalateTo: null });
+		d.compactionPlan = [{ index: 2, mode: "truncate", keepHead: 100, keepTail: 100, note: "large read result", bytes: 2_000 }];
+		d.compactionSavedBytes = 1_700;
+		return d;
+	}
+
+	test("new edits are digested with the turn's tier, persisted with the plan, and not paid twice on a retry", async () => {
+		const seen: { toolName: string; tier?: string; source?: string; content: string; input: Record<string, unknown> }[] = [];
+		const digester = {
+			digest: async (r: { toolName: string; tier?: string; source?: string; content: string; input: Record<string, unknown> }) => {
+				seen.push(r);
+				return { digested: true as const, text: "[digest] the file", model: "cheap/model", usd: 0.0001, inputBytes: r.content.length, outputChars: 17, ms: 5 };
+			},
+		};
+		// First attempt is probe-rejected and escalates; the second dispatches. Both decisions carry the same new edit.
+		const { router } = mkRouter([decisionWithPlan(), decisionWithPlan()]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("dear/model"), textChunk("I'm sorry, but I can't help with that request."), finishChunk("stop")] },
+			{ kind: "chunks", chunks: [startChunk("dear/model"), textChunk("done"), finishChunk("stop"), usageChunk({ promptTokens: 50, completionTokens: 2 }, 0.001)] },
+		]);
+		const { ledger } = mkLedger();
+		const { store, map } = mkConversations();
+		const { sink, errors } = mkSink();
+		const cfg = mkConfig();
+		cfg.compaction.digestToolResults = true;
+		cfg.escalation.maxAttempts = 2;
+
+		await runTurn(reqWithTool(), sink, { config: cfg, router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge(), digester }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({ toolName: "read", tier: "hard", source: "compaction", input: { path: "a.ts" } });
+		expect(seen[0]!.content.startsWith("line\n")).toBe(true);
+		const plan = map.get("conv-test")!.compactionPlan!;
+		expect(plan[0]?.digest).toBe("[digest] the file");
+	});
+
+	test("without compaction.digestToolResults the digester is never consulted", async () => {
+		let calls = 0;
+		const digester = { digest: async () => { calls++; return { digested: false as const, reason: "n/a" }; } };
+		const { router } = mkRouter([decisionWithPlan()]);
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [startChunk("dear/model"), textChunk("done"), finishChunk("stop")] }]);
+		const { ledger } = mkLedger();
+		const { store, map } = mkConversations();
+		const { sink } = mkSink();
+		await runTurn(reqWithTool(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge(), digester }, new AbortController().signal);
+		expect(calls).toBe(0);
+		expect(map.get("conv-test")!.compactionPlan![0]?.digest).toBeUndefined();
+	});
 });

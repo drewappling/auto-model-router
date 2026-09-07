@@ -497,6 +497,8 @@ escalation signal, error. Three views aggregate it, all from the same
   unreachable.
 - `auto-model-router report --days 7 [--harness <id>] [--json]` on the terminal.
 - `GET /v1/router/report?days=7&harness=<id>` for dashboards.
+- `GET /v1/router/summary?harness=<id>` — the daily summary as JSON (`auto=1`
+  applies the once-a-day gate and returns `due: false` when nothing is due).
 
 What it shows, for the window:
 
@@ -509,6 +511,18 @@ What it shows, for the window:
 | tiers | per tier: dispatches, spend, share, cache hit, mean prompt tokens, escalations |
 | by day | UTC calendar days: dispatches, spend, cache hit |
 | same traffic on one model | the window's tokens priced on each `report.baselines` model at list price with the window's cache hit rate, and what share the router saved against it |
+
+**Soft-failure spikes.** `/health` (`softFailures.spikes`), `/router status`
+and the daily summary list any model whose failure rate over the last hour —
+probe rejections such as `empty_completion` or `repeat_tool_call` that
+OpenRouter counts as success, plus attributable transport errors — is at
+least 25%, at least twice its own rate over the preceding 7 days, and covers
+at least 5 dispatches with 3 failures. This is visibility only: two weeks of
+ledger data showed soft failures do not cluster tightly enough for a breaker
+to save money (after a burst, the next 15 minutes ran 84–1,577 successes per
+13–50 failures), and OpenRouter's provider failover plus the router's own
+escalation already cover the retry. Use a spike as the cue to `/router pin`
+or deny a model for the session.
 
 Spend follows the ledger's rule — the provider's reported cost when it gave
 one, else the usage-priced figure the router computed, else the forecast.
@@ -534,7 +548,8 @@ Status); the subcommands go straight there:
 | --- | --- |
 | `/router config` | Section picker over **every** config key: Server, OpenRouter, Ollama Cloud, Benchmarks, Tiers, Tasks, Filters, Classifier, Escalation, Hysteresis, Exploration, Cache, Compaction, Context (agentdox), Budget, Ledger, Logging, Profiles. Only `ollama.prices` and `ollama.twins` (maps) stay YAML-only. |
 | `/router report` | Usage analytics in a fullscreen hub styled like `/models`: pick a view in the sidebar, set the window (24h / 7d / 30d / 90d) and the harness scope there too. `/router report 30d --all` presets them. See [Usage reports](#usage-reports). |
-| `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, agentdox bridge. |
+| `/router summary [--all]` | The last 24 hours in a few lines: spend against the day before, turns and conversations, cache hit, escalations, errors, model switches with tier moves, top models, savings against the first `report.baselines` model, digests and subagent spend, soft-failure spikes, and the Ollama meter with its runway. Posted automatically once a day at session start when `report.dailySummary` is on (the router keeps a per-harness marker, so several omp windows show it once between them, and a day with no turns and no spikes is skipped). |
+| `/router status` | The router's `/health`: key sources, catalog size and age, Ollama availability, plan usage and cost bias, soft-failure spikes (below), agentdox bridge. |
 | `/router why` | Explain this session's last routed turn: model and provider, tier, classification source and confidence, cost, cache hit, latency, the full decision trail and classifier reasons, any feedback already given. |
 | `/router good` / `/router bad [note]` | Judge that turn. Recorded against the model that served it (`POST /v1/router/feedback`), shown per model in the report's `feedback` column, and the label the de-escalation work needs. `/router feedback good\|bad` is the same. |
 | `/router pin <model\|off>` | Route this session to one model until cleared (admitted past price, quality and trust filters; tool support and context window still apply). Escalations and failovers after the first attempt still run. |
@@ -668,6 +683,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `includeFree` | `false` | Include free models (rate-limited hard; usually excluded). |
 | `requireToolSupport` | `true` | Only models that support tool calls. |
 | `feedbackWeight` | `0` | How much a `/router good\|bad` verdict weighs in a model's trust rate: a bad verdict counts as this many failures, a good one as this many successes. `0` records verdicts without acting on them. |
+| `feedbackByTask` | `false` | Count a verdict only when routing the same task type as the judged turn (coding, vision, documentation, data, chat), so a model that codes well but explains badly keeps its coding trust. Verdicts on turns with no recorded task count everywhere. |
 | `minTrust` | `0.7` | Minimum success rate; models below this (after `minTrustSamples`) are demoted. |
 | `minTrustSamples` | `12` | Attempts before trust is enforced. |
 | `trustScopedByHarness` | `false` | `true` = each harness reads only its own trust rows. |
@@ -684,7 +700,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ambiguityThreshold` | `0.6` | Below this heuristic confidence, the adjudicator model decides the tier. |
-| `learnedModelPath` | unset | A model written by `bun tools/train-classifier.ts` (logistic regression over the ledger's recorded features, label = the turn escalated). When set, every decision records `learned: p(escalate)=…`. Advisory only: it never moves a tier until replay shows it should. |
+| `learnedModelPath` | unset | A model written by `bun tools/train-classifier.ts` (logistic regression over the ledger's recorded features; label = the turn escalated, or with `--label feedback` the turn was judged bad via `/router bad`). When set, every decision records `learned: p(escalate)=…` or `learned: p(bad)=…`. Advisory only: it never moves a tier until replay shows it should. |
 | `model` | `qwen/qwen3.7-flash` | Adjudicator model slug. |
 | `maxCostFraction` | `0.02` | Adjudicator cost cap as a fraction of the turn's budget. |
 | `maxCostUsd` | `0.002` | Absolute adjudicator cost cap, USD. |
@@ -748,6 +764,8 @@ shrunk results stay shrunk (rewriting them would break the prompt cache).
 | `keepHeadBytes` / `keepTailBytes` | `512` / `512` | Bytes kept around the elision breadcrumb. |
 | `elideSupersededReads` | `true` | Stub an older result when a newer call to the same resource supersedes it. |
 | `collapseDuplicateResults` | `true` | Collapse byte-identical repeated results to a single copy. |
+| `digestToolResults` | `false` | Summarising compaction: when the plan gains an edit, a cheap model (`digest.tier`/`digest.model`, under `digest.maxCostUsd` and `digest.timeoutMs`) digests the tool result instead of it being cut to head+tail or a stub. The digest is stored on the edit, so the dispatched bytes stay identical on later turns and the cache holds. Applies when the turn routed at or above `digest.fromTier`; works without `digest.enabled`. |
+| `digestMaxPerTurn` | `2` | Digests per turn at most (largest results first); the rest of a plan's new edits stay plain until a later turn. |
 
 ### `cache` — prompt-cache breakpoints
 
@@ -809,6 +827,7 @@ is a ledger row (`requestedModel` `digest`) and the report totals them.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `baselines` | `anthropic/claude-opus-5`, `anthropic/claude-sonnet-5` | Models the report prices the window's traffic on as a single-model counterfactual. Unknown slugs are skipped. |
+| `dailySummary` | `true` | Post the daily summary (below) into the transcript at the first interactive omp session start of each day. Hot-reloads. |
 
 ### `ledger` — cost measurement
 

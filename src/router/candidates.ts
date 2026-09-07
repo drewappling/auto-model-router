@@ -263,7 +263,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		const signals = args.signals;
 		const trust =
 			signals?.get(slug)?.trust ??
-			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ??
+			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined, filters.feedbackByTask ? task : undefined) ??
 			null;
 		if (!relaxTrust && trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
 			rejected.push({

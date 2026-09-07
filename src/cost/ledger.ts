@@ -27,6 +27,7 @@ import type {
 	ModelCacheReliability,
 	ModelLatency,
 	ModelTrust,
+	SoftFailureSpike,
 	UsageCounts,
 } from "./types.ts";
 
@@ -35,6 +36,20 @@ const MIN_CALIBRATION_SAMPLES = 20;
 /** Calibration samples outside this bytes-per-token band are provider accounting quirks, not tokenizer facts. */
 const MIN_SANE_BYTES_PER_TOKEN = 1.5;
 const MAX_SANE_BYTES_PER_TOKEN = 8;
+/**
+ * Soft-failure spike detection (visibility only). A model is spiking when, over
+ * the recent window, it has at least SPIKE_MIN_DISPATCHES dispatches, at least
+ * SPIKE_MIN_FAILURES of them failed, its failure rate is at least
+ * SPIKE_MIN_RATE, and that rate is at least SPIKE_RATIO × its own baseline
+ * rate over the preceding window (a model with no baseline failures spikes on
+ * the absolute floor alone).
+ */
+const SPIKE_RECENT_MS = 60 * 60_000;
+const SPIKE_BASELINE_MS = 7 * 24 * 60 * 60_000;
+const SPIKE_MIN_DISPATCHES = 5;
+const SPIKE_MIN_FAILURES = 3;
+const SPIKE_MIN_RATE = 0.25;
+const SPIKE_RATIO = 2;
 /** Escalated attempts needed before their measured cost is trusted. */
 const MIN_ESCALATION_SAMPLES = 10;
 /** The escalation-cost aggregate scans a window of rows; memoised for this long. */
@@ -334,11 +349,23 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		`SELECT ${FEEDBACK_SELECT} FROM feedback f JOIN ledger l ON l.id = f.ledger_id WHERE f.slug = ? AND l.harness_id = ? AND f.created_at_ms > ?`,
 	);
 	const allFeedbackStmt = db.query(`SELECT f.slug, ${FEEDBACK_SELECT} FROM feedback f WHERE f.created_at_ms > ? GROUP BY f.slug`);
-	const feedbackFor = (slug: string, harnessId: string | undefined, cutoff: number): FeedbackRow | null => {
+	// Task-scoped variants (filters.feedbackByTask): the judged turn's task
+	// must match, or be unrecorded (older rows, or a turn that never classified).
+	const feedbackTaskStmt = db.query(
+		`SELECT ${FEEDBACK_SELECT} FROM feedback f JOIN ledger l ON l.id = f.ledger_id WHERE f.slug = ? AND (l.task = ? OR l.task IS NULL) AND f.created_at_ms > ?`,
+	);
+	const feedbackHarnessTaskStmt = db.query(
+		`SELECT ${FEEDBACK_SELECT} FROM feedback f JOIN ledger l ON l.id = f.ledger_id WHERE f.slug = ? AND l.harness_id = ? AND (l.task = ? OR l.task IS NULL) AND f.created_at_ms > ?`,
+	);
+	const feedbackFor = (slug: string, harnessId: string | undefined, cutoff: number, task?: string): FeedbackRow | null => {
 		if (cfg.filters.feedbackWeight <= 0) return null;
-		return harnessId !== undefined && harnessId !== ""
-			? (feedbackHarnessStmt.get(slug, harnessId, cutoff) as FeedbackRow | null)
-			: (feedbackStmt.get(slug, cutoff) as FeedbackRow | null);
+		const byHarness = harnessId !== undefined && harnessId !== "";
+		if (cfg.filters.feedbackByTask && task !== undefined && task !== "") {
+			return byHarness
+				? (feedbackHarnessTaskStmt.get(slug, harnessId, task, cutoff) as FeedbackRow | null)
+				: (feedbackTaskStmt.get(slug, task, cutoff) as FeedbackRow | null);
+		}
+		return byHarness ? (feedbackHarnessStmt.get(slug, harnessId, cutoff) as FeedbackRow | null) : (feedbackStmt.get(slug, cutoff) as FeedbackRow | null);
 	};
 	const latencyStmt = db.query(
 		`SELECT ${LATENCY_SELECT} FROM (SELECT * FROM ledger WHERE slug = ? ORDER BY created_at_ms DESC LIMIT ${LATENCY_WINDOW_ROWS})`,
@@ -363,6 +390,19 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		 FROM ledger WHERE attempt > 0 AND error IS NULL AND created_at_ms >= ?`,
 	);
 	let escalationMemo: { atMs: number; windowDays: number; value: EscalationCost | null } | null = null;
+	// Per-model failure counts over two adjacent windows: [recentStart, now] and
+	// [baselineStart, recentStart). Wasted rows (the failed attempt a retry
+	// replaced) stay in: they ARE the soft failures being counted. Digest side
+	// calls are excluded: they are not the session's turns.
+	const softFailureStmt = db.query(
+		`SELECT COALESCE(served_slug, slug) AS slug,
+			SUM(CASE WHEN created_at_ms >= $recentStart THEN 1 ELSE 0 END) AS recent_n,
+			SUM(CASE WHEN created_at_ms >= $recentStart AND (escalation_signal IS NOT NULL OR (${ATTRIBUTABLE_ERROR})) THEN 1 ELSE 0 END) AS recent_f,
+			SUM(CASE WHEN created_at_ms < $recentStart THEN 1 ELSE 0 END) AS base_n,
+			SUM(CASE WHEN created_at_ms < $recentStart AND (escalation_signal IS NOT NULL OR (${ATTRIBUTABLE_ERROR})) THEN 1 ELSE 0 END) AS base_f
+		 FROM ledger WHERE created_at_ms >= $baselineStart AND created_at_ms <= $now AND requested_model <> 'digest'
+		 GROUP BY COALESCE(served_slug, slug)`,
+	);
 	const cacheMetaStmt = db.query("SELECT fetched_at_ms FROM catalog_cache WHERE id = 1");
 	const cachePayloadStmt = db.query("SELECT payload FROM catalog_cache WHERE id = 1");
 
@@ -466,7 +506,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			return computeBlendedRate(db, cfg, windowDays);
 		},
 
-		trust(slug: string, harnessId?: string): ModelTrust | null {
+		trust(slug: string, harnessId?: string, task?: string): ModelTrust | null {
 			// Read the window at CALL time, not at construction: hot reload mutates
 			// the shared config object in place, so a pinned value would ignore an
 			// edit until restart. 0 => cutoff 0 => every row qualifies.
@@ -476,7 +516,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 					? (trustHarnessStmt.get(slug, harnessId, cutoff) as TrustRow | null)
 					: (trustStmt.get(slug, cutoff) as TrustRow | null);
 			if (row === null || row.attempts === 0) return null;
-			return toTrust(slug, row, feedbackFor(slug, harnessId, cutoff), cfg.filters.feedbackWeight);
+			return toTrust(slug, row, feedbackFor(slug, harnessId, cutoff, task), cfg.filters.feedbackWeight);
 		},
 
 		allTrust(): ModelTrust[] {
@@ -497,7 +537,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			if (row === null) return null;
 			return toLatency(slug, row);
 		},
-		signals(slugs: readonly string[], harnessId?: string): Map<string, LedgerSignals> {
+		signals(slugs: readonly string[], harnessId?: string, task?: string): Map<string, LedgerSignals> {
 			const cutoff = cfg.filters.trustWindowDays > 0 ? Date.now() - cfg.filters.trustWindowDays * DAY_MS : 0;
 			const hasHarness = harnessId !== undefined && harnessId !== "";
 			const out = new Map<string, LedgerSignals>();
@@ -509,7 +549,7 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 					? (latencyHarnessStmt.get(slug, harnessId) as LatencyRow | null)
 					: (latencyStmt.get(slug) as LatencyRow | null);
 				out.set(slug, {
-					trust: trustRow === null || trustRow.attempts === 0 ? null : toTrust(slug, trustRow, feedbackFor(slug, harnessId, cutoff), cfg.filters.feedbackWeight),
+					trust: trustRow === null || trustRow.attempts === 0 ? null : toTrust(slug, trustRow, feedbackFor(slug, harnessId, cutoff, task), cfg.filters.feedbackWeight),
 					latency: latencyRow === null ? null : toLatency(slug, latencyRow),
 				});
 			}
@@ -551,6 +591,33 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		recentEntries(limit: number): LedgerEntry[] {
 			const rows = recentStmt.all(limit) as LedgerRow[];
 			return rows.map(toEntry);
+		},
+		softFailureSpikes(nowMs = Date.now(), recentMs = SPIKE_RECENT_MS, baselineMs = SPIKE_BASELINE_MS): SoftFailureSpike[] {
+			const rows = softFailureStmt.all({ $now: nowMs, $recentStart: nowMs - recentMs, $baselineStart: nowMs - recentMs - baselineMs }) as {
+				slug: string;
+				recent_n: number;
+				recent_f: number;
+				base_n: number;
+				base_f: number;
+			}[];
+			const spikes: SoftFailureSpike[] = [];
+			for (const r of rows) {
+				if (r.recent_n < SPIKE_MIN_DISPATCHES || r.recent_f < SPIKE_MIN_FAILURES) continue;
+				const recentRate = r.recent_f / r.recent_n;
+				const baselineRate = r.base_n > 0 ? r.base_f / r.base_n : 0;
+				if (recentRate < SPIKE_MIN_RATE || recentRate < SPIKE_RATIO * baselineRate) continue;
+				spikes.push({
+					slug: r.slug,
+					recentDispatches: r.recent_n,
+					recentFailures: r.recent_f,
+					recentRate,
+					baselineDispatches: r.base_n,
+					baselineFailures: r.base_f,
+					baselineRate,
+				});
+			}
+			spikes.sort((a, b) => b.recentRate - a.recentRate || b.recentFailures - a.recentFailures);
+			return spikes;
 		},
 		providerSpendSince(slugPrefix: string, sinceMs: number): number {
 			const row = providerSpendStmt.get(sinceMs, `${slugPrefix}%`) as { total: number } | null;

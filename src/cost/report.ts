@@ -185,14 +185,19 @@ function toRow(r: RawRow, windowSpend: number): ReportRow {
  */
 export function buildUsageReport(
 	db: Database,
-	opts: { windowDays: number; harnessId?: string; nowMs?: number; baselines?: readonly BaselinePrice[] },
+	opts: { windowDays: number; harnessId?: string; nowMs?: number; baselines?: readonly BaselinePrice[]; /** Exclusive upper bound; default open-ended. */ untilMs?: number },
 ): UsageReport {
 	const nowMs = opts.nowMs ?? Date.now();
 	const windowDays = Math.max(1, opts.windowDays);
 	const sinceMs = nowMs - windowDays * 86_400_000;
 	const harnessId = opts.harnessId ?? "";
-	const where = harnessId === "" ? "created_at_ms >= $since" : "created_at_ms >= $since AND harness_id = $harness";
-	const bind = harnessId === "" ? { $since: sinceMs } : { $since: sinceMs, $harness: harnessId };
+	const untilMs = opts.untilMs;
+	const where = [
+		"created_at_ms >= $since",
+		...(untilMs === undefined ? [] : ["created_at_ms < $until"]),
+		...(harnessId === "" ? [] : ["harness_id = $harness"]),
+	].join(" AND ");
+	const bind = { $since: sinceMs, ...(untilMs === undefined ? {} : { $until: untilMs }), ...(harnessId === "" ? {} : { $harness: harnessId }) };
 
 	const t = db
 		.query(

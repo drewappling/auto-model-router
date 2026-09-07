@@ -77,8 +77,13 @@ export function learnedVector(f: Partial<Features>): number[] {
 	];
 }
 
+/** What a learned model's positive class means. */
+export type LearnedLabel = "escalation" | "feedback";
+
 export interface LearnedModel {
 	version: number;
+	/** Positive class: the turn escalated (default), or the user judged it bad. */
+	label?: LearnedLabel;
 	trainedAtMs: number;
 	rows: number;
 	positives: number;
@@ -93,7 +98,12 @@ export interface LearnedModel {
 
 const sigmoid = (z: number): number => 1 / (1 + Math.exp(-z));
 
-/** P(escalate) for one turn under a model. */
+/** The positive-class name a decision reason should print for a model. */
+export function learnedRiskName(model: LearnedModel): string {
+	return model.label === "feedback" ? "bad" : "escalate";
+}
+
+/** P(positive class) for one turn under a model: p(escalate), or p(bad) for a feedback-labelled model. */
 export function predictRisk(model: LearnedModel, f: Partial<Features>): number {
 	const x = learnedVector(f);
 	let z = model.bias;

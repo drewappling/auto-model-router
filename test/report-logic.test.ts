@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { fetchReport, parseReportArgs, renderStatus, type HealthSnapshot } from "../omp-extension/report-logic.ts";
+import { fetchReport, parseReportArgs, renderSoftFailureSpikes, renderStatus, type HealthSnapshot } from "../omp-extension/report-logic.ts";
 
 describe("parseReportArgs", () => {
 	test("defaults to 7 days scoped to the harness", () => {
@@ -71,8 +71,11 @@ describe("renderStatus", () => {
 				costBias: { configured: 0.1, effective: 0.1, biasUntilUsage: 0.9 },
 			},
 			catalog: { models: 240, ageMs: 5 * 60_000, keyScoped: true, shrink: { fromModels: 300, toModels: 120, atMs: now } },
+			softFailures: { recentMs: 3_600_000, baselineDays: 7, spikes: [{ slug: "z-ai/glm-5.3", recentDispatches: 12, recentFailures: 5, recentRate: 5 / 12, baselineDispatches: 340, baselineRate: 0.08 }] },
 		};
 		const text = renderStatus("http://127.0.0.1:8788", h, now);
+		expect(text).toContain("soft failures SPIKING (1):");
+		expect(text).toContain("  z-ai/glm-5.3: 42% of 12 failed in the last 1h (7d baseline 8% of 340)");
 		expect(text).toContain("configured (omp)");
 		expect(text).toContain("240 models");
 		expect(text).toContain("refreshed 5m ago");
@@ -84,6 +87,13 @@ describe("renderStatus", () => {
 		expect(text).toContain("last trip quota 2m ago");
 		expect(text).toContain("scope omp-router");
 		expect(text).toContain("recording turns");
+	});
+
+	test("reports a quiet hour and omits the line for routers that predate the check", () => {
+		expect(renderStatus("http://h", { status: "ok", softFailures: { spikes: [] } })).toContain("soft failures: no model spiking in the last hour");
+		expect(renderStatus("http://h", { status: "ok" })).not.toContain("soft failures");
+		expect(renderSoftFailureSpikes(null)).toEqual([]);
+		expect(renderSoftFailureSpikes([{ slug: "a/b", recentRate: 0.5, recentDispatches: 6 }], 30 * 60_000, 7)).toEqual(["a/b: 50% of 6 failed in the last 30m (7d baseline 0% of 0)"]);
 	});
 
 	test("degrades cleanly when sections are absent", () => {

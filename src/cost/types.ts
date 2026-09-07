@@ -230,6 +230,25 @@ export interface EscalationCost {
 	windowDays: number;
 }
 
+/**
+ * A model whose recent failure rate (probe rejections OpenRouter counts as
+ * success, plus attributable transport errors) is well above its own
+ * baseline. Visibility only: the ledger data showed soft failures do not
+ * cluster tightly enough for a breaker to save money, so the router reports
+ * spikes (/health, /router status, the daily summary) rather than acting.
+ */
+export interface SoftFailureSpike {
+	slug: string;
+	/** Dispatches and failures in the recent window. */
+	recentDispatches: number;
+	recentFailures: number;
+	recentRate: number;
+	/** The same, over the baseline window (recent window excluded). */
+	baselineDispatches: number;
+	baselineFailures: number;
+	baselineRate: number;
+}
+
 export interface Ledger {
 	record(entry: LedgerEntry): void;
 	/** Total reported (or predicted, when reported is null) spend for a conversation. */
@@ -240,8 +259,12 @@ export interface Ledger {
 	 */
 	spendSince(sinceMs: number, harnessId?: string): number;
 	blendedRate(windowDays: number): BlendedRate | null;
-	/** Per-model reliability over the ledger, optionally scoped to a harness. */
-	trust(slug: string, harnessId?: string): ModelTrust | null;
+	/**
+	 * Per-model reliability over the ledger, optionally scoped to a harness.
+	 * `task` (with `filters.feedbackByTask`) counts only verdicts given on
+	 * turns of that task type, plus verdicts on turns with no recorded task.
+	 */
+	trust(slug: string, harnessId?: string, task?: string): ModelTrust | null;
 	allTrust(): ModelTrust[];
 	/**
 	 * Per-model responsiveness (mean TTFT + completion throughput), optionally
@@ -251,7 +274,7 @@ export interface Ledger {
 	 */
 	latency(slug: string, harnessId?: string): ModelLatency | null;
 	/** Batch trust and latency for one candidate set; one query per signal kind. Optional — callers can fall back to per-slug calls. */
-	signals?(slugs: readonly string[], harnessId?: string): Map<string, LedgerSignals>;
+	signals?(slugs: readonly string[], harnessId?: string, task?: string): Map<string, LedgerSignals>;
 	/**
 	 * What an escalated retry actually bills per prompt token, measured over
 	 * the last `windowDays` of attempt > 0 rows. Null until enough escalated
@@ -271,6 +294,11 @@ export interface Ledger {
 	recentEntries(limit: number): LedgerEntry[];
 	/** Spend since an instant on slugs with a prefix (`ollama/`), for provider-level reconciliation. Optional. */
 	providerSpendSince?(slugPrefix: string, sinceMs: number): number;
+	/**
+	 * Models whose soft-failure rate over the last `recentMs` is a spike against
+	 * their own rate over the preceding `baselineMs`. Optional; visibility only.
+	 */
+	softFailureSpikes?(nowMs?: number, recentMs?: number, baselineMs?: number): SoftFailureSpike[];
 	/** Newest kept (non-wasted) entry for an omp session, for /router why and feedback. Optional so fakes need not implement it. */
 	latestForSession?(ompSessionId: string): LedgerEntry | null;
 	/** Newest entries for an omp session, newest first. Optional. */

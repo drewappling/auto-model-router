@@ -199,6 +199,10 @@ function applyCompaction(messages: Record<string, unknown>[], edits: readonly Co
 		if (msg === undefined) continue;
 		const content = msg.content;
 		if (typeof content !== "string") continue;
+		if (edit.digest !== undefined) {
+			msg.content = edit.digest;
+			continue;
+		}
 		if (edit.mode === "stub") {
 			msg.content = `[omp-router: ${edit.note} elided to save context; re-run the tool to restore]`;
 			continue;

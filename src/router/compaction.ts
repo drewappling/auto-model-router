@@ -33,6 +33,7 @@ const BREADCRUMB_BYTES = 120;
  */
 export function compactedBytes(originalBytes: number, edit: CompactionEdit | undefined): number {
 	if (edit === undefined) return originalBytes;
+	if (edit.digest !== undefined) return Math.min(originalBytes, Buffer.byteLength(edit.digest));
 	const kept = edit.mode === "stub" ? BREADCRUMB_BYTES : edit.keepHead + edit.keepTail + BREADCRUMB_BYTES;
 	return Math.min(originalBytes, kept);
 }

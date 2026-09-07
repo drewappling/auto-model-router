@@ -103,6 +103,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		minTrust: 0.7,
 		// Verdicts are recorded and reported first; weigh them once there are some.
 		feedbackWeight: 0,
+		feedbackByTask: false,
 		minTrustSamples: 12,
 		// Shared trust by default: more samples, demotion guard stays effective
 		// even with a tiny guardrail-narrowed catalog.
@@ -291,6 +292,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		keepTailBytes: 512,
 		elideSupersededReads: true,
 		collapseDuplicateResults: true,
+		// Off: a synchronous cheap-model call before dispatch, only worth it where
+		// stale tool output is the prompt and the turn is on a dear model.
+		digestToolResults: false,
+		digestMaxPerTurn: 2,
 	},
 	digest: {
 		// Off until an operator turns it on: it changes what the model reads.
@@ -308,6 +313,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	report: {
 		// The frontier pair most omp users would otherwise run on.
 		baselines: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"],
+		// One transcript message per day, at the first interactive session start.
+		dailySummary: true,
 	},
 	budget: {
 		// No caps by default; at a configured ceiling, downgrade rather than fail.

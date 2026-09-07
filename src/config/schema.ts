@@ -90,6 +90,7 @@ const filters = z.strictObject({
 	requireToolSupport: z.boolean().optional(),
 	minTrust: z.number().min(0).max(1).optional(),
 	feedbackWeight: z.number().nonnegative().optional(),
+	feedbackByTask: z.boolean().optional(),
 	minTrustSamples: z.number().int().nonnegative().optional(),
 	trustScopedByHarness: z.boolean().optional(),
 	trustWindowDays: z.number().nonnegative().optional(),
@@ -205,6 +206,8 @@ const compaction = z.strictObject({
 	keepTailBytes: z.number().int().nonnegative().optional(),
 	elideSupersededReads: z.boolean().optional(),
 	collapseDuplicateResults: z.boolean().optional(),
+	digestToolResults: z.boolean().optional(),
+	digestMaxPerTurn: z.number().int().nonnegative().optional(),
 });
 
 const budget = z.strictObject({
@@ -272,7 +275,7 @@ export const configInputSchema = z.strictObject({
 	compaction: compaction.optional(),
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
-	report: z.strictObject({ baselines: z.array(z.string()).optional() }).optional(),
+	report: z.strictObject({ baselines: z.array(z.string()).optional(), dailySummary: z.boolean().optional() }).optional(),
 	digest: z
 		.strictObject({
 			enabled: z.boolean().optional(),

@@ -6,6 +6,7 @@
  */
 
 import type { UsageReport } from "../src/cost/report.ts";
+import type { DailySummary } from "../src/cost/summary.ts";
 
 export interface ReportRequest {
 	windowDays: number;
@@ -61,6 +62,44 @@ export async function fetchReport(
 	return (await res.json()) as UsageReport;
 }
 
+/** GETs the daily summary; `auto` asks the router whether one is due today. Throws on any failure. */
+export async function fetchSummary(
+	baseUrl: string,
+	harnessId: string,
+	auto: boolean,
+	headers: Record<string, string>,
+	fetchImpl: FetchLike = fetch,
+	timeoutMs = 5_000,
+): Promise<{ due: boolean; reason?: string; summary: DailySummary | null }> {
+	const params = new URLSearchParams();
+	if (harnessId !== "") params.set("harness", harnessId);
+	if (auto) params.set("auto", "1");
+	const q = params.toString();
+	const res = await fetchImpl(`${baseUrl}/v1/router/summary${q === "" ? "" : `?${q}`}`, { headers, signal: AbortSignal.timeout(timeoutMs) });
+	if (!res.ok) throw new Error(`router returned ${res.status}`);
+	return (await res.json()) as { due: boolean; reason?: string; summary: DailySummary | null };
+}
+
+/** One spiking model as `/health` reports it. */
+export interface SoftFailureSpikeView {
+	slug?: string;
+	recentDispatches?: number;
+	recentFailures?: number;
+	recentRate?: number;
+	baselineDispatches?: number;
+	baselineRate?: number;
+}
+
+/** "slug: 40% of 10 failed in the last 1h (7d baseline 8% of 120)" — one line per spiking model. */
+export function renderSoftFailureSpikes(spikes: readonly SoftFailureSpikeView[] | undefined | null, recentMs = 3_600_000, baselineDays = 7): string[] {
+	if (spikes === undefined || spikes === null || spikes.length === 0) return [];
+	const window = recentMs >= 3_600_000 ? `${(recentMs / 3_600_000).toFixed(recentMs % 3_600_000 === 0 ? 0 : 1)}h` : `${Math.round(recentMs / 60_000)}m`;
+	return spikes.map(
+		(s) =>
+			`${s.slug ?? "?"}: ${((s.recentRate ?? 0) * 100).toFixed(0)}% of ${s.recentDispatches ?? 0} failed in the last ${window} (${baselineDays}d baseline ${((s.baselineRate ?? 0) * 100).toFixed(0)}% of ${s.baselineDispatches ?? 0})`,
+	);
+}
+
 /** The subset of `/health` the status view renders. */
 export interface HealthSnapshot {
 	status?: string;
@@ -80,6 +119,7 @@ export interface HealthSnapshot {
 		runway?: { dailyBurnUsd?: number; creditsLeftUsd?: number; days?: number | null } | null;
 		costBias?: { configured?: number; effective?: number; biasUntilUsage?: number };
 	} | null;
+	softFailures?: { recentMs?: number; baselineDays?: number; spikes?: SoftFailureSpikeView[] } | null;
 	catalog?: {
 		models?: number;
 		ageMs?: number;
@@ -118,6 +158,12 @@ export function renderStatus(baseUrl: string, h: HealthSnapshot, nowMs = Date.no
 		const calText = c !== undefined && c !== null && c.factor !== undefined ? `ledger estimate ×${c.factor.toFixed(2)} to match the meter (${(c.spanHours ?? 0).toFixed(0)}h span)` : "ledger estimate uncalibrated (needs ~$0.50 of metered spend)";
 		const rwText = rw !== undefined && rw !== null ? ` · burn $${(rw.dailyBurnUsd ?? 0).toFixed(2)}/day · ${rw.days === null || rw.days === undefined ? "credits left: unknown burn" : `~${Math.round(rw.days)} days of credits left`}` : "";
 		if (o.meter !== undefined && o.meter !== null) out.push(`ollama billing: ${calText}${rwText}`);
+	}
+	const sf = h.softFailures;
+	if (sf !== undefined && sf !== null) {
+		const lines = renderSoftFailureSpikes(sf.spikes, sf.recentMs, sf.baselineDays);
+		if (lines.length === 0) out.push("soft failures: no model spiking in the last hour");
+		else out.push(`soft failures SPIKING (${lines.length}):`, ...lines.map((l) => `  ${l}`));
 	}
 	const a = h.agentdox;
 	out.push(a === undefined || a === null ? "agentdox: off" : `agentdox: ${a.url ?? "?"} scope ${a.defaultScope ?? "?"}${a.recordTurns === true ? " · recording turns" : ""}`);

@@ -637,7 +637,7 @@ describe("context compaction", () => {
 			keepHeadBytes: 20,
 			keepTailBytes: 20,
 			elideSupersededReads: true,
-			collapseDuplicateResults: true,
+			collapseDuplicateResults: true, digestToolResults: false, digestMaxPerTurn: 2,
 		},
 	};
 
@@ -954,7 +954,7 @@ describe("compaction.replanGrowthRatio (review 2026-09-05 §7)", () => {
 				keepHeadBytes: 20,
 				keepTailBytes: 20,
 				elideSupersededReads: false,
-				collapseDuplicateResults: false,
+				collapseDuplicateResults: false, digestToolResults: false, digestMaxPerTurn: 2,
 			},
 		};
 	}

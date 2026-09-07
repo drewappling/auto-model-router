@@ -28,6 +28,7 @@ import {
 } from "../router/types.ts";
 import { UpstreamError, type Dispatch, type UpstreamClient } from "../upstream/types.ts";
 import type { SessionOverrides } from "./overrides.ts";
+import { digestCompactionEdits, type CompactionDigester } from "./compaction-digest.ts";
 import { createLogger } from "../util/log.ts";
 import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk } from "../wire/types.ts";
 
@@ -71,6 +72,8 @@ export interface TurnDeps {
 	overrides?: SessionOverrides;
 	/** Ledger-vs-meter calibration for Ollama's estimated costs; absent ⇒ 1. */
 	ollamaCostScale?: () => number;
+	/** Cheap-model digester for summarising compaction (`compaction.digestToolResults`). Absent ⇒ plain edits. */
+	digester?: CompactionDigester;
 }
 
 /** A dead client connection surfaces as the sink throwing mid-stream. */
@@ -135,6 +138,8 @@ export async function runTurn(
 	// A failover decision already routed inside onUpstreamError; the next
 	// loop iteration dispatches it instead of routing again.
 	let pendingDecision: Decision | null = null;
+	// Digests made this turn, by edit; a retry re-plans and must not pay twice.
+	const digestMemo = new Map<string, string>();
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		// Client disconnected before anything was dispatched: spend nothing.
@@ -157,6 +162,27 @@ export async function runTurn(
 			} catch (err) {
 				await sink.error({ status: 500, code: "router_error", message: err instanceof Error ? err.message : String(err) });
 				return;
+			}
+		}
+
+		// Summarising compaction: new edits get a cheap-model digest before the
+		// plan is applied and persisted. Bounded per turn; a decline leaves the
+		// plain edit. Accounted in the estimate adjustment below.
+		let compactionSavedBytes = decision.compactionSavedBytes;
+		if (deps.digester !== undefined && config.compaction.digestToolResults && decision.compactionPlan.length > 0) {
+			try {
+				compactionSavedBytes += await digestCompactionEdits({
+					req,
+					plan: decision.compactionPlan,
+					tier: decision.tier,
+					cfg: config,
+					digester: deps.digester,
+					memo: digestMemo,
+					query: relevanceQuery(req),
+					log,
+				});
+			} catch (err) {
+				log.warn("compaction digest failed; dispatching plain edits", { error: err instanceof Error ? err.message : String(err) });
 			}
 		}
 
@@ -209,7 +235,7 @@ export async function runTurn(
 		// — not the raw request the estimate was taken from.
 		adjustPendingEstimate(
 			req.conversationKey,
-			req.promptBytes - decision.compactionSavedBytes + (contextBlock === undefined ? 0 : Buffer.byteLength(contextBlock)),
+			req.promptBytes - compactionSavedBytes + (contextBlock === undefined ? 0 : Buffer.byteLength(contextBlock)),
 		);
 
 		// Our own abort composes with the client's: escalation teardown and

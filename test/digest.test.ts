@@ -162,6 +162,28 @@ describe("createDigester", () => {
 		db2.close();
 	});
 
+	test("a compaction-sourced digest is gated on compaction.digestToolResults and judges the given tier", async () => {
+		const cfg = cfgWith({ enabled: false });
+		cfg.compaction.digestToolResults = true;
+		const db = openDb(":memory:");
+		const ledger = createLedger(db, cfg);
+		// No session rows at all: the tier comes from the request.
+		const { upstream, calls } = fakeUpstream(() => "Condensed.");
+		const d = createDigester({ cfg, catalog, ledger, upstream, log });
+		const base = { ompSessionId: "omp-9", harnessId: "", toolName: "read", input: { path: "x.ts" }, content: BIG, query: "q" };
+		// digest.enabled is off, so the tool_result path declines...
+		expect(await d.digest(base)).toMatchObject({ digested: false, reason: expect.stringContaining("disabled") });
+		// ...but compaction only needs compaction.digestToolResults, plus a tier at or above fromTier.
+		expect(await d.digest({ ...base, tier: "simple", source: "compaction" })).toMatchObject({ digested: false, reason: expect.stringContaining("below digest.fromTier") });
+		const r = await d.digest({ ...base, tier: "hard", source: "compaction" });
+		expect(r.digested).toBe(true);
+		expect(calls).toHaveLength(1);
+		expect(ledger.recentEntries(5).find((e) => e.requestedModel === "digest")?.reasons[0]).toContain("digest (compaction)");
+		cfg.compaction.digestToolResults = false;
+		expect(await d.digest({ ...base, tier: "hard", source: "compaction" })).toMatchObject({ digested: false });
+		db.close();
+	});
+
 	test("a pinned digest model is used as-is", async () => {
 		const pinned = MODELS.find((m) => m.price.prompt > 0)!.slug;
 		const cfg = cfgWith({ model: pinned });

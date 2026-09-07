@@ -50,6 +50,7 @@ import { routerConfigPath, writeRouterConfig } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { buildUsageReport, renderUsageReport, type UsageReport } from "../src/cost/report.ts";
+import { buildDailySummary, renderDailySummary } from "../src/cost/summary.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -61,6 +62,7 @@ import { ReportHub } from "./report-hub.ts";
 import {
 	describeOverride,
 	fetchReport,
+	fetchSummary,
 	parseOverrideArgs,
 	parseReportArgs,
 	renderStatus,
@@ -77,12 +79,32 @@ const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
 
 /** Custom message type for report/status output in the transcript. */
 const MESSAGE_TYPE = "auto-model-router";
+/** The embedded router boots on session_start too; the auto summary waits for it this long. */
+const SUMMARY_TRIES = 8;
+const SUMMARY_RETRY_MS = 1_500;
 
 export default function (pi: ExtensionAPI): void {
 	pi.setLabel("auto-model-router");
 
+	// Once a day, the first interactive session posts yesterday's summary. The
+	// router decides whether one is due (report.dailySummary, a per-harness
+	// marker), so several windows on one router show it once between them.
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		for (let i = 0; i < SUMMARY_TRIES; i++) {
+			try {
+				const r = await fetchSummary(routerBaseUrl(), HARNESS_ID, true, routerAuthHeaders(), fetch, 2_000);
+				if (r.due && r.summary !== null) post(pi, renderDailySummary(r.summary));
+				return;
+			} catch {
+				// Router still starting (embed) or absent: try again shortly, then give up quietly.
+				await new Promise((resolve) => setTimeout(resolve, SUMMARY_RETRY_MS));
+			}
+		}
+	});
+
 	pi.registerCommand("router", {
-		description: "auto-model-router: configure, usage report, status",
+		description: "auto-model-router: configure, usage report, status, daily summary",
 		handler: async (args, ctx) => {
 			const [verb = "", ...rest] = args.trim().split(/\s+/).filter((t) => t !== "");
 			const tail = rest.join(" ");
@@ -95,6 +117,9 @@ export default function (pi: ExtensionAPI): void {
 				case "status":
 				case "health":
 					return status(pi, ctx);
+				case "summary":
+				case "daily":
+					return summary(pi, ctx, tail);
 				case "why":
 				case "explain":
 					return why(pi, ctx);
@@ -116,20 +141,22 @@ export default function (pi: ExtensionAPI): void {
 				case "":
 					break;
 				default:
-					ctx.ui.notify(`unknown /router subcommand "${verb}" (config | report | status | why | good | bad | pin | tier)`, "warn");
+					ctx.ui.notify(`unknown /router subcommand "${verb}" (config | report | summary | status | why | good | bad | pin | tier)`, "warn");
 					return;
 			}
 
 			const chosen = await ctx.ui.select("auto-model-router", [
 				{ label: "Configure", description: "edit any router setting" },
 				{ label: "Report", description: "usage analytics; window and scope adjustable inside" },
-				{ label: "Status", description: "keys, catalog, Ollama, agentdox" },
+				{ label: "Summary", description: "the last 24h in a few lines" },
+				{ label: "Status", description: "keys, catalog, Ollama, agentdox, soft-failure spikes" },
 				{ label: "Why", description: "explain this session's last routed turn" },
 				{ label: "Override", description: "pin a model or force a tier for this session" },
 			]);
 			if (chosen === undefined) return;
 			if (chosen === "Configure") return configure(ctx);
 			if (chosen === "Status") return status(pi, ctx);
+			if (chosen === "Summary") return summary(pi, ctx, "");
 			if (chosen === "Report") return report(pi, ctx, "");
 			if (chosen === "Why") return why(pi, ctx);
 			if (chosen === "Override") return override(ctx, "tier", "");
@@ -296,6 +323,31 @@ async function override(ctx: ExtensionContext, verb: "pin" | "tier", text: strin
 		ctx.ui.notify(describeOverride(r.override), "info");
 	} catch (err) {
 		ctx.ui.notify(`override not applied: ${err instanceof Error ? err.message : String(err)}`, "error");
+	}
+}
+
+/** `/router summary [--all]`: the last 24h, from the router or (router down) the ledger directly. */
+async function summary(pi: ExtensionAPI, ctx: ExtensionContext, argText: string): Promise<void> {
+	const harnessId = parseReportArgs(argText, HARNESS_ID).harnessId;
+	try {
+		const r = await fetchSummary(routerBaseUrl(), harnessId, false, routerAuthHeaders());
+		if (r.summary !== null) {
+			post(pi, renderDailySummary(r.summary));
+			return;
+		}
+	} catch {
+		// Fall through to the ledger.
+	}
+	const cfg = loadConfig();
+	if (!existsSync(cfg.ledger.path)) {
+		ctx.ui.notify(`router unreachable at ${routerBaseUrl()} and no ledger at ${cfg.ledger.path}`, "error");
+		return;
+	}
+	const db = openDb(cfg.ledger.path);
+	try {
+		post(pi, `${renderDailySummary(buildDailySummary(db, { harnessId }))}\n(router unreachable: read from the ledger; spikes and the Ollama meter need the router)`);
+	} finally {
+		db.close();
 	}
 }
 

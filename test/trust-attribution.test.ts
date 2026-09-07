@@ -463,3 +463,40 @@ describe("feedback in trust", () => {
 		db.close();
 	});
 });
+
+describe("task-scoped feedback (filters.feedbackByTask)", () => {
+	test("a verdict counts only for its task type; an untasked verdict counts everywhere", () => {
+		const db = openDb(":memory:");
+		try {
+			const c = structuredClone(cfg);
+			c.filters.feedbackWeight = 3;
+			c.filters.feedbackByTask = true;
+			const ledger = createLedger(db, c);
+			const fb = createFeedbackStore(db);
+			for (let i = 0; i < 10; i++) ledger.record(entry({ error: null, task: "coding" }));
+			const prose = entry({ error: null, task: "documentation" });
+			ledger.record(prose);
+			const untasked = entry({ error: null, task: null });
+			ledger.record(untasked);
+			fb.record({ ledgerId: prose.id, ompSessionId: "s", slug: "vendor/model", tier: "simple", verdict: "bad", note: "" });
+			// 12 clean attempts, weight 3, one bad verdict on a documentation turn.
+			const pooled = (12 - 0 + 1) / (12 + 2);
+			const withBad = (15 - 3 + 1) / (15 + 2);
+			expect(ledger.trust("vendor/model", undefined, "coding")!.successRate).toBeCloseTo(pooled, 9);
+			expect(ledger.trust("vendor/model", undefined, "documentation")!.successRate).toBeCloseTo(withBad, 9);
+			// No task given (allTrust, reports): pooled behaviour, the verdict counts.
+			expect(ledger.trust("vendor/model")!.successRate).toBeCloseTo(withBad, 9);
+			expect(ledger.allTrust()[0]!.successRate).toBeCloseTo(withBad, 9);
+			// signals() honours the task the same way.
+			expect(ledger.signals?.(["vendor/model"], undefined, "coding").get("vendor/model")!.trust!.successRate).toBeCloseTo(pooled, 9);
+			// A verdict on a turn that recorded no task counts for every task.
+			fb.record({ ledgerId: untasked.id, ompSessionId: "s", slug: "vendor/model", tier: "simple", verdict: "bad", note: "" });
+			expect(ledger.trust("vendor/model", undefined, "coding")!.successRate).toBeCloseTo(withBad, 9);
+			// Off: task is ignored and every verdict pools.
+			c.filters.feedbackByTask = false;
+			expect(ledger.trust("vendor/model", undefined, "coding")!.successRate).toBeCloseTo((18 - 6 + 1) / (18 + 2), 9);
+		} finally {
+			db.close();
+		}
+	});
+});

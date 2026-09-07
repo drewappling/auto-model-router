@@ -184,6 +184,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.requireToolSupport", label: "Require tool support", kind: "boolean" },
 			{ path: "filters.minTrust", label: "Min trust", kind: "number", min: 0, max: 1 },
 			{ path: "filters.feedbackWeight", label: "Feedback weight in trust", kind: "number", min: 0, hint: "0=record only; a bad verdict = this many failures" },
+			{ path: "filters.feedbackByTask", label: "Scope verdicts to the task type", kind: "boolean" },
 			{ path: "filters.minTrustSamples", label: "Min trust samples", kind: "number", min: 0 },
 			{ path: "filters.trustScopedByHarness", label: "Scope trust per harness", kind: "boolean" },
 			{ path: "filters.trustWindowDays", label: "Trust window", kind: "number", min: 0, hint: "days, 0=all time" },
@@ -280,6 +281,8 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "compaction.keepTailBytes", label: "Keep tail bytes", kind: "number", min: 0 },
 			{ path: "compaction.elideSupersededReads", label: "Elide superseded reads", kind: "boolean" },
 			{ path: "compaction.collapseDuplicateResults", label: "Collapse duplicate results", kind: "boolean" },
+			{ path: "compaction.digestToolResults", label: "Digest compacted results with a cheap model", kind: "boolean" },
+			{ path: "compaction.digestMaxPerTurn", label: "Digests per turn at most", kind: "number", min: 0 },
 		],
 	},
 	{
@@ -327,7 +330,10 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 	},
 	{
 		title: "Report",
-		fields: [{ path: "report.baselines", label: "Counterfactual baseline models", kind: "stringArray", hint: "comma-separated slugs" }],
+		fields: [
+			{ path: "report.baselines", label: "Counterfactual baseline models", kind: "stringArray", hint: "comma-separated slugs" },
+			{ path: "report.dailySummary", label: "Daily summary at session start", kind: "boolean" },
+		],
 	},
 	{
 		title: "Ledger",

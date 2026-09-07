@@ -237,3 +237,47 @@ describe("ledger.escalationCost", () => {
 	});
 });
 
+
+describe("ledger.softFailureSpikes", () => {
+	test("flags a model whose last-hour failure rate is a spike against its own 7-day baseline", () => {
+		const db = openDb(":memory:");
+		try {
+			const ledger = createLedger(db, cfg);
+			const now = 1_800_000_000_000;
+			const H = 3_600_000;
+			// Baseline: 100 dispatches over the prior week at 5% soft failures.
+			for (let i = 0; i < 100; i++) {
+				ledger.record(entry({ createdAtMs: now - 2 * H - i * 60 * 60_000, escalationSignal: i % 20 === 0 ? "empty_completion" : null, wasted: i % 20 === 0 }));
+			}
+			// Last hour: 10 dispatches, 4 soft failures (40%): a spike.
+			for (let i = 0; i < 10; i++) {
+				ledger.record(entry({ createdAtMs: now - 5 * 60_000 - i * 60_000, escalationSignal: i < 4 ? "repeat_tool_call" : null, wasted: i < 4 }));
+			}
+			// A second model with plenty of failures but a matching baseline is not spiking.
+			for (let i = 0; i < 100; i++) {
+				ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 2 * H - i * 60 * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
+			}
+			for (let i = 0; i < 10; i++) {
+				ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 5 * 60_000 - i * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
+			}
+			// Aborted and quota errors are not attributable; digest rows are side calls.
+			for (let i = 0; i < 10; i++) {
+				ledger.record(entry({ slug: "x/aborted", servedSlug: "x/aborted", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "aborted: client closed" }));
+				ledger.record(entry({ slug: "x/digest", servedSlug: "x/digest", requestedModel: "digest", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "upstream_error: 500" }));
+			}
+			const spikes = ledger.softFailureSpikes?.(now) ?? [];
+			expect(spikes.map((s) => s.slug)).toEqual(["openai/gpt-5-mini"]);
+			const s = spikes[0]!;
+			expect(s.recentDispatches).toBe(10);
+			expect(s.recentFailures).toBe(4);
+			expect(s.recentRate).toBeCloseTo(0.4, 6);
+			expect(s.baselineDispatches).toBe(100);
+			expect(s.baselineFailures).toBe(5);
+			expect(s.baselineRate).toBeCloseTo(0.05, 6);
+			// Too few recent dispatches: nothing spikes, however high the rate.
+			expect(ledger.softFailureSpikes?.(now, 3 * 60_000)).toEqual([]);
+		} finally {
+			db.close();
+		}
+	});
+});

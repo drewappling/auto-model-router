@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS feedback (
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback (created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_feedback_ledger ON feedback (ledger_id);
 
+-- Small durable markers (e.g. when the daily summary was last posted, per harness).
+CREATE TABLE IF NOT EXISTS router_kv (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agentdox_sessions (
   conversation_key TEXT PRIMARY KEY,
   scope TEXT NOT NULL,

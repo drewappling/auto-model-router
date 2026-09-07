@@ -361,7 +361,11 @@ export function select(args: SelectArgs): Decision {
 	// query per signal kind, instead of per-model individual lookups.
 	const candidateSignals =
 		ledger !== null && snapshot.models.length > 0
-			? ledger.signals?.(snapshot.models.map((m) => m.slug), cfg.filters.trustScopedByHarness ? req.harnessId : undefined)
+			? ledger.signals?.(
+					snapshot.models.map((m) => m.slug),
+					cfg.filters.trustScopedByHarness ? req.harnessId : undefined,
+					cfg.filters.feedbackByTask ? classification.task : undefined,
+				)
 			: undefined;
 	// What an escalated retry has actually been billing per prompt token, for
 	// the escalation-cost term in candidate scoring. Read once per turn; null

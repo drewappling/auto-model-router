@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CompactionConfig } from "../src/config/types.ts";
-import { planCompaction, validatePlan } from "../src/router/compaction.ts";
+import { compactedBytes, planCompaction, validatePlan } from "../src/router/compaction.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 import type { NormMessage } from "../src/wire/types.ts";
 
@@ -16,7 +16,7 @@ const CFG: CompactionConfig = {
 	keepHeadBytes: 10,
 	keepTailBytes: 10,
 	elideSupersededReads: true,
-	collapseDuplicateResults: true,
+	collapseDuplicateResults: true, digestToolResults: false, digestMaxPerTurn: 2,
 };
 
 function user(text: string): NormMessage {
@@ -78,7 +78,7 @@ describe("planCompaction", () => {
 			toolMsg("c2", "read", big("V2")), // different content, same path → supersedes c1
 			...PAD,
 		];
-		const { edits } = planCompaction(msgs, { ...CFG, collapseDuplicateResults: false }, 10_000, 10_000);
+		const { edits } = planCompaction(msgs, { ...CFG, collapseDuplicateResults: false, digestToolResults: false, digestMaxPerTurn: 2, }, 10_000, 10_000);
 		expect(edits.map((e) => e.index)).toEqual([2]);
 		expect(edits[0]?.mode).toBe("stub");
 	});
@@ -268,5 +268,42 @@ describe("plan byte-stability across turns", () => {
 		const carried = [{ index: 2, mode: "stub" as const, keepHead: 0, keepTail: 0, note: "carried", bytes: Buffer.byteLength(big("A")) }];
 		const next = planCompaction(msgs, CFG, 1, 10_000, carried);
 		expect(next.edits.filter((e) => e.index === 2)).toEqual(carried);
+	});
+});
+
+describe("summarising compaction (edit.digest)", () => {
+	const bodyWith = (messages: unknown[]): Record<string, unknown> => ({ model: "auto", messages });
+	const MUT = { slug: "x/y", fallbacks: [], sessionId: "s", cacheBreakpointMessageIndices: [], reasoning: undefined, maxTokens: undefined, stripAssistantReasoning: false };
+	const DIGEST = "[digest: read output 208 bytes → 40 chars by cheap/model. Full output: re-run read {}]\nA: two hundred x's.";
+
+	test("a digested edit replaces the content with the digest, whatever its mode", () => {
+		const raw = [
+			{ role: "user", content: "go" },
+			{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
+			{ role: "tool", tool_call_id: "c1", content: "HEAD" + "x".repeat(500) + "TAIL" },
+		];
+		const req = parseChatRequest(bodyWith(raw), new Headers());
+		for (const mode of ["truncate", "stub"] as const) {
+			const out = req.renderUpstreamBody({ ...MUT, compactionPlan: [{ index: 2, mode, keepHead: 4, keepTail: 4, note: "large read result", bytes: 508, digest: DIGEST }] });
+			expect((out.messages as { content: string }[])[2]?.content).toBe(DIGEST);
+		}
+	});
+
+	test("compactedBytes sizes a digested edit by its digest, never above the original", () => {
+		const plain = { index: 2, mode: "truncate" as const, keepHead: 10, keepTail: 10, note: "n", bytes: 5_000 };
+		expect(compactedBytes(5_000, { ...plain, digest: DIGEST })).toBe(Buffer.byteLength(DIGEST));
+		expect(compactedBytes(5_000, { ...plain, digest: "y".repeat(9_000) })).toBe(5_000);
+	});
+
+	test("the digest survives validation and a re-plan, so the bytes stay stable", () => {
+		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
+		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
+		const digested = edits.map((e) => ({ ...e, digest: DIGEST }));
+		expect(validatePlan(digested, msgs)[0]?.digest).toBe(DIGEST);
+		const replanned = planCompaction(msgs, CFG, 1, 10_000, validatePlan(digested, msgs));
+		expect(replanned.edits).toHaveLength(1);
+		expect(replanned.edits[0]?.digest).toBe(DIGEST);
+		// Savings count the digest's size, not the head+tail the plain edit would have kept.
+		expect(replanned.savedBytes).toBe(Buffer.byteLength(big("A")) - Buffer.byteLength(DIGEST));
 	});
 });

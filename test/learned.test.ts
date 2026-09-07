@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { auc, FEATURE_NAMES, learnedVector, predictRisk, trainLogistic, type LearnedModel } from "../src/router/learned.ts";
+import { auc, FEATURE_NAMES, LEARNED_MODEL_VERSION, learnedRiskName, learnedVector, loadLearnedModel, predictRisk, resetLearnedModels, trainLogistic, type LearnedModel } from "../src/router/learned.ts";
 
 /**
  * The learned escalation-risk model: a deterministic logistic regression that
@@ -57,5 +57,25 @@ describe("trainLogistic", () => {
 
 	test("refuses an empty dataset", () => {
 		expect(() => trainLogistic([], [])).toThrow();
+	});
+});
+
+describe("learned label", () => {
+	test("a feedback-labelled model loads with its label and names its risk p(bad)", async () => {
+		const d = FEATURE_NAMES.length;
+		const base: LearnedModel = { version: LEARNED_MODEL_VERSION, trainedAtMs: 0, rows: 100, positives: 10, names: [...FEATURE_NAMES], means: new Array(d).fill(0), stds: new Array(d).fill(1), weights: new Array(d).fill(0), bias: 0, auc: 0.5 };
+		expect(learnedRiskName(base)).toBe("escalate");
+		expect(learnedRiskName({ ...base, label: "feedback" })).toBe("bad");
+		const path = `${import.meta.dir}/../.tmp-learned-feedback.json`;
+		await Bun.write(path, JSON.stringify({ ...base, label: "feedback" }));
+		try {
+			resetLearnedModels();
+			const loaded = await loadLearnedModel(path);
+			expect(loaded?.label).toBe("feedback");
+			expect(learnedRiskName(loaded!)).toBe("bad");
+		} finally {
+			resetLearnedModels();
+			await Bun.file(path).delete();
+		}
 	});
 });
