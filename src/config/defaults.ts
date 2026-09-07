@@ -118,6 +118,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// slow models (e.g. deepseek-v4-flash ~20 tok/s) fall under it.
 		latencyReferenceTokensPerSec: 30,
 		latencyMinSamples: 20,
+		// Discount a warm model's stay price by its observed hit rate once this
+		// many warm-expected samples exist. See FilterConfig.cacheReliabilityMinSamples.
+		cacheReliabilityMinSamples: 10,
 		// Off: pricing a model's measured escalation rate at what an escalated
 		// retry actually costs changes rankings, so it is opt-in after a replay
 		// run prices it. See FilterConfig.escalationCostWeight.

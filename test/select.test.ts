@@ -1050,3 +1050,58 @@ describe("hysteresis.confirmUpgradesBelowConfidence", () => {
 		expect(d.upgradeDeferred).toBeNull();
 	});
 });
+
+describe("cache reliability in the stay/switch comparison", () => {
+	const warmSlug = "x-ai/grok-4.6";
+	function ledgerWithReliability(rate: number | null, samples = 50): Ledger {
+		return {
+			record: () => {},
+			conversationSpend: () => 0,
+			spendSince: () => 0,
+			blendedRate: () => null,
+			trust: () => null,
+			allTrust: () => [],
+			latency: () => null,
+			tokenRatio: () => null,
+			recentEntries: () => [],
+			cacheReliability: (slug) => (rate === null || slug !== warmSlug ? null : { slug, samples, hitRate: rate }),
+		};
+	}
+	const stayCostOf = (ledger: Ledger, cfg: RouterConfig = BASE): number => {
+		const d = run({
+			tier: "hard",
+			promptTokens: 80_000,
+			cfg,
+			ledger,
+			st: state({ currentSlug: warmSlug, currentTier: "hard", cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 80_000 }),
+		});
+		const m = /cache: (?:keeping warm|switch) .*?stay \$([0-9.]+)/.exec(d.reasons.join("\n"));
+		if (m === null) throw new Error(`no stay/switch reason in ${d.reasons.join(" | ")}`);
+		return Number(m[1]);
+	};
+
+	test("an unreliable cache prices staying at the fresh rate, a reliable one at the cached rate", () => {
+		const reliable = stayCostOf(ledgerWithReliability(1));
+		const flaky = stayCostOf(ledgerWithReliability(0));
+		const unknown = stayCostOf(ledgerWithReliability(null));
+		expect(flaky).toBeGreaterThan(reliable);
+		expect(unknown).toBeCloseTo(reliable, 6);
+	});
+
+	test("too few samples, or the feature off, assume a reliable cache", () => {
+		const reliable = stayCostOf(ledgerWithReliability(1));
+		expect(stayCostOf(ledgerWithReliability(0, 3))).toBeCloseTo(reliable, 6);
+		const off: RouterConfig = { ...BASE, filters: { ...BASE.filters, cacheReliabilityMinSamples: 0 } };
+		expect(stayCostOf(ledgerWithReliability(0), off)).toBeCloseTo(reliable, 6);
+	});
+
+	test("the reason names the measured hit rate", () => {
+		const d = run({
+			tier: "hard",
+			promptTokens: 80_000,
+			ledger: ledgerWithReliability(0.5, 40),
+			st: state({ currentSlug: warmSlug, currentTier: "hard", cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 80_000 }),
+		});
+		expect(d.reasons.some((r) => r.includes("warm hit 50% over 40"))).toBe(true);
+	});
+});

@@ -368,3 +368,45 @@ describe("v6 classifier instrumentation", () => {
 		}
 	});
 });
+
+describe("cache reliability signal", () => {
+	// Observed hit rate when a warm cache was expected: the previous kept turn
+	// of the conversation was on the same model within the warm TTL.
+	function seed(rows: Array<Partial<LedgerEntry>>) {
+		const db = openDb(":memory:");
+		const ledger = createLedger(db, cfg);
+		for (const r of rows) ledger.record(entry(r));
+		return { db, ledger };
+	}
+	const t0 = Date.UTC(2026, 8, 7, 12);
+	const usage = (prompt: number, cached: number, estimated = false) => ({ ...EMPTY_USAGE, promptTokens: prompt, cachedTokens: cached, ...(estimated ? { cachedEstimated: true } : {}) });
+
+	test("a model that hits when warm scores 1; one that misses scores 0; the first turn never counts", () => {
+		const { db, ledger } = seed([
+			{ conversationKey: "a", slug: "good/m", servedSlug: "good/m", createdAtMs: t0, usage: usage(50_000, 0) }, // first turn: no expectation
+			{ conversationKey: "a", slug: "good/m", servedSlug: "good/m", createdAtMs: t0 + 60_000, usage: usage(60_000, 50_000) },
+			{ conversationKey: "a", slug: "good/m", servedSlug: "good/m", createdAtMs: t0 + 120_000, usage: usage(70_000, 60_000) },
+			{ conversationKey: "b", slug: "flaky/m", servedSlug: "flaky/m", createdAtMs: t0, usage: usage(50_000, 0) },
+			{ conversationKey: "b", slug: "flaky/m", servedSlug: "flaky/m", createdAtMs: t0 + 60_000, usage: usage(60_000, 0) },
+			{ conversationKey: "b", slug: "flaky/m", servedSlug: "flaky/m", createdAtMs: t0 + 120_000, usage: usage(70_000, 30_000) },
+		]);
+		expect(ledger.cacheReliability?.("good/m")).toEqual({ slug: "good/m", samples: 2, hitRate: 1 });
+		const flaky = ledger.cacheReliability?.("flaky/m");
+		expect(flaky?.samples).toBe(2);
+		expect(flaky?.hitRate).toBeCloseTo(0.25, 6); // (0 + 30k/60k) / 2
+		expect(ledger.cacheReliability?.("never/m")).toBeNull();
+		db.close();
+	});
+
+	test("a switch, an idle gap past the TTL, or a router-estimated count is not a warm-expected sample", () => {
+		const { db, ledger } = seed([
+			{ conversationKey: "a", slug: "x/m", servedSlug: "x/m", createdAtMs: t0, usage: usage(50_000, 0) },
+			{ conversationKey: "a", slug: "y/m", servedSlug: "y/m", createdAtMs: t0 + 60_000, usage: usage(60_000, 0) }, // switch
+			{ conversationKey: "a", slug: "y/m", servedSlug: "y/m", createdAtMs: t0 + 60_000 + cfg.hysteresis.cacheWarmTtlMs + 1, usage: usage(70_000, 0) }, // gap
+			{ conversationKey: "a", slug: "y/m", servedSlug: "y/m", createdAtMs: t0 + 60_000 + cfg.hysteresis.cacheWarmTtlMs + 2, usage: usage(80_000, 70_000, true) }, // estimated
+		]);
+		expect(ledger.cacheReliability?.("x/m")).toBeNull();
+		expect(ledger.cacheReliability?.("y/m")).toBeNull();
+		db.close();
+	});
+});

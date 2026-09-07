@@ -96,6 +96,7 @@ const filters = z.strictObject({
 	latencyReferenceMs: z.number().positive().optional(),
 	latencyReferenceTokensPerSec: z.number().positive().optional(),
 	latencyMinSamples: z.number().int().nonnegative().optional(),
+	cacheReliabilityMinSamples: z.number().int().nonnegative().optional(),
 	maxExpectedWaitMs: z.number().positive().optional(),
 	escalationCostWeight: z.number().min(0).max(1).optional(),
 });

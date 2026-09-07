@@ -329,6 +329,14 @@ export function select(args: SelectArgs): Decision {
 	// The task type selects the quality axis and capability filters; the tier
 	// still bounds cost (task selects, tier budgets).
 	const warmSlug = cacheWarm ? state.cacheWarmSlug : null;
+	// Expected cache hit for a model: its observed rate once enough warm-expected
+	// samples exist (filters.cacheReliabilityMinSamples), else a reliable 1.
+	const cacheHitExpectation = (slug: string): { rate: number; measured: boolean; samples: number } => {
+		const min = cfg.filters.cacheReliabilityMinSamples;
+		const rel = min > 0 ? (ledger?.cacheReliability?.(slug) ?? null) : null;
+		if (rel === null || rel.samples < min) return { rate: 1, measured: false, samples: rel?.samples ?? 0 };
+		return { rate: rel.hitRate, measured: true, samples: rel.samples };
+	};
 	// Pre-fetch trust/latency signals for all candidate slugs in one batch
 	// query per signal kind, instead of per-model individual lookups.
 	const candidateSignals =
@@ -429,9 +437,14 @@ export function select(args: SelectArgs): Decision {
 		if (warm !== undefined) {
 			const warmPrice = priceAt(warm.model, Math.max(1, state.lastPromptTokens));
 			const newPrice = priceAt(chosen.model, Math.max(1, effFeatures.promptTokens));
-			const stayWarm = state.lastPromptTokens * (warmPrice.cacheRead ?? warmPrice.prompt);
+			// A warm read is only as cheap as the cache is reliable: price the
+			// expected mix of hits and provider-side misses, per model.
+			const warmHit = cacheHitExpectation(warm.model.slug);
+			const newHit = cacheHitExpectation(chosen.model.slug);
+			const stayWarm = state.lastPromptTokens * (warmHit.rate * (warmPrice.cacheRead ?? warmPrice.prompt) + (1 - warmHit.rate) * warmPrice.prompt);
 			const switchCold = effFeatures.promptTokens * (newPrice.prompt + (newPrice.cacheWrite ?? 0));
-			const newWarm = effFeatures.promptTokens * (newPrice.cacheRead ?? newPrice.prompt);
+			const newWarm = effFeatures.promptTokens * (newHit.rate * (newPrice.cacheRead ?? newPrice.prompt) + (1 - newHit.rate) * newPrice.prompt);
+			const hitNote = warmHit.measured ? `, warm hit ${(warmHit.rate * 100).toFixed(0)}% over ${warmHit.samples}` : "";
 			// Amortise over the horizon: H turns of staying warm against one cold
 			// switch plus H−1 turns warm on the new model. H = 1 is the one-turn
 			// comparison, which kept a 25x-priced model warm for a 33-dispatch run
@@ -442,13 +455,13 @@ export function select(args: SelectArgs): Decision {
 			const over = horizon > 1 ? ` over ${horizon} turns` : "";
 			if (stayCost > switchCost * cfg.hysteresis.switchMargin) {
 				reasons.push(
-					`cache: switch ${warmSlug} → ${chosen.model.slug} (stay $${stayCost.toFixed(4)} > switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over})`,
+					`cache: switch ${warmSlug} → ${chosen.model.slug} (stay $${stayCost.toFixed(4)} > switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over}${hitNote})`,
 				);
 			} else {
 				chosen = warm;
 				sticky = true;
 				reasons.push(
-					`cache: keeping warm ${warmSlug} (stay $${stayCost.toFixed(4)} ≤ switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over})`,
+					`cache: keeping warm ${warmSlug} (stay $${stayCost.toFixed(4)} ≤ switch $${switchCost.toFixed(4)} × ${cfg.hysteresis.switchMargin}${over}${hitNote})`,
 				);
 			}
 		}

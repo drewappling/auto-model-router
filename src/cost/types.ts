@@ -200,9 +200,24 @@ export interface ModelLatency {
 	tokensPerSec: number;
 }
 
+/**
+ * How often a model's prompt cache actually hit when the router expected it
+ * warm: the previous kept turn of the conversation was on the same model
+ * within `hysteresis.cacheWarmTtlMs`. Provider-side misses (a model whose
+ * cache is flaky, or absent) show up here as a low rate. Router-estimated
+ * cache counts (Ollama) are excluded: they are constructed, not observed.
+ */
+export interface ModelCacheReliability {
+	slug: string;
+	samples: number;
+	/** Mean cached / expected-cached over those samples, 0-1. */
+	hitRate: number;
+}
+
 export interface LedgerSignals {
 	trust: ModelTrust | null;
 	latency: ModelLatency | null;
+	cache?: ModelCacheReliability | null;
 }
 
 /** Measured price of a probe escalation: what the retry billed per prompt token of the failed turn. */
@@ -241,6 +256,13 @@ export interface Ledger {
 	 * escalation-cost term in candidate scoring is inert without it.
 	 */
 	escalationCost?(windowDays: number): EscalationCost | null;
+	/**
+	 * Observed cache hit rate when a warm cache was expected (see
+	 * ModelCacheReliability). Null until any sample exists. Optional so fakes
+	 * need not implement it; the stay/switch comparison assumes a reliable
+	 * cache without it.
+	 */
+	cacheReliability?(slug: string): ModelCacheReliability | null;
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];

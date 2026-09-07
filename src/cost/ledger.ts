@@ -24,6 +24,7 @@ import type {
 	Ledger,
 	LedgerEntry,
 	LedgerSignals,
+	ModelCacheReliability,
 	ModelLatency,
 	ModelTrust,
 	UsageCounts,
@@ -38,6 +39,14 @@ const MAX_SANE_BYTES_PER_TOKEN = 8;
 const MIN_ESCALATION_SAMPLES = 10;
 /** The escalation-cost aggregate scans a window of rows; memoised for this long. */
 const ESCALATION_COST_MEMO_MS = 60_000;
+
+/**
+ * Cache reliability is one window-function pass over the newest rows, memoised
+ * for a minute: the previous kept turn of each conversation is found with LAG,
+ * and a row counts when that turn was on the same model within the warm TTL.
+ */
+const CACHE_RELIABILITY_ROWS = 6_000;
+const CACHE_RELIABILITY_MEMO_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 // Row shapes below are fixed by our own schema in util/sqlite.ts.
@@ -236,7 +245,42 @@ function toEntry(row: LedgerRow): LedgerEntry {
 	};
 }
 
+export interface CacheReliabilityRow {
+	slug: string;
+	samples: number;
+	hit: number;
+}
+
+/**
+ * Observed cache hit rates when a warm cache was expected, per served slug.
+ * `sinceMs` bounds the rows scanned (0 ⇒ the newest `limitRows`). Rows whose
+ * cache count the router estimated (`usage.cachedEstimated`) are excluded.
+ */
+export function queryCacheReliability(db: Database, opts: { warmTtlMs: number; sinceMs?: number; limitRows?: number }): CacheReliabilityRow[] {
+	const sinceMs = opts.sinceMs ?? 0;
+	const limitRows = opts.limitRows ?? CACHE_RELIABILITY_ROWS;
+	return db
+		.query(
+			`WITH recent AS (
+				SELECT conversation_key AS ck, created_at_ms AS t, COALESCE(served_slug, slug) AS s,
+					json_extract(usage, '$.promptTokens') AS p, json_extract(usage, '$.cachedTokens') AS c,
+					COALESCE(json_extract(usage, '$.cachedEstimated'), 0) AS est
+				FROM ledger WHERE wasted = 0 AND error IS NULL AND created_at_ms >= $since
+				ORDER BY created_at_ms DESC LIMIT $limit),
+			seq AS (
+				SELECT s, p, c, est, t,
+					LAG(s) OVER w AS prev_s, LAG(p) OVER w AS prev_p, LAG(t) OVER w AS prev_t
+				FROM recent WINDOW w AS (PARTITION BY ck ORDER BY t))
+			SELECT s AS slug, COUNT(*) AS samples, AVG(MIN(1.0, c * 1.0 / MIN(prev_p, p))) AS hit
+			FROM seq
+			WHERE prev_s = s AND p > 1000 AND prev_p > 1000 AND t - prev_t <= $ttl AND est = 0
+			GROUP BY s`,
+		)
+		.all({ $since: sinceMs, $limit: limitRows, $ttl: opts.warmTtlMs }) as CacheReliabilityRow[];
+}
+
 export function createLedger(db: Database, cfg: RouterConfig): Ledger {
+	let cacheMemo: { atMs: number; map: Map<string, ModelCacheReliability> } | null = null;
 	// Prepared once: record() runs on every turn.
 	const insertStmt = db.query(
 		`INSERT INTO ledger (
@@ -433,6 +477,18 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				});
 			}
 			return out;
+		},
+
+		cacheReliability(slug: string): ModelCacheReliability | null {
+			const now = Date.now();
+			if (cacheMemo === null || now - cacheMemo.atMs > CACHE_RELIABILITY_MEMO_MS) {
+				const map = new Map<string, ModelCacheReliability>();
+				for (const r of queryCacheReliability(db, { warmTtlMs: cfg.hysteresis.cacheWarmTtlMs })) {
+					map.set(r.slug, { slug: r.slug, samples: r.samples, hitRate: Math.min(1, Math.max(0, r.hit)) });
+				}
+				cacheMemo = { atMs: now, map };
+			}
+			return cacheMemo.map.get(slug) ?? null;
 		},
 
 		escalationCost(windowDays: number): EscalationCost | null {

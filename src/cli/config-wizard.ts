@@ -190,6 +190,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.latencyReferenceMs", label: "Latency reference TTFT", kind: "number", min: 1, hint: "ms" },
 			{ path: "filters.latencyReferenceTokensPerSec", label: "Latency reference speed", kind: "number", min: 1, hint: "tok/s" },
 			{ path: "filters.latencyMinSamples", label: "Latency min samples", kind: "number", min: 0 },
+			{ path: "filters.cacheReliabilityMinSamples", label: "Cache reliability min samples", kind: "number", min: 0, hint: "0=assume caches reliable" },
 			{ path: "filters.maxExpectedWaitMs", label: "Max expected wait", kind: "number", min: 1, optional: true, hint: "ms, hard ceiling" },
 			{ path: "filters.escalationCostWeight", label: "Escalation cost weight", kind: "number", min: 0, max: 1 },
 		],

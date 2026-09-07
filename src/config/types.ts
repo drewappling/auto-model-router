@@ -265,6 +265,14 @@ export interface FilterConfig {
 	/** Streamed samples required before latency is scored against a model. */
 	latencyMinSamples: number;
 	/**
+	 * Warm-expected samples a model needs before its observed cache hit rate
+	 * (ledger `cacheReliability`) discounts the "stay warm" price in the
+	 * stay/switch comparison. Below it, and when 0, a cache is assumed fully
+	 * reliable. Measured 2026-09-06: same-model short-gap turns still ran cold
+	 * 5-6% on glm/gemini, 11% on ling and 50% on nex.
+	 */
+	cacheReliabilityMinSamples: number;
+	/**
 	 * Absolute expected-wait ceiling (ms). A hard drop, mirroring the price
 	 * ceiling: any model whose expected total wait (TTFT + streaming the expected
 	 * completion at its measured throughput) exceeds this is rejected outright,

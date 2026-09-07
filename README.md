@@ -663,6 +663,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `contextHeadroom` | `1.25` | Fraction of context kept free (a model must fit prompt × this). |
 | `latencyWeight` | `0` | How hard to penalise slow models in scoring (soft multiplier on effective cost). `0` disables it. |
 | `latencyMinSamples` | `20` | Streamed samples before latency is judged against a model. |
+| `cacheReliabilityMinSamples` | `10` | Warm-expected samples before a model's observed cache hit rate discounts its "stay warm" price in the stay/switch comparison. A model whose cache misses when it should be warm (measured: 5-6% on glm/gemini, 11% on ling, 50% on nex) is kept less eagerly. `0` assumes every cache is reliable. |
 | `maxExpectedWaitMs` | unset | Absolute expected-wait ceiling (ms): a hard drop for models *proven* slower (≥ `latencyMinSamples`), regardless of price. The soft penalty is multiplicative and capped, so it cannot demote a slow-but-cheap model — this can. New models keep their cold-start turns; relaxed with trust in tier rescue. Undefined ⇒ off. |
 | `escalationCostWeight` | `0` | Price a model's measured escalation rate at what an escalated retry actually bills (the ledger's $/prompt-token of `attempt > 0` rows), 0–1. The trust divisor reads a 4% escalation rate as a 4% surcharge; the real cost is a whole re-dispatch on the next tier's model. `0` disables the term. |
 
