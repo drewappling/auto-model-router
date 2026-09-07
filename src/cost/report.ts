@@ -30,6 +30,10 @@ export interface ReportTotals {
 	/** Turns from omp subagents (`features.isSubagent`), and their spend. */
 	subagentDispatches: number;
 	subagentSpendUsd: number;
+	/** Tool-result digests (requestedModel "digest"): count, what they cost, bytes they condensed. */
+	digests: number;
+	digestSpendUsd: number;
+	digestInputTokens: number;
 }
 
 export interface ReportRow {
@@ -201,6 +205,9 @@ export function buildUsageReport(
 				SUM(CASE WHEN ${EST} THEN 1 ELSE 0 END) AS estimated_rows,
 				SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN 1 ELSE 0 END) AS subagent_rows,
 				COALESCE(SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN ${USD} ELSE 0 END), 0) AS subagent_spend,
+				SUM(CASE WHEN requested_model = 'digest' THEN 1 ELSE 0 END) AS digests,
+				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${USD} ELSE 0 END), 0) AS digest_spend,
+				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${PT} ELSE 0 END), 0) AS digest_input,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN instr(reasons, 'failover:') > 0 THEN 1 ELSE 0 END) AS failovers,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
@@ -217,6 +224,9 @@ export function buildUsageReport(
 		estimated_rows: number | null;
 		subagent_rows: number | null;
 		subagent_spend: number;
+		digests: number | null;
+		digest_spend: number;
+		digest_input: number;
 		escalations: number | null;
 		failovers: number | null;
 		errors: number | null;
@@ -336,6 +346,9 @@ export function buildUsageReport(
 			cacheEstimated: (t.estimated_rows ?? 0) > 0,
 			subagentDispatches: t.subagent_rows ?? 0,
 			subagentSpendUsd: t.subagent_spend,
+			digests: t.digests ?? 0,
+			digestSpendUsd: t.digest_spend,
+			digestInputTokens: t.digest_input,
 		},
 		providers,
 		models,
@@ -399,6 +412,9 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 				.map((b) => `${b.slug} ${usd(b.usd)} (router ${b.savedShare >= 0 ? "saved" : "cost extra"} ${pct(Math.abs(b.savedShare))})`)
 				.join(" · ")}`,
 		);
+	}
+	if (t.digests > 0) {
+		summary.push(`digests: ${num(t.digests)} tool results condensed (${num(t.digestInputTokens)} tok read by a cheap model) for ${usd(t.digestSpendUsd)}`);
 	}
 	if (t.subagentDispatches > 0) {
 		summary.push(`subagents: ${num(t.subagentDispatches)} dispatches, ${usd(t.subagentSpendUsd)} (${pct(t.spendUsd > 0 ? t.subagentSpendUsd / t.spendUsd : 0)} of spend)`);

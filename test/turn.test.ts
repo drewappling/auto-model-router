@@ -77,6 +77,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1 },
 		budget: { onExceeded: "downgrade" },
 		report: { baselines: [] },
+		digest: { enabled: false, minBytes: 12_000, maxBytes: 400_000, tools: ["read"], fromTier: "moderate", tier: "simple", model: "", maxOutputTokens: 700, maxCostUsd: 0.02, timeoutMs: 25_000 },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 },
 		adaptiveTierFloors: true,

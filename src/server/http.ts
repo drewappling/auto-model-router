@@ -6,6 +6,7 @@ import { createBridgeFromConfig } from "../context/index.ts";
 import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { createSessionOverrides } from "./overrides.ts";
+import { createDigester } from "./digest.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport } from "../cost/report.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
@@ -194,6 +195,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const context = createBridgeFromConfig(cfg, db);
 	const overrides = createSessionOverrides();
 	const feedback = createFeedbackStore(db);
+	const digester = createDigester({ cfg, catalog, ledger, upstream, log });
 	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale };
 
 	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
@@ -435,6 +437,26 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						});
 						return json({ override: set });
 					}
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/digest/policy") {
+					const d = cfg.digest;
+					return json({ enabled: d.enabled, minBytes: d.minBytes, maxBytes: d.maxBytes, tools: d.tools, fromTier: d.fromTier });
+				}
+				if (req.method === "POST" && url.pathname === "/v1/router/digest") {
+					const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+					if (body === null || typeof body.content !== "string" || typeof body.toolName !== "string") {
+						return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "toolName and content required" });
+					}
+					return json(
+						await digester.digest({
+							ompSessionId: typeof body.ompSessionId === "string" ? body.ompSessionId : "",
+							harnessId: typeof body.harnessId === "string" ? body.harnessId : "",
+							toolName: body.toolName,
+							input: typeof body.input === "object" && body.input !== null ? (body.input as Record<string, unknown>) : {},
+							content: body.content,
+							query: typeof body.query === "string" ? body.query : "",
+						}),
+					);
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.

@@ -29,7 +29,7 @@ import type { ExtensionAPI, ExtensionContext, ProviderRegistration } from "@oh-m
  */
 
 const registrations: { id: string; baseUrl: string }[] = [];
-const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => void | Promise<void>)[]>();
+const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
 
 const pi: ExtensionAPI = {
 	setLabel: () => {},

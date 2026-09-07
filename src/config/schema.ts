@@ -273,6 +273,20 @@ export const configInputSchema = z.strictObject({
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	report: z.strictObject({ baselines: z.array(z.string()).optional() }).optional(),
+	digest: z
+		.strictObject({
+			enabled: z.boolean().optional(),
+			minBytes: z.number().int().nonnegative().optional(),
+			maxBytes: z.number().int().positive().optional(),
+			tools: z.array(z.string()).optional(),
+			fromTier: tier.optional(),
+			tier: tier.optional(),
+			model: z.string().optional(),
+			maxOutputTokens: z.number().int().positive().optional(),
+			maxCostUsd: z.number().nonnegative().optional(),
+			timeoutMs: z.number().int().positive().optional(),
+		})
+		.optional(),
 	ledger: ledger.optional(),
 	adaptiveTierFloors: z.boolean().optional(),
 	adaptivePriceCeilings: z.boolean().optional(),

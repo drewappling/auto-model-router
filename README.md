@@ -213,6 +213,7 @@ extensions:
   - auto-model-router/omp-extension/router-embed.ts
   - auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
   - auto-model-router/omp-extension/router-configure.ts # optional: /router config, report, status
+  - auto-model-router/omp-extension/router-digest.ts    # optional: cheap-model digest of large tool results
 ```
 
 ### From the repo (cross-platform installer)
@@ -236,6 +237,7 @@ The installer adds:
 - `router-embed.ts` — **required**; runs the router in-process.
 - `router-toast.ts` — optional; chosen-model toasts.
 - `router-configure.ts` — optional; the `/router` command (configure, usage reports, status).
+- `router-digest.ts` — optional; condenses large tool results with a cheap model before an expensive one reads them (needs `digest.enabled`).
 
 Or add the paths by hand to omp's `~/.omp/agent/config.yml`:
 
@@ -245,6 +247,7 @@ extensions:
   - /path/to/auto-model-router/omp-extension/router-embed.ts
   - /path/to/auto-model-router/omp-extension/router-toast.ts      # optional: chosen-model toasts
   - /path/to/auto-model-router/omp-extension/router-configure.ts # optional: /router config, report, status
+  - /path/to/auto-model-router/omp-extension/router-digest.ts    # optional: cheap-model digest of large tool results
 ```
 
 Then restart the omp session (extensions load at session start).
@@ -776,6 +779,30 @@ Each profile is a complete entry (arrays replace wholesale):
 | `contextWindow` | `400000` | Advertised context window (drives omp's compaction). |
 | `maxTokens` | `32000` | Advertised max output tokens. |
 | `budget` | unset | Per-profile budget overrides. |
+
+### `digest` — cheap-model digest of large tool results
+
+Tool results are the bulk of every prompt (see the report's prompt anatomy),
+and a prompt is ~96% of spend. With the `router-digest` extension installed
+and `digest.enabled` on, a large read, grep, glob or bash result produced
+while the session's current model is at or above `fromTier` is sent to
+`POST /v1/router/digest`; the cheapest `tier` model rewrites it to what the
+task needs (exact paths, line numbers, names, errors, code to be edited) and
+the digest replaces the tool result. It begins with a marker naming the tool
+and arguments to re-run for the full output, so nothing is lost, only
+deferred. Errors, images, edits and writes are never digested. Every digest
+is a ledger row (`requestedModel` `digest`) and the report totals them.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch; the extension polls it every minute. |
+| `minBytes` / `maxBytes` | `12000` / `400000` | Result size window that gets digested. |
+| `tools` | `read, grep, glob, bash, web_fetch, webfetch, ls, find` | Eligible tool names (lower-case). |
+| `fromTier` | `moderate` | Digest only when the session's current model is at or above this tier. |
+| `tier` / `model` | `simple` / unset | Where the digest model is picked from, or a pinned slug. |
+| `maxOutputTokens` | `700` | Digest length cap. |
+| `maxCostUsd` | `0.02` | Skip when the digest itself would cost more. |
+| `timeoutMs` | `25000` | The raw result stands if the cheap model is slower. |
 
 ### `report` — usage-report options
 

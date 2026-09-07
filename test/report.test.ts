@@ -227,6 +227,9 @@ describe("buildUsageReport", () => {
 			cacheEstimated: false,
 			subagentDispatches: 0,
 			subagentSpendUsd: 0,
+			digests: 0,
+			digestSpendUsd: 0,
+			digestInputTokens: 0,
 		});
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);

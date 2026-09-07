@@ -78,6 +78,9 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 			cacheEstimated: false,
 			subagentDispatches: 0,
 			subagentSpendUsd: 0,
+			digests: 0,
+			digestSpendUsd: 0,
+			digestInputTokens: 0,
 		},
 		providers: [row("openrouter", 2), row("ollama", 1)],
 		models: [

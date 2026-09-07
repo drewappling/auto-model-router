@@ -292,6 +292,19 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		elideSupersededReads: true,
 		collapseDuplicateResults: true,
 	},
+	digest: {
+		// Off until an operator turns it on: it changes what the model reads.
+		enabled: false,
+		minBytes: 12_000,
+		maxBytes: 400_000,
+		tools: ["read", "grep", "glob", "bash", "web_fetch", "webfetch", "ls", "find"],
+		fromTier: "moderate",
+		tier: "simple",
+		model: "",
+		maxOutputTokens: 700,
+		maxCostUsd: 0.02,
+		timeoutMs: 25_000,
+	},
 	report: {
 		// The frontier pair most omp users would otherwise run on.
 		baselines: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"],

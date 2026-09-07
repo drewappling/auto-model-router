@@ -236,3 +236,37 @@ describe("subagent profile", () => {
 		expect(resolveProfile(cfg, "auto", true).id).toBe("auto");
 	});
 });
+
+describe("digest endpoints", () => {
+	let handle: StartedServer;
+	let baseUrl = "";
+	beforeAll(() => {
+		const cfg: RouterConfig = {
+			...structuredClone(DEFAULT_CONFIG),
+			server: { host: "127.0.0.1", port: 0, maxConcurrentTurns: 24, subagentProfile: "auto-sub" },
+			ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" },
+			logLevel: "silent",
+		};
+		cfg.digest = { ...cfg.digest, enabled: true, minBytes: 10 };
+		handle = startServer(cfg);
+		baseUrl = `http://127.0.0.1:${handle.server.port}`;
+	});
+	afterAll(async () => {
+		await handle.stop();
+	});
+
+	test("policy reflects the config; a digest for a session with no turns is declined, a bad body rejected", async () => {
+		const policy = (await (await fetch(`${baseUrl}/v1/router/digest/policy`)).json()) as { enabled: boolean; minBytes: number; tools: string[] };
+		expect(policy.enabled).toBe(true);
+		expect(policy.minBytes).toBe(10);
+		expect(policy.tools).toContain("read");
+		const bad = await fetch(`${baseUrl}/v1/router/digest`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ toolName: "read" }) });
+		expect(bad.status).toBe(400);
+		const res = await fetch(`${baseUrl}/v1/router/digest`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ ompSessionId: "never", toolName: "read", input: {}, content: "x".repeat(100), query: "q" }),
+		});
+		expect((await res.json()) as unknown).toMatchObject({ digested: false, reason: "no routed turn in this session yet" });
+	});
+});

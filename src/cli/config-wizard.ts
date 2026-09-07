@@ -311,6 +311,21 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 		],
 	},
 	{
+		title: "Digest",
+		fields: [
+			{ path: "digest.enabled", label: "Digest large tool results with a cheap model", kind: "boolean" },
+			{ path: "digest.minBytes", label: "Min result bytes", kind: "number", min: 0 },
+			{ path: "digest.maxBytes", label: "Max result bytes", kind: "number", min: 1 },
+			{ path: "digest.tools", label: "Tools eligible", kind: "stringArray", hint: "comma-separated, lower-case" },
+			{ path: "digest.fromTier", label: "Digest when the session is at or above", kind: "enum", options: TIER_NAMES },
+			{ path: "digest.tier", label: "Pick the digest model from tier", kind: "enum", options: TIER_NAMES },
+			{ path: "digest.model", label: "Pinned digest model", kind: "string", optional: true, hint: "blank = cheapest in tier" },
+			{ path: "digest.maxOutputTokens", label: "Max digest tokens", kind: "number", min: 1 },
+			{ path: "digest.maxCostUsd", label: "Max cost per digest $", kind: "number", min: 0 },
+			{ path: "digest.timeoutMs", label: "Digest timeout", kind: "number", min: 1, hint: "ms" },
+		],
+	},
+	{
 		title: "Report",
 		fields: [{ path: "report.baselines", label: "Counterfactual baseline models", kind: "stringArray", hint: "comma-separated slugs" }],
 	},

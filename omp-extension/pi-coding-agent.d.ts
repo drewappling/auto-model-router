@@ -127,9 +127,22 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		details?: unknown;
 	}
 
+	/** A tool result's content parts (text and images). */
+	export interface ToolResultPart {
+		type: string;
+		text?: string;
+	}
+
+	/** What a `tool_result` handler may return to replace the result. */
+	export interface ToolResultEventResult {
+		content?: ToolResultPart[];
+		isError?: boolean;
+	}
+
 	export interface ExtensionAPI {
 		setLabel(label: string): void;
-		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>): void;
+		/** Handlers may return an event result (e.g. a `tool_result` replacement); omp ignores it where none applies. */
+		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void;
 		registerProvider(id: string, registration: ProviderRegistration): void;
 		unregisterProvider(id: string): void;
 		registerCommand(name: string, command: CommandDefinition): void;

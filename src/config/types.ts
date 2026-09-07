@@ -554,6 +554,32 @@ export interface CacheConfig {
 	milestoneTokens: number;
 }
 
+/**
+ * Tool-result digest: a cheap model condenses large tool outputs before an
+ * expensive one reads them (see server/digest.ts and the router-digest omp
+ * extension).
+ */
+export interface DigestConfig {
+	/** Master switch; the omp extension polls this as its policy. */
+	enabled: boolean;
+	/** Tool results smaller than this pass through untouched. */
+	minBytes: number;
+	/** Results larger than this are left alone (too costly even for a cheap model). */
+	maxBytes: number;
+	/** Tool names (lower-case) whose results may be digested. Never errors, never edits/writes. */
+	tools: string[];
+	/** Digest only when the session's current model is at or above this tier. */
+	fromTier: Tier;
+	/** Tier the digest model is picked from (cheapest candidate that fits). */
+	tier: Tier;
+	/** Pin a specific digest model; empty ⇒ pick from `tier`. */
+	model: string;
+	maxOutputTokens: number;
+	/** Skip when the digest itself would cost more than this, USD. */
+	maxCostUsd: number;
+	timeoutMs: number;
+}
+
 /** Usage-report options. */
 export interface ReportConfig {
 	/**
@@ -741,6 +767,7 @@ export interface RouterConfig {
 	compaction: CompactionConfig;
 	budget: BudgetConfig;
 	report: ReportConfig;
+	digest: DigestConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
 	/**
