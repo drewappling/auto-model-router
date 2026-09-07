@@ -121,6 +121,14 @@ interface RecentDigest {
 	atMs: number;
 	ledgerId: string;
 	rerun: boolean;
+	/**
+	 * Whether the call that PRODUCED this digest has been seen. A tool_result
+	 * digest is made before the next request, and that request's last
+	 * assistant message carries the producing call; it must not count as a
+	 * re-run. A compaction digest covers a call already in history, so its
+	 * origin counts as seen from the start.
+	 */
+	originSeen: boolean;
 }
 const RERUN_WINDOW_MS = 2 * 3_600_000;
 const RECENT_PER_SESSION = 50;
@@ -261,7 +269,7 @@ export function createDigester(deps: DigesterDeps): Digester {
 			if (text === "" || text.length >= inputBytes * 0.9) return { digested: false, reason: "digest did not shrink the output" };
 			if (req.ompSessionId !== "") {
 				const list = recent.get(req.ompSessionId) ?? [];
-				list.push({ tool: req.toolName.toLowerCase(), arg: primaryArg(JSON.stringify(req.input)), atMs: startedAt, ledgerId: entry.id, rerun: false });
+				list.push({ tool: req.toolName.toLowerCase(), arg: primaryArg(JSON.stringify(req.input)), atMs: startedAt, ledgerId: entry.id, rerun: false, originSeen: source === "compaction" });
 				recent.set(req.ompSessionId, list.slice(-RECENT_PER_SESSION));
 			}
 			return {
@@ -284,6 +292,11 @@ export function createDigester(deps: DigesterDeps): Digester {
 				if (arg === null) continue;
 				for (const d of list) {
 					if (d.rerun || d.tool !== tool || d.arg !== arg || nowMs - d.atMs > RERUN_WINDOW_MS) continue;
+					if (!d.originSeen) {
+						// The producing call, arriving in the next request's history.
+						d.originSeen = true;
+						continue;
+					}
 					d.rerun = true;
 					marked++;
 					try {

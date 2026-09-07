@@ -273,9 +273,11 @@ def _why_text(e: Dict[str, Any]) -> str:
     pt, ct = usage.get("promptTokens", 0) or 0, usage.get("cachedTokens", 0) or 0
     cache = f"{round(100 * ct / pt)}%" if pt else "n/a"
     cost = e.get("reportedUsd")
+    if cost is None:
+        cost = e.get("predictedUsd") or 0
     lines = [
         f"last turn: {e.get('servedSlug') or e.get('slug')} [{e.get('tier')}] · {e.get('classificationSource')} (confidence {e.get('confidence')})",
-        f"cost ${cost if cost is not None else e.get('predictedUsd')} · cache hit {cache} · latency {e.get('latencyMs')}ms",
+        f"cost ${float(cost):.5f} · cache hit {cache} · latency {e.get('latencyMs')}ms",
     ]
     for r in e.get("reasons") or []:
         lines.append(f"  - {r}")

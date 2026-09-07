@@ -198,6 +198,9 @@ describe("createDigester", () => {
 		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/b.ts"}' }, { name: "grep", argsJson: '{"pattern":"src/a.ts"}' }])).toBe(0);
 		expect(dg.noteToolCalls("omp-2", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
 		expect(row().wasted).toBe(false);
+		// The next request carries the call that PRODUCED the digest in its last assistant message: not a re-run.
+		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts","offset":1}' }])).toBe(0);
+		expect(row().wasted).toBe(false);
 		// The same read again (case-insensitive tool name, any other args): the agent wanted the full output.
 		expect(dg.noteToolCalls("omp-1", [{ name: "Read", argsJson: '{"path":"src/a.ts","limit":50}' }])).toBe(1);
 		expect(row().wasted).toBe(true);
