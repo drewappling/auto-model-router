@@ -76,6 +76,8 @@ export interface HealthSnapshot {
 		lastTrip?: { kind?: string; atMs?: number; message?: string } | null;
 		usage?: { monthlyUsedFraction?: number | null; activityCostUsd?: number | null; plan?: string | null; fetchedAtMs?: number | null } | null;
 		meter?: { usedUsd?: number; creditsUsd?: number; plan?: string | null } | null;
+		calibration?: { factor?: number; meterDeltaUsd?: number; ledgerDeltaUsd?: number; spanHours?: number } | null;
+		runway?: { dailyBurnUsd?: number; creditsLeftUsd?: number; days?: number | null } | null;
 		costBias?: { configured?: number; effective?: number; biasUntilUsage?: number };
 	} | null;
 	catalog?: {
@@ -111,6 +113,11 @@ export function renderStatus(baseUrl: string, h: HealthSnapshot, nowMs = Date.no
 		const bias = o.costBias === undefined ? "" : ` · cost bias ×${o.costBias.effective ?? o.costBias.configured ?? 1} (until ${((o.costBias.biasUntilUsage ?? 1) * 100).toFixed(0)}%)`;
 		const trip = o.lastTrip !== undefined && o.lastTrip !== null ? ` · last trip ${o.lastTrip.kind ?? "?"}${o.lastTrip.atMs ? ` ${mins(nowMs - o.lastTrip.atMs)} ago` : ""}` : "";
 		out.push(`ollama cloud: ${o.models ?? 0} models · ${avail} · key ${o.apiKeySource ?? "?"} · ${usage}${bias}${trip}`);
+		const c = o.calibration;
+		const rw = o.runway;
+		const calText = c !== undefined && c !== null && c.factor !== undefined ? `ledger estimate ×${c.factor.toFixed(2)} to match the meter (${(c.spanHours ?? 0).toFixed(0)}h span)` : "ledger estimate uncalibrated (needs ~$0.50 of metered spend)";
+		const rwText = rw !== undefined && rw !== null ? ` · burn $${(rw.dailyBurnUsd ?? 0).toFixed(2)}/day · ${rw.days === null || rw.days === undefined ? "credits left: unknown burn" : `~${Math.round(rw.days)} days of credits left`}` : "";
+		if (o.meter !== undefined && o.meter !== null) out.push(`ollama billing: ${calText}${rwText}`);
 	}
 	const a = h.agentdox;
 	out.push(a === undefined || a === null ? "agentdox: off" : `agentdox: ${a.url ?? "?"} scope ${a.defaultScope ?? "?"}${a.recordTurns === true ? " · recording turns" : ""}`);

@@ -24,7 +24,18 @@ import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { createMultiUpstream } from "../src/upstream/multi.ts";
 import { classifyOllamaStatus, createOllamaClient, toOllamaBody } from "../src/upstream/ollama.ts";
-import { createOllamaUsageSource, effectiveOllamaBias, NO_USAGE, ollamaMeter, parseOllamaPlan, parseOllamaUsage, usageFraction } from "../src/upstream/ollama-usage.ts";
+import {
+	CALIBRATION_MAX_FACTOR,
+	CALIBRATION_MIN_FACTOR,
+	calibrationFrom,
+	createOllamaUsageSource,
+	effectiveOllamaBias,
+	NO_USAGE,
+	ollamaMeter,
+	parseOllamaPlan,
+	parseOllamaUsage,
+	usageFraction,
+} from "../src/upstream/ollama-usage.ts";
 import type { Dispatch, DispatchOptions, UpstreamClient } from "../src/upstream/types.ts";
 import { createLogger } from "../src/util/log.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
@@ -504,7 +515,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		const source = { get: async () => ollamaModels, peek: () => ollamaModels, invalidate: () => {} };
 		const breaker = { available: () => true, cooldownUntilMs: () => null, lastTrip: () => null };
 		let used = 0.2;
-		const usage = { get: async () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }), peek: () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }) };
+		const usage = { get: async () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }), peek: () => ({ monthlyUsedFraction: used, monthlyUsageRaw: used * 100, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 }), calibration: () => null };
 		const catalog = createCompositeCatalog(openrouter, source, breaker, { costBias: 0.1, biasUntilUsage: 0.9, usage });
 
 		const a = await catalog.get();
@@ -552,5 +563,50 @@ describe("ollamaMeter", () => {
 		expect(parseOllamaPlan({ plan: "max" })).toBe("max");
 		expect(parseOllamaPlan({ Plan: "" })).toBeNull();
 		expect(parseOllamaPlan("nope")).toBeNull();
+	});
+});
+
+describe("ollama calibration", () => {
+	const s = (h: number, meterUsd: number, ledgerUsd: number) => ({ atMs: h * 3_600_000, meterUsd, ledgerUsd });
+
+	test("compares the newest reading with the oldest since the last meter reset", () => {
+		// Ledger estimated $4 over the span; the meter moved $5 ⇒ estimates run 20% low.
+		const c = calibrationFrom([s(0, 10, 20), s(12, 12.5, 22), s(24, 15, 24)])!;
+		expect(c.factor).toBeCloseTo(1.25, 6);
+		expect(c.spanHours).toBe(24);
+		expect(c.samples).toBe(3);
+		// A billing-cycle reset (meter drops) ends the span.
+		const reset = calibrationFrom([s(0, 50, 40), s(12, 0.5, 41), s(24, 1.5, 42)])!;
+		expect(reset.samples).toBe(2);
+		expect(reset.factor).toBeCloseTo(1, 6);
+	});
+
+	test("needs enough metered spend to mean anything, and clamps to 0.5–2×", () => {
+		expect(calibrationFrom([s(0, 1, 1), s(1, 1.03, 1.2)])).toBeNull(); // meter moved less than its resolution
+		expect(calibrationFrom([s(0, 1, 1), s(1, 2, 1.3)])).toBeNull(); // ledger moved less than $0.50
+		expect(calibrationFrom([s(0, 0, 0), s(1, 10, 1)])!.factor).toBe(CALIBRATION_MAX_FACTOR);
+		expect(calibrationFrom([s(0, 0, 0), s(1, 0.1, 10)])!.factor).toBe(CALIBRATION_MIN_FACTOR);
+		expect(calibrationFrom([s(0, 1, 1)])).toBeNull();
+	});
+
+	test("the source records a sample per poll and exposes the calibration", async () => {
+		const db = openDb(":memory:");
+		let ledgerUsd = 1;
+		let frac = 0.1;
+		const fetchImpl = async (url: string): Promise<Response> => {
+			if (url.endsWith("/api/me")) return Response.json({ Plan: "pro" });
+			return Response.json({ limits: { monthly: { usage: frac, models: [] } } });
+		};
+		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 5, timeoutMs: 1000, log, fetchImpl, calibration: { db, ledgerUsd: () => ledgerUsd, planCreditsOverrideUsd: 0 } });
+		await src.get(); // meter $6 (10% of $60), ledger $1
+		expect(src.calibration()).toBeNull(); // one sample
+		await new Promise((r) => setTimeout(r, 20));
+		ledgerUsd = 3; // ledger +$2
+		frac = 0.15; // meter +$3
+		await src.get();
+		const c = src.calibration()!;
+		expect(c.factor).toBeCloseTo(1.5, 6);
+		expect((db.query("SELECT COUNT(*) n FROM ollama_meter_samples").get() as { n: number }).n).toBe(2);
+		db.close();
 	});
 });

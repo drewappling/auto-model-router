@@ -124,6 +124,18 @@ export function computeStats(ledger: Ledger, opts?: { windowDays?: number; nowMs
 	};
 }
 
+/** Days of included credits left at the last 7 days' burn (ledger, scaled by the calibration). */
+export function ollamaRunway(
+	meter: { usedUsd: number; creditsUsd: number } | null,
+	ledgerUsd7d: number,
+	factor: number,
+): { dailyBurnUsd: number; creditsLeftUsd: number; days: number | null } | null {
+	if (meter === null) return null;
+	const dailyBurnUsd = (ledgerUsd7d / 7) * factor;
+	const creditsLeftUsd = Math.max(0, meter.creditsUsd - meter.usedUsd);
+	return { dailyBurnUsd, creditsLeftUsd, days: dailyBurnUsd > 0 ? creditsLeftUsd / dailyBurnUsd : null };
+}
+
 function json(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
 		status,
@@ -176,13 +188,13 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
-	const { upstream, catalog, ollama, ollamaUsage } = createProviders(cfg, db, log);
+	const { upstream, catalog, ollama, ollamaUsage, ollamaCostScale } = createProviders(cfg, db, log);
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
 	const overrides = createSessionOverrides();
 	const feedback = createFeedbackStore(db);
-	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides };
+	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale };
 
 	// Hot reload: ranking knobs (tiers, filters, escalation, budgets, …) take
 	// effect on the next turn without a restart, because every consumer reads
@@ -475,6 +487,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 										usage: ollamaUsage.peek(),
 										// The dashboard's dollar figure: plan share × included credits, when known.
 										meter: ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd),
+										// Ledger vs meter, and how long the credits last at the recent burn.
+										calibration: ollamaUsage.calibration(),
+										runway: ollamaRunway(ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd), ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1),
 										costBias: { configured: cfg.ollama.costBias, effective: catalog.ollamaBias?.() ?? cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage },
 									},
 						catalog: snap === null

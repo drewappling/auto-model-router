@@ -119,6 +119,14 @@ CREATE TABLE IF NOT EXISTS context_blocks (
   fetched_at_ms INTEGER NOT NULL
 );
 
+-- ollama.com plan-meter readings beside the ledger's own Ollama total at the
+-- same instant, so the ledger's estimate can be calibrated against the bill.
+CREATE TABLE IF NOT EXISTS ollama_meter_samples (
+  at_ms INTEGER PRIMARY KEY,
+  meter_usd REAL NOT NULL,
+  ledger_usd REAL NOT NULL
+);
+
 -- User verdicts on routed turns (/router feedback), tied to the ledger row judged.
 CREATE TABLE IF NOT EXISTS feedback (
   id TEXT PRIMARY KEY,

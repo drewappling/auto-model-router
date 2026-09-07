@@ -843,7 +843,13 @@ What happens once it is on:
   flags these rows (`usage.cachedEstimated`) and reports show their cache
   rate as `~N%`. `/router status` shows ollama.com's own dollar reading as
   the cross-check: the plan is read from `POST /api/me` and its published
-  allowance applied (`planCreditsUsd` overrides it).
+  allowance applied (`planCreditsUsd` overrides it). **The estimate is
+  calibrated against the meter:** every usage poll records the meter beside
+  the ledger's Ollama total, and once the span carries ~$0.50 of metered
+  spend the ratio (clamped to 0.5–2×) scales every new Ollama cost the
+  router records, so the ledger tracks the bill rather than the list price.
+  Status shows the factor and, at the last week's burn, how many days of
+  credits remain.
 - **Same economics, same failover.** Candidates from both providers are ranked
   together; `costBias` tilts the comparison while a plan's included credits
   would otherwise go unused. **Credit-aware by default:** the router reads the

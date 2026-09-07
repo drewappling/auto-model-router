@@ -266,6 +266,8 @@ export interface Ledger {
 	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
 	tokenRatio(tokenizer: string): number | null;
 	recentEntries(limit: number): LedgerEntry[];
+	/** Spend since an instant on slugs with a prefix (`ollama/`), for provider-level reconciliation. Optional. */
+	providerSpendSince?(slugPrefix: string, sinceMs: number): number;
 	/** Newest kept (non-wasted) entry for an omp session, for /router why and feedback. Optional so fakes need not implement it. */
 	latestForSession?(ompSessionId: string): LedgerEntry | null;
 	/** Newest entries for an omp session, newest first. Optional. */

@@ -24,6 +24,7 @@
  * percents) rather than 100%, which errs toward keeping the bias on.
  */
 
+import type { Database } from "bun:sqlite";
 import type { Logger } from "../util/log.ts";
 
 export interface OllamaUsage {
@@ -96,20 +97,94 @@ export function parseOllamaUsage(json: unknown, nowMs = Date.now()): OllamaUsage
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** One reading of the plan meter beside the ledger's own Ollama total. */
+export interface MeterSample {
+	atMs: number;
+	meterUsd: number;
+	ledgerUsd: number;
+}
+
+/** How the ledger's Ollama estimate compares with what ollama.com metered over the same span. */
+export interface OllamaCalibration {
+	/** metered ÷ ledger over the span, clamped to [0.5, 2]. Multiply estimates by it. */
+	factor: number;
+	meterDeltaUsd: number;
+	ledgerDeltaUsd: number;
+	spanHours: number;
+	samples: number;
+}
+
+/** Bounds on the span a calibration may rest on: the meter moves in $0.06 steps on Pro, so a tiny span is noise. */
+const CALIBRATION_MIN_LEDGER_USD = 0.5;
+const CALIBRATION_MIN_METER_USD = 0.06;
+export const CALIBRATION_MIN_FACTOR = 0.5;
+export const CALIBRATION_MAX_FACTOR = 2;
+
+/**
+ * The calibration from samples ordered oldest→newest. Walks back from the
+ * newest reading while the meter is non-decreasing (a drop is a billing-cycle
+ * reset), then compares the two ends. Null until the span carries enough
+ * spend to mean anything.
+ */
+export function calibrationFrom(samples: readonly MeterSample[]): OllamaCalibration | null {
+	if (samples.length < 2) return null;
+	const newest = samples[samples.length - 1]!;
+	let oldest = newest;
+	let n = 1;
+	for (let i = samples.length - 2; i >= 0; i--) {
+		const s = samples[i]!;
+		if (s.meterUsd > oldest.meterUsd || s.ledgerUsd > oldest.ledgerUsd) break; // reset (meter) or a ledger purge
+		oldest = s;
+		n++;
+	}
+	const meterDeltaUsd = newest.meterUsd - oldest.meterUsd;
+	const ledgerDeltaUsd = newest.ledgerUsd - oldest.ledgerUsd;
+	if (ledgerDeltaUsd < CALIBRATION_MIN_LEDGER_USD || meterDeltaUsd < CALIBRATION_MIN_METER_USD) return null;
+	const factor = Math.min(CALIBRATION_MAX_FACTOR, Math.max(CALIBRATION_MIN_FACTOR, meterDeltaUsd / ledgerDeltaUsd));
+	return { factor, meterDeltaUsd, ledgerDeltaUsd, spanHours: (newest.atMs - oldest.atMs) / 3_600_000, samples: n };
+}
+
 export interface OllamaUsageSource {
 	/** Latest usage, refreshed when older than the poll interval; last good value on failure. */
 	get(): Promise<OllamaUsage | null>;
 	/** Last fetched value without touching the network. */
 	peek(): OllamaUsage | null;
+	/** Ledger-vs-meter calibration, when enough metered spend has accrued. */
+	calibration(): OllamaCalibration | null;
 }
 
 /** Inert source for setups with no key (the daemon path without `/login ollama-cloud`). */
-export const NO_USAGE: OllamaUsageSource = { get: async () => null, peek: () => null };
+export const NO_USAGE: OllamaUsageSource = { get: async () => null, peek: () => null, calibration: () => null };
+
+/** Where calibration samples come from and go: the ledger's Ollama total and the plan's credits. */
+export interface CalibrationDeps {
+	db: Database;
+	/** The ledger's all-time Ollama spend, read at sampling time. */
+	ledgerUsd(): number;
+	/** Configured credit override (0 = detect from the plan). */
+	planCreditsOverrideUsd: number;
+}
 
 export function createOllamaUsageSource(
-	opts: { apiKey: string; pollMs: number; timeoutMs: number; log: Logger; fetchImpl?: FetchLike; root?: string },
+	opts: { apiKey: string; pollMs: number; timeoutMs: number; log: Logger; fetchImpl?: FetchLike; root?: string; calibration?: CalibrationDeps },
 ): OllamaUsageSource {
 	if (opts.apiKey === "" || opts.pollMs <= 0) return NO_USAGE;
+	const cal = opts.calibration;
+	const insertSample = cal === undefined ? null : cal.db.query("INSERT OR REPLACE INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, ?, ?)");
+	const readSamples = cal === undefined ? null : cal.db.query("SELECT at_ms, meter_usd, ledger_usd FROM ollama_meter_samples WHERE at_ms >= ? ORDER BY at_ms ASC");
+	let calibrationMemo: OllamaCalibration | null = null;
+	function sample(usage: OllamaUsage): void {
+		if (cal === null || cal === undefined || insertSample === null || readSamples === null) return;
+		const credits = ollamaPlanCredits(usage, cal.planCreditsOverrideUsd);
+		if (credits === null || usage.monthlyUsedFraction === null) return;
+		try {
+			insertSample.run(usage.fetchedAtMs, usage.monthlyUsedFraction * credits, cal.ledgerUsd());
+			const rows = readSamples.all(usage.fetchedAtMs - 30 * 86_400_000) as { at_ms: number; meter_usd: number; ledger_usd: number }[];
+			calibrationMemo = calibrationFrom(rows.map((r) => ({ atMs: r.at_ms, meterUsd: r.meter_usd, ledgerUsd: r.ledger_usd })));
+		} catch (err) {
+			opts.log.debug("ollama calibration sample failed", { error: err instanceof Error ? err.message : String(err) });
+		}
+	}
 	const fetchImpl = opts.fetchImpl ?? fetch;
 	const root = (opts.root ?? "https://ollama.com").replace(/\/+$/, "");
 	let current: OllamaUsage | null = null;
@@ -155,6 +230,7 @@ export function createOllamaUsageSource(
 				if (parsed !== null) {
 					current = { ...parsed, plan };
 					warned = false;
+					sample(current);
 				} else if (!warned) {
 					warned = true;
 					opts.log.warn("ollama usage payload had no recognisable fields; credit-aware bias stays on its last reading");
@@ -184,6 +260,7 @@ export function createOllamaUsageSource(
 			return inflight;
 		},
 		peek: () => current,
+		calibration: () => calibrationMemo,
 	};
 }
 

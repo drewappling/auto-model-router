@@ -897,4 +897,34 @@ describe("latency measurement covers the work the router actually does", () => {
 		expect(map.get("conv-test")!.cacheWarmSlug).toBe(ollamaModel.slug);
 	});
 
+	test("an Ollama estimate is scaled by the ledger-vs-meter calibration", async () => {
+		const ollamaModel: CatalogModel = {
+			slug: "ollama/glm-5.3-flash",
+			provider: "ollama",
+			canonicalSlug: "ollama/glm-5.3-flash",
+			name: "glm",
+			contextLength: 1_000_000,
+			supportsTools: true,
+			supportsReasoning: true,
+			reasoningMandatory: false,
+			supportsToolChoice: false,
+			inputModalities: ["text"],
+			price: { prompt: 0.15 / 1e6, cacheRead: 0.03 / 1e6, completion: 0.5 / 1e6 },
+			priceTiers: [],
+			quality: {},
+			tokenizer: "Other",
+			isFree: false,
+			createdAtMs: 0,
+			author: "ollama",
+		};
+		const priced = { ...catalog, find: (slug: string) => (slug === ollamaModel.slug ? ollamaModel : undefined) };
+		const { router } = mkRouter([mkDecision("simple", ollamaModel.slug)]);
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [startChunk(ollamaModel.slug), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: 100_000, completionTokens: 0 }, null)] }]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		await runTurn(mkReq(), mkSink().sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog: priced, context: createDisabledBridge(), ollamaCostScale: () => 1.25 }, new AbortController().signal);
+		// 100k × $0.15/M = $0.015, scaled ×1.25.
+		expect(entries[0]!.reportedUsd).toBeCloseTo(0.01875, 6);
+	});
+
 });

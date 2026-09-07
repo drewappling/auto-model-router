@@ -69,6 +69,8 @@ export interface TurnDeps {
 	context: ContextBridge;
 	/** Per-session pin/tier overrides from omp. Absent ⇒ none. */
 	overrides?: SessionOverrides;
+	/** Ledger-vs-meter calibration for Ollama's estimated costs; absent ⇒ 1. */
+	ollamaCostScale?: () => number;
 }
 
 /** A dead client connection surfaces as the sink throwing mid-stream. */
@@ -490,6 +492,8 @@ export async function runTurn(
 					});
 				}
 				reportedUsd = computeCost(served, usage).total;
+				// Scale the estimate to what the plan meter has been billing for it.
+				if (served.provider === "ollama") reportedUsd *= deps.ollamaCostScale?.() ?? 1;
 			}
 		}
 

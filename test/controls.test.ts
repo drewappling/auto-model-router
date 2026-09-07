@@ -6,6 +6,7 @@ import { createFeedbackStore } from "../src/cost/feedback.ts";
 import { createLedger } from "../src/cost/ledger.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { startServer, type StartedServer } from "../src/server/http.ts";
+import { ollamaRunway } from "../src/server/http.ts";
 import { createSessionOverrides, OVERRIDE_TTL_MS } from "../src/server/overrides.ts";
 import { openDb } from "../src/util/sqlite.ts";
 import { describeOverride, parseOverrideArgs, renderWhy, type WhyEntry } from "../omp-extension/report-logic.ts";
@@ -207,5 +208,16 @@ describe("/router why and override parsing", () => {
 		expect(describeOverride(null)).toBe("no override on this session");
 		expect(describeOverride({ slug: "a/b", tier: "hard", turnsLeft: 1 })).toBe("pinned to a/b, tier forced to hard · 1 turn left");
 		expect(describeOverride({ slug: null, tier: "simple", turnsLeft: 0 })).toBe("tier forced to simple · until cleared");
+	});
+});
+
+describe("ollamaRunway", () => {
+	test("days of credits left at the calibrated weekly burn", () => {
+		const r = ollamaRunway({ usedUsd: 6.3, creditsUsd: 60 }, 7, 1.25)!;
+		expect(r.dailyBurnUsd).toBeCloseTo(1.25, 6);
+		expect(r.creditsLeftUsd).toBeCloseTo(53.7, 6);
+		expect(r.days).toBeCloseTo(53.7 / 1.25, 6);
+		expect(ollamaRunway({ usedUsd: 6.3, creditsUsd: 60 }, 0, 1)!.days).toBeNull();
+		expect(ollamaRunway(null, 7, 1)).toBeNull();
 	});
 });
