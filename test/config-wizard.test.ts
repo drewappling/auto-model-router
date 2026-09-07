@@ -166,7 +166,7 @@ describe("WIZARD_SECTIONS coverage", () => {
 		// they are listed here so a typo in a new field path fails loudly.
 		const KNOWN_OPTIONAL = new Set([
 			"server.apiKey", "server.harnessId", "openrouter.referer",
-			"budget.perTurnUsd", "budget.perConversationUsd", "budget.perDayUsd", "filters.maxExpectedWaitMs",
+			"budget.perTurnUsd", "budget.perConversationUsd", "budget.perDayUsd", "budget.perMonthUsd", "filters.maxExpectedWaitMs", "filters.latencyWeightContinuation",
 			...["trivial", "simple", "moderate", "hard"].flatMap((t) => [
 				`tiers.${t}.maxInputPerMtok`, `tiers.${t}.maxOutputPerMtok`, `tiers.${t}.qualityNormalization`, `tiers.${t}.capabilityFloorUsd`,
 			]),
@@ -303,6 +303,7 @@ describe("runWizard", () => {
 			CLEAR_TOKEN, // clear perTurnUsd
 			"",
 			"",
+			"", // perMonthUsd
 			"",
 			"s",
 		]);

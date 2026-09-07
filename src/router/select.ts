@@ -114,6 +114,20 @@ function hardSignal(f: Features): boolean {
 	return f.lastToolFailed || f.circularToolCall || f.repeatedToolCall || reasoning === "high" || reasoning === "xhigh" || reasoning === "max";
 }
 
+/** Start of the UTC calendar month containing `nowMs`. */
+export function monthStartMs(nowMs: number): number {
+	const d = new Date(nowMs);
+	return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+/** The daily ceiling that spends what remains of a monthly target evenly over the days left (today included). */
+export function monthPace(nowMs: number, perMonthUsd: number, spentUsd: number): { spentUsd: number; daysLeft: number; dailyCapUsd: number } {
+	const d = new Date(nowMs);
+	const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+	const daysLeft = Math.max(1, daysInMonth - d.getUTCDate() + 1);
+	return { spentUsd, daysLeft, dailyCapUsd: Math.max(0, (perMonthUsd - spentUsd) / daysLeft) };
+}
+
 export function select(args: SelectArgs): Decision {
 	const { req, features, classification, profile, state, snapshot, ledger, cfg, nowMs } = args;
 	const reasons: string[] = [];
@@ -490,8 +504,19 @@ export function select(args: SelectArgs): Decision {
 		perTurnUsd: profile.budget?.perTurnUsd ?? cfg.budget.perTurnUsd,
 		perConversationUsd: profile.budget?.perConversationUsd ?? cfg.budget.perConversationUsd,
 		perDayUsd: profile.budget?.perDayUsd ?? cfg.budget.perDayUsd,
+		perMonthUsd: profile.budget?.perMonthUsd ?? cfg.budget.perMonthUsd,
 		onExceeded: profile.budget?.onExceeded ?? cfg.budget.onExceeded,
 	};
+	// Month pacing: what is left of the month's target, spread over the days
+	// left, becomes a daily ceiling that tightens as the month runs ahead.
+	let paceNote = "";
+	if (budget.perMonthUsd !== undefined) {
+		const pace = monthPace(nowMs, budget.perMonthUsd, ledger?.spendSince(monthStartMs(nowMs), req.harnessId) ?? 0);
+		if (budget.perDayUsd === undefined || pace.dailyCapUsd < budget.perDayUsd) {
+			budget.perDayUsd = pace.dailyCapUsd;
+			paceNote = ` (month pacing: $${pace.spentUsd.toFixed(2)} of $${budget.perMonthUsd} spent, $${pace.dailyCapUsd.toFixed(2)}/day for ${pace.daysLeft} more days)`;
+		}
+	}
 	const daySpend = budget.perDayUsd !== undefined ? (ledger?.spendSince(nowMs - DAY_MS, req.harnessId) ?? 0) : 0;
 	const breach = (c: Candidate): string | null => {
 		if (budget.perTurnUsd !== undefined && c.forecast.coldUsd > budget.perTurnUsd) {
@@ -505,7 +530,7 @@ export function select(args: SelectArgs): Decision {
 			// identifies itself, so multiple harnesses sharing one router each get
 			// their own daily budget instead of one exhausting it for the others.
 			if (daySpend + c.forecast.coldUsd > budget.perDayUsd) {
-				return `24h spend $${daySpend.toFixed(4)} + cold forecast > per-day budget $${budget.perDayUsd}`;
+				return `24h spend $${daySpend.toFixed(4)} + cold forecast > per-day budget $${budget.perDayUsd.toFixed(2)}${paceNote}`;
 			}
 		}
 		return null;

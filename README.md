@@ -505,6 +505,7 @@ What it shows, for the window:
 | models | per served slug (top 12 by spend): the same plus user feedback (`+good/-bad` from `/router good\|bad`) and the tier mix it was routed for |
 | tiers | per tier: dispatches, spend, share, cache hit, mean prompt tokens, escalations |
 | by day | UTC calendar days: dispatches, spend, cache hit |
+| same traffic on one model | the window's tokens priced on each `report.baselines` model at list price with the window's cache hit rate, and what share the router saved against it |
 
 Spend follows the ledger's rule — the provider's reported cost when it gave
 one, else the usage-priced figure the router computed, else the forecast.
@@ -669,6 +670,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `latencyWeight` | `0` | How hard to penalise slow models in scoring (soft multiplier on effective cost). `0` disables it. |
 | `latencyMinSamples` | `20` | Streamed samples before latency is judged against a model. |
 | `cacheReliabilityMinSamples` | `10` | Warm-expected samples before a model's observed cache hit rate discounts its "stay warm" price in the stay/switch comparison. A model whose cache misses when it should be warm (measured: 5-6% on glm/gemini, 11% on ling, 50% on nex) is kept less eagerly. `0` assumes every cache is reliable. |
+| `latencyWeightContinuation` | unset | Latency weight on tool-result continuations (the agent loop's own follow-ups). Unset ⇒ `latencyWeight` everywhere; lower it to spend speed only where a person waits on first token. |
 | `maxExpectedWaitMs` | unset | Absolute expected-wait ceiling (ms): a hard drop for models *proven* slower (≥ `latencyMinSamples`), regardless of price. The soft penalty is multiplicative and capped, so it cannot demote a slow-but-cheap model — this can. New models keep their cold-start turns; relaxed with trust in tier rescue. Undefined ⇒ off. |
 | `escalationCostWeight` | `0` | Price a model's measured escalation rate at what an escalated retry actually bills (the ledger's $/prompt-token of `attempt > 0` rows), 0–1. The trust divisor reads a 4% escalation rate as a 4% surcharge; the real cost is a whole re-dispatch on the next tier's model. `0` disables the term. |
 
@@ -756,6 +758,7 @@ shrunk results stay shrunk (rewriting them would break the prompt cache).
 | `perTurnUsd` | unset | Per-turn cap (checked against the cold forecast). |
 | `perConversationUsd` | unset | Per-conversation cap. |
 | `perDayUsd` | unset | Rolling 24h cap, scoped per harness when `harnessId` is set. |
+| `perMonthUsd` | unset | Calendar-month (UTC) target. Paced: the daily cap becomes min(`perDayUsd`, remaining ÷ days left), so a month running ahead tightens automatically. The breach reason names the pace. |
 | `onExceeded` | `downgrade` | `downgrade` = pick the cheapest viable model; `reject` = fail the turn. |
 
 ### `profiles` — the virtual models omp sees
@@ -770,6 +773,12 @@ Each profile is a complete entry (arrays replace wholesale):
 | `contextWindow` | `400000` | Advertised context window (drives omp's compaction). |
 | `maxTokens` | `32000` | Advertised max output tokens. |
 | `budget` | unset | Per-profile budget overrides. |
+
+### `report` — usage-report options
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `baselines` | `anthropic/claude-opus-5`, `anthropic/claude-sonnet-5` | Models the report prices the window's traffic on as a single-model counterfactual. Unknown slugs are skipped. |
 
 ### `ledger` — cost measurement
 

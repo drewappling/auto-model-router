@@ -111,12 +111,21 @@ function expectedWaitMs(latency: ModelLatency, expectedCompletionTokens: number)
  * tiny cost and capped at LATENCY_EXCESS_CAP, so the model stays cheapest. That is
  * `filters.maxExpectedWaitMs`'s job — a hard drop, applied in buildCandidates.
  */
-function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig, expectedCompletionTokens: number): number {
-	if (latency === null || filters.latencyWeight <= 0 || latency.samples < filters.latencyMinSamples) return 1;
+/**
+ * The latency weight in force for a turn: the continuation weight on a
+ * tool-result continuation when one is configured, else the general one.
+ * A person waits on first token only when the turn is theirs.
+ */
+export function latencyWeightFor(filters: FilterConfig, isToolResultContinuation: boolean): number {
+	return isToolResultContinuation && filters.latencyWeightContinuation !== undefined ? filters.latencyWeightContinuation : filters.latencyWeight;
+}
+
+function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig, expectedCompletionTokens: number, weight = filters.latencyWeight): number {
+	if (latency === null || weight <= 0 || latency.samples < filters.latencyMinSamples) return 1;
 	const waitMs = expectedWaitMs(latency, expectedCompletionTokens);
 	const refWaitMs = filters.latencyReferenceMs + (expectedCompletionTokens / filters.latencyReferenceTokensPerSec) * 1000;
 	const excess = refWaitMs > 0 ? Math.max(0, (waitMs - refWaitMs) / refWaitMs) : 0;
-	return 1 + filters.latencyWeight * Math.min(excess, LATENCY_EXCESS_CAP);
+	return 1 + weight * Math.min(excess, LATENCY_EXCESS_CAP);
 }
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
@@ -320,7 +329,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// 20% of the time really costs ~25% more in retries. Latency does the same
 		// for slowness (TTFT over the reference). qualityExponent 0 makes this
 		// "cheapest above the floor"; the floor does the quality work.
-		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens);
+		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens, latencyWeightFor(filters, features.isToolResultContinuation));
 		// Escalation-cost term: the trust divisor prices a failure as a retry of
 		// THIS model, but a probe escalation re-dispatches the whole prompt on
 		// the next tier's model — measured at ~700x a cheap model's own turn cost.

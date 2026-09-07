@@ -7,7 +7,7 @@ import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { createSessionOverrides } from "./overrides.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
-import { buildUsageReport } from "../cost/report.ts";
+import { baselinePrices, buildUsageReport } from "../cost/report.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
@@ -382,7 +382,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const parsedDays = rawDays === null ? 7 : Number.parseInt(rawDays, 10);
 					const windowDays = Number.isInteger(parsedDays) ? Math.min(Math.max(parsedDays, 1), 365) : 7;
 					const harnessId = url.searchParams.get("harness") ?? "";
-					return json(buildUsageReport(db, { windowDays, harnessId }));
+					return json(buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) }));
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
 					const rawLimit = url.searchParams.get("limit");

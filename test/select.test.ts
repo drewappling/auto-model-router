@@ -8,7 +8,8 @@ import type { ProfileConfig, RouterConfig } from "../src/config/types.ts";
 import type { Ledger } from "../src/cost/types.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { scoreHeuristic } from "../src/router/classify.ts";
-import { BudgetExceededError, select } from "../src/router/select.ts";
+import { latencyWeightFor } from "../src/router/candidates.ts";
+import { BudgetExceededError, monthPace, monthStartMs, select } from "../src/router/select.ts";
 import type { ConversationState, Tier } from "../src/router/types.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 import type { NormRequest } from "../src/wire/types.ts";
@@ -1130,5 +1131,47 @@ describe("session pin (forceSlug)", () => {
 		const unknown = select({ ...base, forceSlug: "nope/model" });
 		expect(unknown.slug).toBe(warmSlug); // the huge switch margin keeps the warm model
 		expect(unknown.reasons.some((r) => r.includes("pin nope/model ignored"))).toBe(true);
+	});
+});
+
+describe("budget.perMonthUsd pacing", () => {
+	test("monthPace spreads what is left over the days left, today included", () => {
+		const sep7 = Date.UTC(2026, 8, 7, 12);
+		expect(monthStartMs(sep7)).toBe(Date.UTC(2026, 8, 1));
+		const p = monthPace(sep7, 60, 30);
+		expect(p.daysLeft).toBe(24); // 7th..30th
+		expect(p.dailyCapUsd).toBeCloseTo(30 / 24, 6);
+		expect(monthPace(sep7, 60, 70).dailyCapUsd).toBe(0);
+		expect(monthPace(Date.UTC(2026, 8, 30, 12), 60, 0).daysLeft).toBe(1);
+	});
+
+	test("a month running ahead of pace tightens the daily cap and says so", () => {
+		const ledger: Ledger = {
+			record: () => {},
+			conversationSpend: () => 0,
+			spendSince: (sinceMs) => (sinceMs <= monthStartMs(Date.now()) + 1 ? 59.99 : 0), // month-to-date $59.99, last 24h $0
+			blendedRate: () => null,
+			trust: () => null,
+			allTrust: () => [],
+			latency: () => null,
+			tokenRatio: () => null,
+			recentEntries: () => [],
+		};
+		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perMonthUsd: 60, onExceeded: "reject" } };
+		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg, ledger })).toThrow(/month pacing: \$59\.99 of \$60 spent/);
+		// Under pace: the cap is generous and nothing breaches.
+		const easy: Ledger = { ...ledger, spendSince: () => 1 };
+		expect(run({ tier: "hard", promptTokens: 50_000, cfg, ledger: easy }).budgetDowngraded).toBe(false);
+	});
+});
+
+describe("filters.latencyWeightContinuation", () => {
+	test("applies only to tool-result continuations, and only when set", () => {
+		const f = { ...BASE.filters, latencyWeight: 0.75 };
+		expect(latencyWeightFor(f, false)).toBe(0.75);
+		expect(latencyWeightFor(f, true)).toBe(0.75);
+		const g = { ...f, latencyWeightContinuation: 0.1 };
+		expect(latencyWeightFor(g, false)).toBe(0.75);
+		expect(latencyWeightFor(g, true)).toBe(0.1);
 	});
 });

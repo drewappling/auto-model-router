@@ -98,6 +98,7 @@ const filters = z.strictObject({
 	latencyMinSamples: z.number().int().nonnegative().optional(),
 	cacheReliabilityMinSamples: z.number().int().nonnegative().optional(),
 	maxExpectedWaitMs: z.number().positive().optional(),
+	latencyWeightContinuation: z.number().nonnegative().optional(),
 	escalationCostWeight: z.number().min(0).max(1).optional(),
 });
 
@@ -207,6 +208,7 @@ const budget = z.strictObject({
 	perTurnUsd: z.number().nonnegative().optional(),
 	perConversationUsd: z.number().nonnegative().optional(),
 	perDayUsd: z.number().nonnegative().optional(),
+	perMonthUsd: z.number().nonnegative().optional(),
 	onExceeded: z.enum(["downgrade", "reject"]).optional(),
 });
 
@@ -267,6 +269,7 @@ export const configInputSchema = z.strictObject({
 	compaction: compaction.optional(),
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
+	report: z.strictObject({ baselines: z.array(z.string()).optional() }).optional(),
 	ledger: ledger.optional(),
 	adaptiveTierFloors: z.boolean().optional(),
 	adaptivePriceCeilings: z.boolean().optional(),

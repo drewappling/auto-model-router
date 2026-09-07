@@ -286,6 +286,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		elideSupersededReads: true,
 		collapseDuplicateResults: true,
 	},
+	report: {
+		// The frontier pair most omp users would otherwise run on.
+		baselines: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5"],
+	},
 	budget: {
 		// No caps by default; at a configured ceiling, downgrade rather than fail.
 		onExceeded: "downgrade",

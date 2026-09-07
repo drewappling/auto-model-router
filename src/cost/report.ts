@@ -76,6 +76,34 @@ export interface UsageReport {
 	days: DayRow[];
 	/** Mean prompt composition over rows that recorded it; null when none did. */
 	anatomy: AnatomyShare | null;
+	/** What the window would have cost on one model throughout, per configured baseline. */
+	baselines: BaselineRow[];
+}
+
+export interface BaselineRow {
+	slug: string;
+	usd: number;
+	/** 1 − routed spend ÷ baseline spend; negative when the router cost more. */
+	savedShare: number;
+}
+
+/** Resolves configured baseline slugs against a catalog lookup; unknown slugs are skipped. */
+export function baselinePrices(slugs: readonly string[], find: (slug: string) => { price: { prompt: number; completion: number; cacheRead?: number } } | undefined): BaselinePrice[] {
+	const out: BaselinePrice[] = [];
+	for (const slug of slugs) {
+		const m = find(slug);
+		if (m === undefined) continue;
+		out.push({ slug, prompt: m.price.prompt, completion: m.price.completion, ...(m.price.cacheRead === undefined ? {} : { cacheRead: m.price.cacheRead }) });
+	}
+	return out;
+}
+
+/** A baseline's prices per token (the catalog's `Price`, or a subset of it). */
+export interface BaselinePrice {
+	slug: string;
+	prompt: number;
+	completion: number;
+	cacheRead?: number;
 }
 
 /** Shares of prompt bytes, 0-1, averaged over the window's dispatches. */
@@ -148,7 +176,10 @@ function toRow(r: RawRow, windowSpend: number): ReportRow {
  * Builds the report for the last `windowDays`. `harnessId` narrows to one
  * harness (the `X-Omp-Harness` header); empty means everything.
  */
-export function buildUsageReport(db: Database, opts: { windowDays: number; harnessId?: string; nowMs?: number }): UsageReport {
+export function buildUsageReport(
+	db: Database,
+	opts: { windowDays: number; harnessId?: string; nowMs?: number; baselines?: readonly BaselinePrice[] },
+): UsageReport {
 	const nowMs = opts.nowMs ?? Date.now();
 	const windowDays = Math.max(1, opts.windowDays);
 	const sinceMs = nowMs - windowDays * 86_400_000;
@@ -269,6 +300,15 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		};
 	}
 
+	// Counterfactual: the window's tokens on one model throughout, at list
+	// price with the window's own cache hit rate (cached tokens read at the
+	// baseline's cache rate, or full price when it publishes none).
+	const baselines: BaselineRow[] = (opts.baselines ?? []).map((b) => {
+		const fresh = Math.max(0, t.prompt_tokens - t.cached_tokens);
+		const usd = fresh * b.prompt + t.cached_tokens * (b.cacheRead ?? b.prompt) + t.completion_tokens * b.completion;
+		return { slug: b.slug, usd, savedShare: usd > 0 ? 1 - t.spend / usd : 0 };
+	});
+
 	return {
 		generatedAtMs: nowMs,
 		windowDays,
@@ -293,6 +333,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		tiers,
 		days,
 		anatomy,
+		baselines,
 	};
 }
 
@@ -343,6 +384,13 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 		`spend ${usd(t.spendUsd)} over ${num(t.dispatches)} dispatches in ${num(t.conversations)} conversations · ${usd(t.dispatches > 0 ? t.spendUsd / t.dispatches : 0)}/dispatch`,
 		`prompt ${num(t.promptTokens)} tok (cache hit ${pct(t.cacheHitRate, t.cacheEstimated)}) · completion ${num(t.completionTokens)} tok · switches ${num(t.modelSwitches)} · escalations ${num(t.escalations)} · failovers ${num(t.failovers)} · errors ${num(t.errors)} (${num(t.aborted)} aborted)`,
 	];
+	if (r.baselines.length > 0 && t.dispatches > 0) {
+		summary.push(
+			`same traffic on one model: ${r.baselines
+				.map((b) => `${b.slug} ${usd(b.usd)} (router ${b.savedShare >= 0 ? "saved" : "cost extra"} ${pct(Math.abs(b.savedShare))})`)
+				.join(" · ")}`,
+		);
+	}
 	const a = r.anatomy;
 	if (a !== null) {
 		summary.push(

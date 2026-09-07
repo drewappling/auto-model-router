@@ -192,6 +192,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.latencyMinSamples", label: "Latency min samples", kind: "number", min: 0 },
 			{ path: "filters.cacheReliabilityMinSamples", label: "Cache reliability min samples", kind: "number", min: 0, hint: "0=assume caches reliable" },
 			{ path: "filters.maxExpectedWaitMs", label: "Max expected wait", kind: "number", min: 1, optional: true, hint: "ms, hard ceiling" },
+			{ path: "filters.latencyWeightContinuation", label: "Latency weight on tool continuations", kind: "number", min: 0, optional: true, hint: "unset = latencyWeight" },
 			{ path: "filters.escalationCostWeight", label: "Escalation cost weight", kind: "number", min: 0, max: 1 },
 		],
 	},
@@ -302,8 +303,13 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "budget.perTurnUsd", label: "Per-turn cap $", kind: "number", min: 0, optional: true },
 			{ path: "budget.perConversationUsd", label: "Per-conversation cap $", kind: "number", min: 0, optional: true },
 			{ path: "budget.perDayUsd", label: "Per-day cap $", kind: "number", min: 0, optional: true },
+			{ path: "budget.perMonthUsd", label: "Per-month target $", kind: "number", min: 0, optional: true, hint: "paced into a daily cap" },
 			{ path: "budget.onExceeded", label: "On exceeded", kind: "enum", options: ["downgrade", "reject"] },
 		],
+	},
+	{
+		title: "Report",
+		fields: [{ path: "report.baselines", label: "Counterfactual baseline models", kind: "stringArray", hint: "comma-separated slugs" }],
 	},
 	{
 		title: "Ledger",

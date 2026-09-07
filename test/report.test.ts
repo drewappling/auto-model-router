@@ -175,6 +175,28 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
+	test("baselines price the window on one model with its own cache hit rate", () => {
+		const { db, ledger } = seeded();
+		ledger.record(entry({ reportedUsd: 0.5, usage: { promptTokens: 100_000, cachedTokens: 80_000, cacheWriteTokens: 0, completionTokens: 1_000, reasoningTokens: 0, images: 0 } }));
+		const r = buildUsageReport(db, {
+			windowDays: 7,
+			nowMs: NOW,
+			baselines: [
+				{ slug: "big/model", prompt: 15 / 1e6, completion: 75 / 1e6, cacheRead: 1.5 / 1e6 },
+				{ slug: "nocache/model", prompt: 3 / 1e6, completion: 15 / 1e6 },
+			],
+		});
+		// 20k fresh × $15/M + 80k cached × $1.5/M + 1k completion × $75/M = 0.30 + 0.12 + 0.075
+		expect(r.baselines[0]!.usd).toBeCloseTo(0.495, 6);
+		expect(r.baselines[0]!.savedShare).toBeCloseTo(1 - 0.5 / 0.495, 6);
+		// No cache rate published: every prompt token at list price.
+		expect(r.baselines[1]!.usd).toBeCloseTo(0.3 + 0.015, 6);
+		const text = renderUsageReport(r);
+		expect(text).toContain("same traffic on one model: big/model $0.4950 (router cost extra 1%)");
+		expect(text).toContain("nocache/model $0.3150 (router cost extra 59%)");
+		db.close();
+	});
+
 	test("empty ledger yields zeroed totals and null speeds", () => {
 		const { db } = seeded();
 		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
@@ -195,6 +217,7 @@ describe("buildUsageReport", () => {
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);
 		expect(r.anatomy).toBeNull();
+		expect(r.baselines).toEqual([]);
 		db.close();
 	});
 

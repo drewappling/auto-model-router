@@ -286,6 +286,13 @@ export interface FilterConfig {
 	 */
 	maxExpectedWaitMs?: number;
 	/**
+	 * Latency weight for tool-result continuations (the agent loop's own
+	 * follow-ups, where no person is waiting on first token). Unset ⇒
+	 * `latencyWeight` applies to every turn. Lower it to spend speed only on
+	 * user-facing turns.
+	 */
+	latencyWeightContinuation?: number;
+	/**
 	 * How much of a model's measured escalation risk to price into its effective
 	 * cost, 0-1. 0 (the default) disables the term.
 	 *
@@ -523,6 +530,17 @@ export interface CacheConfig {
 	milestoneTokens: number;
 }
 
+/** Usage-report options. */
+export interface ReportConfig {
+	/**
+	 * Models to price the window's traffic on as if every turn had used that
+	 * one model, at its list price with the window's own cache hit rate: the
+	 * "what the router saved" counterfactual. Slugs missing from the catalog
+	 * are skipped.
+	 */
+	baselines: string[];
+}
+
 export interface BudgetConfig {
 	/** Reject or downgrade when a turn's cold forecast exceeds this, USD. */
 	perTurnUsd?: number;
@@ -530,6 +548,13 @@ export interface BudgetConfig {
 	perConversationUsd?: number;
 	/** Rolling 24h ceiling, USD. */
 	perDayUsd?: number;
+	/**
+	 * Calendar-month (UTC) target, USD. Paced: the per-day ceiling becomes
+	 * min(perDayUsd, remaining ÷ days left in the month), so a month that runs
+	 * ahead of pace tightens automatically instead of failing on its last day.
+	 * Scoped per harness like perDayUsd.
+	 */
+	perMonthUsd?: number;
 	/** At the ceiling: drop to the cheapest viable model, or fail the request outright. */
 	onExceeded: "downgrade" | "reject";
 }
@@ -691,6 +716,7 @@ export interface RouterConfig {
 	context: ContextConfig;
 	compaction: CompactionConfig;
 	budget: BudgetConfig;
+	report: ReportConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
 	/**
