@@ -10,6 +10,7 @@ import type { Ledger } from "../cost/types.ts";
 import { estimateTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { sha256Hex } from "../util/hash.ts";
+import { loadLearnedModel, predictRisk } from "./learned.ts";
 import type { NormRequest, ReasoningLevel } from "../wire/types.ts";
 import type { Classification, Features, TaskType, Tier } from "./types.ts";
 
@@ -303,6 +304,15 @@ export async function classify(
 ): Promise<Classification> {
 	const heuristic = scoreHeuristic(f, cfg);
 	const cc = cfg.classifier;
+	// Advisory learned risk: recorded beside the decision, never acted on here.
+	if (cc.learnedModelPath !== "") {
+		const model = await loadLearnedModel(cc.learnedModelPath);
+		if (model !== null) {
+			const risk = predictRisk(model, f);
+			heuristic.learnedRisk = risk;
+			heuristic.reasons.push(`learned: p(escalate)=${risk.toFixed(3)}`);
+		}
+	}
 	if (cc.ambiguityThreshold <= 0 || heuristic.confidence >= cc.ambiguityThreshold) return heuristic;
 
 	const digest = buildDigest(req, f);

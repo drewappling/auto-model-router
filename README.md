@@ -673,6 +673,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ambiguityThreshold` | `0.6` | Below this heuristic confidence, the adjudicator model decides the tier. |
+| `learnedModelPath` | unset | A model written by `bun tools/train-classifier.ts` (logistic regression over the ledger's recorded features, label = the turn escalated). When set, every decision records `learned: p(escalate)=…`. Advisory only: it never moves a tier until replay shows it should. |
 | `model` | `qwen/qwen3.7-flash` | Adjudicator model slug. |
 | `maxCostFraction` | `0.02` | Adjudicator cost cap as a fraction of the turn's budget. |
 | `maxCostUsd` | `0.002` | Absolute adjudicator cost cap, USD. |

@@ -313,6 +313,13 @@ export interface ClassifierConfig {
 	ambiguityThreshold: number;
 	/** Slug used for adjudication. Must be cheap and fast. */
 	model: string;
+	/**
+	 * Path of a model written by `tools/train-classifier.ts`. When set, every
+	 * heuristic classification also carries the learned P(escalate) in its
+	 * reasons (`learned: p(escalate)=…`) and `Classification.learnedRisk`.
+	 * Advisory: it never moves a tier. Empty ⇒ off.
+	 */
+	learnedModelPath: string;
 	/** Skip adjudication when it would exceed this fraction of the forecast turn cost. */
 	maxCostFraction: number;
 	/** Absolute per-call ceiling, USD. */

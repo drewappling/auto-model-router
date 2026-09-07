@@ -125,6 +125,8 @@ export interface Classification {
 	reasons: string[];
 	/** Raw heuristic score before tier bucketing, 0-1. */
 	score: number;
+	/** Learned P(escalate) when `classifier.learnedModelPath` is set (advisory; see router/learned.ts). */
+	learnedRisk?: number;
 }
 
 /** A model that survived capability filtering, with its economics attached. */

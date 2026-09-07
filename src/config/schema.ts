@@ -104,6 +104,7 @@ const filters = z.strictObject({
 const classifier = z.strictObject({
 	ambiguityThreshold: z.number().min(0).max(1).optional(),
 	model: z.string().min(1).optional(),
+	learnedModelPath: z.string().optional(),
 	maxCostFraction: z.number().min(0).max(1).optional(),
 	maxCostUsd: z.number().nonnegative().optional(),
 	timeoutMs: z.number().positive().optional(),

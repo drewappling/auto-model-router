@@ -130,6 +130,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		ambiguityThreshold: 0.6,
 		// Cheapest competent slug in the catalog; adjudication prompts are tiny.
 		model: "qwen/qwen3.7-flash",
+		// Off until a model is trained; see tools/train-classifier.ts.
+		learnedModelPath: "",
 		maxCostFraction: 0.02,
 		maxCostUsd: 0.002,
 		timeoutMs: 4_000,

@@ -200,6 +200,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 		fields: [
 			{ path: "classifier.ambiguityThreshold", label: "Ambiguity threshold", kind: "number", min: 0, max: 1 },
 			{ path: "classifier.model", label: "Adjudicator model", kind: "string", optional: true },
+			{ path: "classifier.learnedModelPath", label: "Learned risk model file", kind: "string", optional: true, hint: "from tools/train-classifier.ts; advisory" },
 			{ path: "classifier.maxCostFraction", label: "Max cost fraction", kind: "number", min: 0, max: 1 },
 			{ path: "classifier.maxCostUsd", label: "Max adjudication cost $", kind: "number", min: 0 },
 			{ path: "classifier.timeoutMs", label: "Adjudicator timeout", kind: "number", min: 1, hint: "ms" },
