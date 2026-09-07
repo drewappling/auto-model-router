@@ -71,6 +71,22 @@ export interface UsageReport {
 	models: ModelRow[];
 	tiers: ReportRow[];
 	days: DayRow[];
+	/** Mean prompt composition over rows that recorded it; null when none did. */
+	anatomy: AnatomyShare | null;
+}
+
+/** Shares of prompt bytes, 0-1, averaged over the window's dispatches. */
+export interface AnatomyShare {
+	rows: number;
+	avgMessages: number;
+	system: number;
+	user: number;
+	assistant: number;
+	tool: number;
+	/** Tool schemas relative to prompt bytes (they ride in the tools param, not the messages). */
+	schemas: number;
+	olderHalf: number;
+	staleTool: number;
 }
 
 const USD = "COALESCE(reported_usd, predicted_usd)";
@@ -221,6 +237,33 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		cacheHitRate: d.prompt_tokens > 0 ? d.cached_tokens / d.prompt_tokens : 0,
 	}));
 
+	const an = db
+		.query(
+			`SELECT COUNT(*) AS rows, AVG(json_extract(features, '$.anatomy.messages')) AS msgs,
+				AVG(json_extract(features, '$.anatomy.systemBytes')) AS sys, AVG(json_extract(features, '$.anatomy.userBytes')) AS usr,
+				AVG(json_extract(features, '$.anatomy.assistantBytes')) AS asst, AVG(json_extract(features, '$.anatomy.toolBytes')) AS tool,
+				AVG(json_extract(features, '$.toolSchemaBytes')) AS schemas,
+				AVG(json_extract(features, '$.anatomy.olderHalfBytes')) AS older, AVG(json_extract(features, '$.anatomy.staleToolBytes')) AS stale
+			 FROM ledger WHERE ${where} AND json_extract(features, '$.anatomy.messages') IS NOT NULL`,
+		)
+		.get(bind) as { rows: number; msgs: number | null; sys: number | null; usr: number | null; asst: number | null; tool: number | null; schemas: number | null; older: number | null; stale: number | null };
+	let anatomy: AnatomyShare | null = null;
+	if (an.rows > 0) {
+		const total = (an.sys ?? 0) + (an.usr ?? 0) + (an.asst ?? 0) + (an.tool ?? 0);
+		const share = (v: number | null): number => (total > 0 ? (v ?? 0) / total : 0);
+		anatomy = {
+			rows: an.rows,
+			avgMessages: Math.round(an.msgs ?? 0),
+			system: share(an.sys),
+			user: share(an.usr),
+			assistant: share(an.asst),
+			tool: share(an.tool),
+			schemas: share(an.schemas),
+			olderHalf: share(an.older),
+			staleTool: share(an.stale),
+		};
+	}
+
 	return {
 		generatedAtMs: nowMs,
 		windowDays,
@@ -244,6 +287,7 @@ export function buildUsageReport(db: Database, opts: { windowDays: number; harne
 		models,
 		tiers,
 		days,
+		anatomy,
 	};
 }
 
@@ -294,6 +338,12 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 		`spend ${usd(t.spendUsd)} over ${num(t.dispatches)} dispatches in ${num(t.conversations)} conversations · ${usd(t.dispatches > 0 ? t.spendUsd / t.dispatches : 0)}/dispatch`,
 		`prompt ${num(t.promptTokens)} tok (cache hit ${pct(t.cacheHitRate, t.cacheEstimated)}) · completion ${num(t.completionTokens)} tok · switches ${num(t.modelSwitches)} · escalations ${num(t.escalations)} · failovers ${num(t.failovers)} · errors ${num(t.errors)} (${num(t.aborted)} aborted)`,
 	];
+	const a = r.anatomy;
+	if (a !== null) {
+		summary.push(
+			`prompt anatomy (mean of ${num(a.rows)}): tool results ${pct(a.tool)} · assistant ${pct(a.assistant)} · user ${pct(a.user)} · system ${pct(a.system)} · tool schemas +${pct(a.schemas)} · older half ${pct(a.olderHalf)} · stale tool results ${pct(a.staleTool)} · ${num(a.avgMessages)} messages`,
+		);
+	}
 	const tables: ReportTable[] = [];
 	if (r.providers.length > 0) {
 		tables.push({

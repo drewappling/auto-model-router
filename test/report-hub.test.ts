@@ -87,6 +87,7 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 			{ day: "2026-09-05", dispatches: 10, spendUsd: 1.5, cacheHitRate: 0.8 },
 			{ day: "2026-09-06", dispatches: 10, spendUsd: 1.5, cacheHitRate: 0.8 },
 		],
+		anatomy: null,
 		...over,
 	};
 }

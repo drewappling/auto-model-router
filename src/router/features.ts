@@ -8,7 +8,7 @@
  */
 
 import type { NormMessage, NormRequest } from "../wire/types.ts";
-import type { Features } from "./types.ts";
+import type { Features, PromptAnatomy } from "./types.ts";
 
 /**
  * Complexity signals. Deliberately small: each hit pushes the turn toward a
@@ -224,6 +224,24 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		codeBlocks === 0 &&
 		(terminators === null ? 0 : terminators.length) <= 1;
 
+	// Prompt anatomy: where the bytes sit. Cheap (one pass over textBytes) and
+	// content-free, so it is safe to record on every row.
+	const anatomy: PromptAnatomy = { messages: 0, systemBytes: 0, userBytes: 0, assistantBytes: 0, toolBytes: 0, olderHalfBytes: 0, staleToolBytes: 0 };
+	const nonSystem = messages.filter((m) => m.role !== "system");
+	const olderHalfEnd = Math.floor(nonSystem.length / 2);
+	const staleEnd = Math.max(0, nonSystem.length - 20);
+	nonSystem.forEach((m, i) => {
+		if (i < olderHalfEnd) anatomy.olderHalfBytes += m.textBytes;
+		if (m.role === "tool" && i < staleEnd) anatomy.staleToolBytes += m.textBytes;
+	});
+	for (const m of messages) {
+		anatomy.messages++;
+		if (m.role === "system") anatomy.systemBytes += m.textBytes;
+		else if (m.role === "user") anatomy.userBytes += m.textBytes;
+		else if (m.role === "assistant") anatomy.assistantBytes += m.textBytes;
+		else anatomy.toolBytes += m.textBytes;
+	}
+
 	return {
 		promptTokens,
 		newContentTokens,
@@ -246,5 +264,6 @@ export function extractFeatures(req: NormRequest, promptTokens: number): Feature
 		requestedReasoning: req.reasoning,
 		questionCount,
 		isTerseInstruction,
+		anatomy,
 	};
 }

@@ -306,3 +306,34 @@ describe("user-visible tool failure (review 2026-09-05)", () => {
 		expect(f.lastToolFailed).toBe(false);
 	});
 });
+
+describe("prompt anatomy", () => {
+	test("splits prompt bytes by role and marks the older half and stale tool results", () => {
+		// 24 non-system messages: 12 tool-call/result pairs. The newest 20
+		// non-system messages are "fresh"; the 4 before them hold 2 stale tool results.
+		const messages: unknown[] = [SYSTEM];
+		for (let i = 0; i < 12; i++) {
+			messages.push(toolCall(`c${i}`, "bash", `{"command":"ls ${i}"}`));
+			messages.push({ role: "tool", tool_call_id: `c${i}`, content: "x".repeat(100) });
+		}
+		messages.push({ role: "user", content: "y".repeat(50) });
+		const f = extractFeatures(req(messages), 5000);
+		const a = f.anatomy!;
+		expect(a.messages).toBe(26);
+		expect(a.systemBytes).toBe("You are a coding agent.".length);
+		expect(a.userBytes).toBe(50);
+		expect(a.toolBytes).toBe(1200);
+		// 25 non-system messages; the older half is the first 12 (6 pairs ⇒ 6 tool results).
+		expect(a.olderHalfBytes).toBeGreaterThanOrEqual(600);
+		expect(a.olderHalfBytes).toBeLessThan(1200);
+		// Stale: tool results among the first 25-20 = 5 non-system messages ⇒ results at index 1 and 3.
+		expect(a.staleToolBytes).toBe(200);
+	});
+
+	test("a bare chat request has no stale tool bytes", () => {
+		const a = extractFeatures(req([SYSTEM, { role: "user", content: "hi" }]), 20).anatomy!;
+		expect(a.toolBytes).toBe(0);
+		expect(a.staleToolBytes).toBe(0);
+		expect(a.olderHalfBytes).toBe(0);
+	});
+});

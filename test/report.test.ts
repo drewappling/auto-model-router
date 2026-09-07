@@ -156,6 +156,25 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
+	test("prompt anatomy averages the recorded byte shares", () => {
+		const { db, ledger } = seeded();
+		const feat = (tool: number, older: number, stale: number) => ({ toolSchemaBytes: 1000, anatomy: { messages: 30, systemBytes: 1000, userBytes: 500, assistantBytes: 500, toolBytes: tool, olderHalfBytes: older, staleToolBytes: stale } });
+		ledger.record(entry({ features: feat(8000, 5000, 4000) }));
+		ledger.record(entry({ features: feat(6000, 4000, 2000) }));
+		ledger.record(entry({ features: null })); // pre-anatomy row: ignored
+		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		const a = r.anatomy!;
+		expect(a.rows).toBe(2);
+		// mean bytes: system 1000, user 500, assistant 500, tool 7000 ⇒ total 9000
+		expect(a.tool).toBeCloseTo(7000 / 9000, 6);
+		expect(a.system).toBeCloseTo(1000 / 9000, 6);
+		expect(a.schemas).toBeCloseTo(1000 / 9000, 6);
+		expect(a.olderHalf).toBeCloseTo(4500 / 9000, 6);
+		expect(a.staleTool).toBeCloseTo(3000 / 9000, 6);
+		expect(renderUsageReport(r)).toContain("prompt anatomy (mean of 2): tool results 78%");
+		db.close();
+	});
+
 	test("empty ledger yields zeroed totals and null speeds", () => {
 		const { db } = seeded();
 		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
@@ -175,6 +194,7 @@ describe("buildUsageReport", () => {
 		});
 		expect(r.providers).toEqual([]);
 		expect(r.models).toEqual([]);
+		expect(r.anatomy).toBeNull();
 		db.close();
 	});
 

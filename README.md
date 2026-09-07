@@ -500,6 +500,7 @@ What it shows, for the window:
 | Block | Columns |
 | --- | --- |
 | totals | spend, dispatches, conversations, $/dispatch, prompt and completion tokens, cache hit rate, model switches, escalations, failovers, errors (aborted separately) |
+| prompt anatomy | mean share of prompt bytes by role (tool results, assistant, user, system), tool schemas beside them, the older half of the conversation, and tool results older than the newest 20 messages — what compaction can reach. Recorded per turn from v0.3.5. |
 | providers | per upstream (`openrouter`, `ollama`): dispatches, spend, share, cache hit, mean TTFT, tokens/s, escalations, errors |
 | models | per served slug (top 12 by spend): the same plus the tier mix it was routed for |
 | tiers | per tier: dispatches, spend, share, cache hit, mean prompt tokens, escalations |

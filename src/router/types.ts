@@ -90,6 +90,26 @@ export interface Features {
 	questionCount: number;
 	/** Newest user content is a single short imperative sentence. */
 	isTerseInstruction: boolean;
+	/**
+	 * Where the prompt's bytes are. Recorded with every turn so the question
+	 * "what is the prompt made of, and how old is it?" can be answered from the
+	 * ledger before deciding what compaction should shrink next. Absent on rows
+	 * recorded before it existed.
+	 */
+	anatomy?: PromptAnatomy;
+}
+
+/** Prompt bytes by message role and by age, plus the tool-schema bytes beside them. */
+export interface PromptAnatomy {
+	messages: number;
+	systemBytes: number;
+	userBytes: number;
+	assistantBytes: number;
+	toolBytes: number;
+	/** Bytes of non-system messages in the OLDER half of the conversation (by message index). */
+	olderHalfBytes: number;
+	/** Bytes of tool results older than the newest 20 messages: what compaction can reach. */
+	staleToolBytes: number;
 }
 
 export type ClassificationSource = "heuristic" | "llm" | "sticky" | "forced" | "escalation";
