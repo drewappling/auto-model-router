@@ -25,8 +25,9 @@ import { openDb } from "../util/sqlite.ts";
 import { WireErrorException, renderErrorEnvelope } from "../wire/openai/errors.ts";
 import { renderModelList } from "../wire/openai/models.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
+import { createResponsesBufferedSink, createResponsesStreamingSink, parseResponsesRequest } from "../wire/openai/responses.ts";
 import { createBufferedSink, createStreamingSink } from "../wire/openai/sink.ts";
-import type { NormRequest, WireError } from "../wire/types.ts";
+import type { NormRequest, ResponseSink, WireError } from "../wire/types.ts";
 import { runTurn } from "./turn.ts";
 
 export interface StartedServer {
@@ -321,10 +322,19 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		inFlightTurns--;
 	};
 
-	const handleChatCompletions = async (req: Request): Promise<Response> => {
+	/** A wire: how a request body becomes a NormRequest and how the turn is rendered back. */
+	interface Wire {
+		parse(body: unknown, headers: Headers): NormRequest;
+		streaming(model: string): { sink: ResponseSink; response: Response };
+		buffered(model: string): { sink: ResponseSink; response: Promise<Response> };
+	}
+	const CHAT_WIRE: Wire = { parse: parseChatRequest, streaming: createStreamingSink, buffered: createBufferedSink };
+	const RESPONSES_WIRE: Wire = { parse: parseResponsesRequest, streaming: createResponsesStreamingSink, buffered: createResponsesBufferedSink };
+
+	const handleTurn = async (req: Request, wire: Wire): Promise<Response> => {
 		let normReq: NormRequest;
 		try {
-			normReq = parseChatRequest(await req.json(), req.headers);
+			normReq = wire.parse(await req.json(), req.headers);
 		} catch (err) {
 			// The slot was acquired before parsing; a rejected body never reaches
 			// runTurn's `finally`, so it must be released here or every malformed
@@ -338,9 +348,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			});
 		}
 
-		const { sink, response } = normReq.stream
-			? createStreamingSink(normReq.requestedModel)
-			: createBufferedSink(normReq.requestedModel);
+		const { sink, response } = normReq.stream ? wire.streaming(normReq.requestedModel) : wire.buffered(normReq.requestedModel);
 
 		// The client signal aborts the upstream dispatch on disconnect. runTurn is
 		// expected to render its own failures into the sink; this catch is the last
@@ -399,7 +407,14 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					if (!acquireTurn()) {
 						return wireErrorResponse({ status: 429, code: "too_many_requests", message: "too many concurrent turns" });
 					}
-					return await handleChatCompletions(req);
+					return await handleTurn(req, CHAT_WIRE);
+				}
+				if (req.method === "POST" && url.pathname === "/v1/responses") {
+					// The Responses API wire (Codex CLI). Same turn, different rendering.
+					if (!acquireTurn()) {
+						return wireErrorResponse({ status: 429, code: "too_many_requests", message: "too many concurrent turns" });
+					}
+					return await handleTurn(req, RESPONSES_WIRE);
 				}
 				if (req.method === "GET" && url.pathname === "/v1/models") {
 					return json(renderModelList(cfg, ledger.blendedRate(cfg.ledger.blendWindowDays)));

@@ -410,8 +410,12 @@ user-visible notice channel; use `/router why`), the automatic daily summary
 
 ### Codex CLI
 
-Codex talks to custom providers over the chat-completions wire. Run the
-router (`auto-model-router serve --port 8788`) and add a provider:
+Codex (0.150 and later) speaks only the Responses API, which the router
+serves at `POST /v1/responses`: the body is translated to the chat shape
+the router routes on (`instructions` → system, `input` items → messages,
+function calls and outputs → tool calls and tool messages) and the upstream
+stream is rendered back as Responses events. Run the router
+(`auto-model-router serve --port 8788`) and add a provider:
 
 ```toml
 # ~/.codex/config.toml
@@ -421,13 +425,17 @@ model_provider = "auto-model-router"
 [model_providers.auto-model-router]
 name = "auto-model-router"
 base_url = "http://127.0.0.1:8788/v1"
-wire_api = "chat"
+env_key = "AUTO_MODEL_ROUTER_API_KEY"   # any value; the router is keyless
+wire_api = "responses"
 http_headers = { "X-Omp-Harness" = "codex" }
 ```
 
-The router drops the OpenAI-platform-only parameters Codex sends (`store`,
-`prompt_cache_key`, `service_tier`) before dispatch. No session id or hooks:
-reports are per harness, and there is no toast, digest or `/router`.
+Verified live with codex 0.153: the captured request is
+`test/fixtures/harness/codex-responses.json`. Stateless only — Codex sends
+`store: false` and the full input each turn; `previous_response_id` is
+rejected. Reasoning summaries and encrypted reasoning are not produced. No
+session id or hooks: reports are per harness, and there is no toast, digest
+or `/router`.
 
 ### Aider
 
@@ -437,8 +445,12 @@ export OPENAI_API_KEY=local
 aider --model openai/auto
 ```
 
-Aider sends no tool calls, so every turn classifies on its text alone. No
-session id or hooks.
+Verified live with aider 0.86 (captured request:
+`test/fixtures/harness/aider.json`). Aider sends no tool calls, so every turn
+classifies on its text alone, and no custom headers, so its rows carry no
+harness id unless you set one in a model settings file
+(`extra_params: { extra_headers: { X-Omp-Harness: aider } }`). No session
+id or hooks.
 
 ### Cline, Roo Code, Kilo Code
 
@@ -468,9 +480,28 @@ digest applies only through summarising compaction
 }
 ```
 
-OpenCode's tool names (`read`, `grep`, `glob`, `bash`, `webfetch`) match the
-router's canonical list. Its plugin API has tool and message hooks, so a
-native port (session identity, digest) is the next candidate after Hermes.
+Verified live with opencode 1.18 (captured request:
+`test/fixtures/harness/opencode.json`). OpenCode's AI SDK validates every
+SSE frame, which is why the router's final summary frame is shaped as a
+chunk with no choices. Its tool names (`read`, `grep`, `glob`, `bash`,
+`webfetch`) match the router's canonical list.
+
+**Native features (OpenCode plugin API).** Copy
+`opencode-plugin/auto-model-router.ts` to `~/.config/opencode/plugin/` (or a
+project's `.opencode/plugin/`); OpenCode loads it on start. It adds:
+
+- **Session identity** — `X-Omp-Session`, `X-Omp-Harness` (`opencode`, or
+  `OMP_HARNESS_ID`) and `X-Omp-Subagent` for sessions with a parent, through
+  the `chat.headers` hook.
+- **Routing toast** — when a session goes idle, its last routed turn's
+  provider, model, tier and cost appear as a TUI toast.
+- **Tool-result digest** — large `read`, `grep`, `glob`, `bash` and
+  `webfetch` results go to `/v1/router/digest` through `tool.execute.after`
+  and the model gets the digest. Off unless `digest.enabled`.
+
+No `/router` command (OpenCode commands are markdown files, not plugin
+hooks): use `auto-model-router report` on the terminal, or the router's
+HTTP endpoints.
 
 ### The OpenRouter key
 
@@ -1077,10 +1108,10 @@ plus a harness header; the rest needs the harness's own hook API.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | omp | native provider | yes | yes | yes | yes | full hub | yes | yes | experimental |
 | Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
-| Codex CLI | config only | yes | no | no | no | no | compaction only | no | no |
-| Aider | config only | yes | no | no | no | no | no tools | no | no |
+| Codex CLI | Responses API wire | yes | no | no | no | no | compaction only | no | no |
+| Aider | config only | via model settings | no | no | no | no | no tools | no | no |
 | Cline / Roo / Kilo | config only | if headers supported | no | no | no | no | compaction only | no | no |
-| OpenCode | config only | yes | no | no | no | no | compaction only | no | no |
+| OpenCode | config + plugin | yes | yes (plugin) | yes (plugin) | yes (plugin) | no | yes (plugin) | no | no |
 | Claude Code | needs an Anthropic Messages wire module | — | — | — | — | — | — | — | — |
 
 A single embedded router can serve several omp sessions without them stepping

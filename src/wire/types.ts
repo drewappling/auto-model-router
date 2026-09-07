@@ -10,7 +10,7 @@
 
 import type { UsageCounts } from "../cost/types.ts";
 
-export type WireProtocol = "openai-chat" | "pi-native";
+export type WireProtocol = "openai-chat" | "openai-responses" | "pi-native";
 
 export type Role = "system" | "developer" | "user" | "assistant" | "tool";
 

@@ -53,6 +53,11 @@ describe("createStreamingSink", () => {
 		// Headers flushed with the first chunk, so the summary arrives as the
 		// final x_auto_model_router frame before [DONE].
 		const last = frames[frames.length - 1] as Record<string, unknown>;
+		// A well-formed chunk with no choices, so strict SSE clients (OpenCode's AI SDK) accept it.
+		expect(last.object).toBe("chat.completion.chunk");
+		expect(last.choices).toEqual([]);
+		expect(last.id).toBe("gen-1");
+		expect(last.model).toBe("auto");
 		expect(last.x_auto_model_router).toEqual({
 			model: "openai/gpt-5.5",
 			tier: "simple",

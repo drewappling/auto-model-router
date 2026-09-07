@@ -5,13 +5,16 @@ import { canonicalTool, digestApplies } from "../src/server/digest.ts";
 import { OPENAI_ONLY_PARAMS, parseChatRequest } from "../src/wire/openai/request.ts";
 import type { UpstreamMutations } from "../src/wire/types.ts";
 import { parsePolicy, shouldSend } from "../omp-extension/digest-logic.ts";
+import { RESPONSES_ONLY_PARAMS, parseResponsesRequest } from "../src/wire/openai/responses.ts";
 
 /**
- * Request shapes the config-only harnesses send to an OpenAI-compatible
- * endpoint, as each harness documents them: the router must parse them,
- * keep their tool calls and headers, and drop the OpenAI-platform-only
- * parameters before dispatch. These are representative bodies, not captured
- * traffic; a harness release that changes its shape belongs here as a new case.
+ * Request shapes other harnesses send: the router must parse them, keep their
+ * tool calls and headers, and drop the OpenAI-platform-only parameters before
+ * dispatch. The first block holds representative bodies for harnesses that
+ * could not be run here (Cline/Roo/Kilo) or that illustrate a header set; the
+ * second block parses requests actually captured with tools/capture-proxy.ts
+ * (Aider, OpenCode, Codex). A harness release that changes its shape belongs
+ * here as a refreshed capture.
  */
 
 const MUT: UpstreamMutations = { slug: "x/y", fallbacks: [], sessionId: "s", cacheBreakpointMessageIndices: [], reasoning: undefined, maxTokens: undefined, stripAssistantReasoning: false };
@@ -19,25 +22,6 @@ const MUT: UpstreamMutations = { slug: "x/y", fallbacks: [], sessionId: "s", cac
 const TOOL = (name: string) => ({ type: "function", function: { name, description: name, parameters: { type: "object", properties: { path: { type: "string" } } } } });
 
 const HARNESSES: Record<string, { headers: Record<string, string>; body: Record<string, unknown>; toolCall?: string }> = {
-	codex: {
-		headers: { "X-Omp-Harness": "codex" },
-		body: {
-			model: "auto",
-			messages: [
-				{ role: "developer", content: "You are Codex." },
-				{ role: "user", content: "fix the failing test" },
-				{ role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "shell", arguments: '{"command":["cat","x.ts"]}' } }] },
-				{ role: "tool", tool_call_id: "call_1", content: "export const x = 1;" },
-			],
-			tools: [TOOL("shell"), TOOL("apply_patch")],
-			stream: true,
-			store: false,
-			prompt_cache_key: "session-abc",
-			reasoning_effort: "medium",
-			parallel_tool_calls: false,
-		},
-		toolCall: "shell",
-	},
 	aider: {
 		headers: { "X-Omp-Harness": "aider" },
 		body: { model: "auto", messages: [{ role: "system", content: "Act as an expert software developer." }, { role: "user", content: "add a retry helper" }], stream: true, temperature: 0, extra_body: {} },
@@ -116,6 +100,53 @@ describe("config-only harness request shapes", () => {
 		const req = parseChatRequest(structuredClone(HARNESSES.hermes!.body), new Headers(HARNESSES.hermes!.headers));
 		expect(req.ompSessionId).toBe("hermes-session-1");
 		expect(req.isSubagent).toBe(true);
+	});
+});
+
+/** A request a harness actually sent, captured with tools/capture-proxy.ts (bodies trimmed, ids scrubbed). */
+async function fixture(name: string): Promise<{ headers: Record<string, string>; body: Record<string, unknown> }> {
+	return (await Bun.file(`${import.meta.dir}/fixtures/harness/${name}.json`).json()) as { headers: Record<string, string>; body: Record<string, unknown> };
+}
+
+describe("captured harness requests", () => {
+	test("aider 0.86: plain chat completions, no tools, no harness header", async () => {
+		const f = await fixture("aider");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(f.headers["user-agent"]).toContain("OpenAI/Python");
+		expect(req.harnessId).toBe("");
+		expect(req.stream).toBe(true);
+		expect(req.tools).toHaveLength(0);
+		expect(req.messages[0]?.role).toBe("system");
+		expect(req.renderUpstreamBody(MUT).model).toBe("x/y");
+	});
+
+	test("opencode 1.18: chat completions with tools, stream options and the harness header", async () => {
+		const f = await fixture("opencode");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(req.harnessId).toBe("opencode");
+		expect(req.tools.length).toBeGreaterThan(5);
+		expect(req.tools.map((t) => t.name)).toContain("read");
+		const out = req.renderUpstreamBody(MUT);
+		expect("stream_options" in out).toBe(false);
+		expect(out.max_tokens).toBe(f.body.max_tokens);
+	});
+
+	test("codex 0.153: Responses API body translates to a routed chat request", async () => {
+		const f = await fixture("codex-responses");
+		const req = parseResponsesRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(req.protocol).toBe("openai-responses");
+		expect(req.harnessId).toBe("codex");
+		expect(req.requestedModel).toBe("auto");
+		expect(req.stream).toBe(true);
+		// instructions became the system message; the input items follow in order.
+		expect(req.messages.map((m) => m.role)).toEqual(["system", "developer", "user", "user"]);
+		expect(req.messages[0]?.text).toContain("coding agent running in the Codex CLI");
+		expect(req.tools.map((t) => t.name)).toContain("exec_command");
+		const out = req.renderUpstreamBody(MUT);
+		for (const key of RESPONSES_ONLY_PARAMS) expect(key in out).toBe(false);
+		expect(Array.isArray(out.messages)).toBe(true);
+		expect((out.tools as { function: { name: string } }[])[0]?.function.name).toBe("exec_command");
+		expect(out.parallel_tool_calls).toBe(true);
 	});
 });
 

@@ -1,4 +1,4 @@
 {
 	"extends": "./tsconfig.json",
-	"include": ["src", "test", "omp-extension", "tools"]
+	"include": ["src", "test", "omp-extension", "opencode-plugin", "tools"]
 }

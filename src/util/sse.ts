@@ -4,7 +4,7 @@
  * frame is emitted per token on the hot path.
  */
 
-const encoder = new TextEncoder();
+export const encoder = new TextEncoder();
 
 /** One `data:` frame carrying a JSON payload, terminated by a blank line. */
 export function sseDataFrame(value: unknown): string {

@@ -1,0 +1,47 @@
+{
+ "harness": "aider",
+ "capturedAtMs": 1788816104921,
+ "headers": {
+  "content-type": "application/json",
+  "user-agent": "OpenAI/Python 2.20.0"
+ },
+ "body": {
+  "messages": [
+   {
+    "role": "system",
+    "content": "Act as an expert software developer.\nTake requests for changes to the supplied code.\nIf the request is ambiguous, ask questions.\nReply in English_United States.\n\nOnce you understand the request you MUST:\n1. Determine if any code changes are needed.\n2. Explain any needed changes.\n3. If changes are needed, output a copy of each file that needs changes.\n\nTo suggest changes to a file you MUST return t\u00e2\u20ac\u00a6[1219 chars]"
+   },
+   {
+    "role": "user",
+    "content": "Change the greeting to be more casual"
+   },
+   {
+    "role": "assistant",
+    "content": "Ok, I will:\n\n1. Switch the greeting text from \"Hello\" to \"Hey\".\n\nshow_greeting.py\n```\nimport sys\n\ndef greeting(name):\n    print(f\"Hey {name}\")\n\nif __name__ == '__main__':\n    greeting(sys.argv[1])\n```\n"
+   },
+   {
+    "role": "user",
+    "content": "I switched to a new code base. Please don't consider the above files or try to edit them any longer."
+   },
+   {
+    "role": "assistant",
+    "content": "Ok."
+   },
+   {
+    "role": "user",
+    "content": "I am not sharing any files that you can edit yet."
+   },
+   {
+    "role": "assistant",
+    "content": "Ok."
+   },
+   {
+    "role": "user",
+    "content": "Reply with the single word ok\n\nTo suggest changes to a file you MUST return the entire content of the updated file.\nYou MUST use this *file listing* format:\n\npath/to/filename.js\n```\n// entire file content ...\n// ... goes in between\n```\n\nEvery *file listing* MUST use this format:\n- First line: the filename with any originally provided path; no extra markup, punctuation, comments, etc. **JUST** the \u00e2\u20ac\u00a6[896 chars]"
+   }
+  ],
+  "model": "auto",
+  "stream": true,
+  "temperature": 0
+ }
+}

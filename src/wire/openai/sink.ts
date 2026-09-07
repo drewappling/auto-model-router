@@ -20,6 +20,9 @@ function summaryFields(summary: TurnSummary): Record<string, unknown> {
 export function createStreamingSink(virtualModel: string): { sink: ResponseSink; response: Response } {
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	let closed = false;
+	// The upstream's chunk identity, so the trailer can be a well-formed chunk.
+	let lastId: unknown = null;
+	let lastCreated: unknown = null;
 	const body = new ReadableStream<Uint8Array>({
 		start(c) {
 			controller = c;
@@ -51,6 +54,8 @@ export function createStreamingSink(virtualModel: string): { sink: ResponseSink;
 	const sink: ResponseSink = {
 		chunk(chunk: UpstreamChunk) {
 			const raw = chunk.raw;
+			if (typeof raw.id === "string") lastId = raw.id;
+			if (typeof raw.created === "number") lastCreated = raw.created;
 			// The client asked for the virtual id and must see it, so its own
 			// bookkeeping stays consistent; the served slug stays observable
 			// under x_auto_model_router. The tier is only known at finish time, so
@@ -73,8 +78,20 @@ export function createStreamingSink(virtualModel: string): { sink: ResponseSink;
 		},
 		finish(summary: TurnSummary) {
 			// Response headers flushed with the first chunk, so x-auto-model-router-*
-			// cannot be real headers here; this final frame is their carrier.
-			send(encodeSseData({ x_auto_model_router: summaryFields(summary) }));
+			// cannot be real headers here; this final frame is their carrier. It is
+			// shaped as a real chunk with no choices (the shape OpenAI's own usage
+			// chunk has): strict clients validate every frame, and OpenCode's AI
+			// SDK rejected a bare object here ("choices: expected array").
+			send(
+				encodeSseData({
+					id: lastId ?? "auto-model-router",
+					object: "chat.completion.chunk",
+					created: lastCreated ?? Math.floor(Date.now() / 1000),
+					model: virtualModel,
+					choices: [],
+					x_auto_model_router: summaryFields(summary),
+				}),
+			);
 			send(SSE_DONE_BYTES);
 			close();
 		},
