@@ -30,6 +30,7 @@ const COMMANDS: Record<string, true> = {
 	serve: true,
 	stats: true,
 	report: true,
+	export: true,
 	models: true,
 	explain: true,
 	config: true,

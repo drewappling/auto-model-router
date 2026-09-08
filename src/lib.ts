@@ -19,6 +19,7 @@ export type { RouterConfig } from "./config/types.ts";
 export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotals } from "./cost/report.ts";
 export { buildDailySummary, renderDailySummary, type DailySummary } from "./cost/summary.ts";
 export { openDb } from "./util/sqlite.ts";
+export { spendUsdSince, feedbackView, exportRows, exportCsv, harnessScopeParam, type HarnessScope, type ExportRow, type FeedbackRow, type FeedbackByModel, type FeedbackView } from "./cost/views.ts";
 export { createLedger } from "./cost/ledger.ts";
 export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./cost/feedback.ts";
 export type { RequestPolicy } from "./wire/types.ts";

@@ -10,6 +10,7 @@ import { createDigester } from "./digest.ts";
 import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
+import { exportCsv, exportRows, feedbackView, harnessScopeParam, spendUsdSince } from "../cost/views.ts";
 import { buildDailySummary, createKv, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
@@ -184,6 +185,12 @@ function isLoopbackHostHeader(hostHeader: string | null): boolean {
 	if (hostHeader === null) return false;
 	const host = hostHeader.split(":")[0] ?? "";
 	return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+/** `?days=` bounded to [1, 365], `dflt` when absent or unparsable. */
+function clampDays(raw: string | null, dflt: number): number {
+	const n = raw === null ? dflt : Number.parseInt(raw, 10);
+	return Number.isInteger(n) ? Math.min(Math.max(n, 1), 365) : dflt;
 }
 
 export function startServer(cfg: RouterConfig): StartedServer {
@@ -422,12 +429,27 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				if (req.method === "GET" && url.pathname === "/v1/router/stats") {
 					return json(computeStats(ledger));
 				}
+				if (req.method === "GET" && url.pathname === "/v1/router/spend") {
+					// Spend since an instant over a harness set: what a front door's
+					// budget check needs when it cannot read the ledger file.
+					const since = Number.parseInt(url.searchParams.get("sinceMs") ?? "", 10);
+					if (!Number.isFinite(since)) return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "sinceMs required" });
+					return json({ sinceMs: since, usd: spendUsdSince(db, since, harnessScopeParam(url.searchParams.get("harness"))) });
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/feedback") {
+					const days = clampDays(url.searchParams.get("days"), 30);
+					return json({ days, ...feedbackView(db, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness"))) });
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/export") {
+					const days = clampDays(url.searchParams.get("days"), 30);
+					const rows = exportRows(db, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness")));
+					if (url.searchParams.get("format") === "json") return json({ days, rows });
+					return new Response(exportCsv(rows), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="auto-model-router-export-${new Date().toISOString().slice(0, 10)}.csv"` } });
+				}
 				if (req.method === "GET" && url.pathname === "/v1/router/report") {
 					// Usage analytics for `/router report` and the CLI: bounded window,
 					// optional harness scope (the X-Omp-Harness header value).
-					const rawDays = url.searchParams.get("days");
-					const parsedDays = rawDays === null ? 7 : Number.parseInt(rawDays, 10);
-					const windowDays = Number.isInteger(parsedDays) ? Math.min(Math.max(parsedDays, 1), 365) : 7;
+					const windowDays = clampDays(url.searchParams.get("days"), 7);
 					const harnessId = url.searchParams.get("harness") ?? "";
 					const report = buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) });
 					// ?format=text: the rendered report for harnesses without a renderer of their own (the Hermes plugin).
