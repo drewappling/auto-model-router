@@ -4,7 +4,12 @@
  * `<router home>/remote.json` (the omp extensions then run in remote mode and
  * never bind a local router), and configures every harness it finds:
  *
- *   omp         the four extensions are added to ~/.omp/agent/config.yml
+ *   omp         the four extensions are added to ~/.omp/agent/config.yml, and
+ *               the remote is written into ~/.omp/agent/models.yml so
+ *               `auto-model-router/auto` resolves at STARTUP — omp builds the
+ *               main model's handle before extensions load, so without that
+ *               entry only the late-resolved roles (smol, tiny) reach the
+ *               router and the main turns fall back to another provider
  *   Hermes      the provider plugin and the native plugin are copied into
  *               $HERMES_HOME/plugins and .env points them at the remote
  *   Codex       ~/.codex/config.toml gains the auto-model-router provider
@@ -37,6 +42,10 @@ export interface ConnectOptions {
 	home: string;
 	/** Where this package lives (the extensions are referenced from here). */
 	packageDir: string;
+	/** Cost figures omp shows for the remote's virtual models, USD per million tokens. */
+	blend?: { inputPerMtok: number; outputPerMtok: number };
+	/** Adds `X-Agentdox-Scope` to omp's models.yml entry. Machine-wide: only for a single-project machine. */
+	agentdoxScope?: string;
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -103,6 +112,90 @@ http_headers = { "X-Omp-Harness" = "codex" }
 `;
 }
 
+/** The models a remote router advertises, and what omp should believe they cost. */
+const REMOTE_MODEL_ROWS: readonly { id: string; name: string }[] = [
+	{ id: "auto", name: "Auto (auto-model-router)" },
+	{ id: "auto-cheap", name: "Auto Cheap (auto-model-router)" },
+	{ id: "auto-max", name: "Auto Max (auto-model-router)" },
+];
+
+const MODELS_YML_BEGIN = "  # BEGIN auto-model-router (remote)";
+const MODELS_YML_END = "  # END auto-model-router (remote)";
+
+/**
+ * omp's `models.yml` entry for a remote router.
+ *
+ * A LOCAL router deliberately never writes this file: its port is ephemeral, so
+ * a persisted entry names a dead socket on the next launch. A remote router has
+ * neither problem — the URL and the key are stable — and the entry is what makes
+ * omp's main model resolvable at startup, before extensions load.
+ *
+ * `scope` adds `X-Agentdox-Scope` to every request through this provider. It is
+ * off by default on purpose: the file is machine-wide, so a scope here would
+ * label turns from every workspace with one project. The extensions still send
+ * the workspace's own scope on the roles that resolve after they load.
+ */
+export function renderRemoteModelsYml(url: string, key: string, blend: { inputPerMtok: number; outputPerMtok: number }, scope = ""): string {
+	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
+	const cost = {
+		input: round(blend.inputPerMtok),
+		output: round(blend.outputPerMtok),
+		cacheRead: round(blend.inputPerMtok * 0.1),
+		cacheWrite: round(blend.inputPerMtok * 1.25),
+	};
+	const lines = [
+		MODELS_YML_BEGIN,
+		"  # Managed by `auto-model-router connect`. Remove this block to stop routing omp through the remote.",
+		"  auto-model-router:",
+		`    baseUrl: ${url.replace(/\/+$/, "")}/v1`,
+		"    api: openai-completions",
+		`    apiKey: ${key}`,
+	];
+	if (scope !== "") lines.push("    headers:", `      X-Agentdox-Scope: ${scope}`);
+	lines.push("    models:");
+	for (const m of REMOTE_MODEL_ROWS) {
+		lines.push(
+			`      - id: ${m.id}`,
+			`        name: ${m.name}`,
+			"        contextWindow: 200000",
+			"        maxTokens: 32000",
+			"        input: [text, image]",
+			`        cost: { input: ${cost.input}, output: ${cost.output}, cacheRead: ${cost.cacheRead}, cacheWrite: ${cost.cacheWrite} }`,
+		);
+	}
+	lines.push(MODELS_YML_END);
+	return lines.join("\n");
+}
+
+/**
+ * Merges the remote block into an existing `models.yml`, replacing a previous
+ * one and leaving every other provider alone. Returns the new file text.
+ */
+export function mergeModelsYml(before: string, blockText: string): string {
+	const eol = before.includes("\r\n") ? "\r\n" : "\n";
+	const body = before.replace(/^\uFEFF/, "");
+	const block = blockText.split("\n").join(eol);
+	const begin = body.indexOf(MODELS_YML_BEGIN);
+	if (begin >= 0) {
+		const endIdx = body.indexOf(MODELS_YML_END, begin);
+		const end = endIdx < 0 ? body.length : endIdx + MODELS_YML_END.length;
+		return `${body.slice(0, begin)}${block}${body.slice(end)}`;
+	}
+	// A provider entry for the same id from an earlier local install would shadow
+	// ours; the caller reports it rather than editing a block it does not own.
+	if (body.trim() === "") return `providers:${eol}${block}${eol}`;
+	if (/^providers:\s*$/m.test(body)) {
+		return body.replace(/^providers:\s*$/m, (m) => `${m}${eol}${block}`);
+	}
+	return `${body.replace(/\s*$/, "")}${eol}providers:${eol}${block}${eol}`;
+}
+
+/** True when the file already defines our provider outside a block we manage. */
+export function hasForeignRouterProvider(text: string): boolean {
+	if (text.includes(MODELS_YML_BEGIN)) return false;
+	return /^\s{2,}auto-model-router:\s*$/m.test(text);
+}
+
 export function connectRemote(o: ConnectOptions): ConnectReport {
 	const report: ConnectReport = { remoteFile: "", configured: [], skipped: [], envLines: [], notes: [] };
 	const write = (path: string, content: string): void => {
@@ -124,7 +217,22 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		const before = existsSync(cfgPath) ? readFileSync(cfgPath, "utf8") : "";
 		const after = addExtensions(before, ext);
 		if (after !== before) write(cfgPath, after);
-		report.configured.push(`omp (${cfgPath}; pick auto-model-router/auto as the model)`);
+		// models.yml: what makes the MAIN model resolvable, since omp builds that
+		// handle at startup, before the extensions register anything.
+		const modelsPath = join(agentDir, "models.yml");
+		const modelsBefore = existsSync(modelsPath) ? readFileSync(modelsPath, "utf8") : "";
+		if (hasForeignRouterProvider(modelsBefore)) {
+			report.notes.push(`${modelsPath} already defines an auto-model-router provider by hand; left alone — remove it to let connect manage the remote entry`);
+			report.configured.push(`omp (${cfgPath}; extensions only)`);
+		} else {
+			const modelsAfter = mergeModelsYml(modelsBefore, renderRemoteModelsYml(o.url, o.key, o.blend ?? { inputPerMtok: 1.1, outputPerMtok: 4.4 }, o.agentdoxScope ?? ""));
+			if (modelsAfter !== modelsBefore) {
+				// Never overwrite another provider's work without a way back.
+				if (modelsBefore !== "" && !o.dryRun) writeFileSync(`${modelsPath}.${new Date().toISOString().replaceAll(":", "-")}.bak`, modelsBefore, "utf8");
+				write(modelsPath, modelsAfter);
+			}
+			report.configured.push(`omp (${cfgPath} + ${modelsPath}; auto-model-router/auto is ready to pick)`);
+		}
 	} else report.skipped.push("omp (no ~/.omp/agent)");
 
 	// 3. Hermes
@@ -183,6 +291,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 			report.notes.push(`environment appended to ${rc}; open a new shell or source it`);
 		}
 	} else report.notes.push("add the environment lines to your shell profile, or re-run with --profile");
+	report.notes.push("omp's models.yml now carries the member key; treat that file as a secret");
 	return report;
 }
 
@@ -205,7 +314,10 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	}
 	// HOME wins when set (Git Bash, WSL, CI) so a caller can redirect every write; the OS profile otherwise.
 	const home = process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir();
-	const report = connectRemote({ url, key, userId, name, profile: args.flags.has("profile"), dryRun: args.flags.has("dry-run"), only, env: process.env, home, packageDir, platform: process.platform, pathHas });
+	// A single-project machine can label every request; a machine with several
+	// repos should leave it off and let the extensions send the workspace's own.
+	const agentdoxScope = flagString(args, "scope") ?? "";
+	const report = connectRemote({ url, key, userId, name, profile: args.flags.has("profile"), dryRun: args.flags.has("dry-run"), only, env: process.env, home, packageDir, platform: process.platform, pathHas, agentdoxScope });
 	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);
 	for (const s of report.skipped) console.log(`  skipped    ${s}`);

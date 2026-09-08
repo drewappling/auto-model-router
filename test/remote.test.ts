@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { addExtensions, codexBlock, connectRemote, setDotenv, type ConnectOptions } from "../src/cli/connect.ts";
 import { parseRemoteRouter, readRemoteRouter, remoteProviderRegistration } from "../omp-extension/remote-logic.ts";
+import { hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
 
 /**
  * Remote mode: remote.json puts the omp extensions on a router elsewhere,
@@ -100,5 +101,49 @@ describe("connect", () => {
 		expect(rc).toContain("export ANTHROPIC_BASE_URL=https://team.example");
 		rmSync(home, { recursive: true, force: true });
 		rmSync(h2, { recursive: true, force: true });
+	});
+});
+
+describe("omp models.yml for a remote router", () => {
+	const BLEND = { inputPerMtok: 1.1, outputPerMtok: 4.4 };
+	const NL = String.fromCharCode(10);
+	const yaml = (...lines: string[]): string => lines.join(NL) + NL;
+
+	test("the block names the remote, the key and the three virtual models; a scope is opt-in", () => {
+		const block = renderRemoteModelsYml("https://team.example/", "amrt_k", BLEND);
+		expect(block).toContain("baseUrl: https://team.example/v1");
+		expect(block).toContain("apiKey: amrt_k");
+		expect(block).toContain("- id: auto");
+		expect(block).toContain("- id: auto-cheap");
+		expect(block).toContain("- id: auto-max");
+		expect(block).toContain("cost: { input: 1.1, output: 4.4, cacheRead: 0.11, cacheWrite: 1.375 }");
+		// Machine-wide file: no scope unless the caller asks for one.
+		expect(block).not.toContain("X-Agentdox-Scope");
+		expect(renderRemoteModelsYml("https://team.example", "k", BLEND, "omp-router")).toContain("X-Agentdox-Scope: omp-router");
+	});
+
+	test("merging keeps other providers, replaces our own block, and is idempotent", () => {
+		const block = renderRemoteModelsYml("https://team.example", "k1", BLEND);
+		const empty = mergeModelsYml("", block);
+		expect(empty.startsWith("providers:")).toBe(true);
+		expect(mergeModelsYml(empty, block)).toBe(empty);
+
+		const existing = yaml("providers:", "  openai:", "    apiKey: sk-x");
+		const merged = mergeModelsYml(existing, block);
+		expect(merged).toContain("openai:");
+		expect(merged).toContain("baseUrl: https://team.example/v1");
+
+		// A later connect with a new key replaces the block in place, not a second copy.
+		const rekeyed = mergeModelsYml(merged, renderRemoteModelsYml("https://team.example", "k2", BLEND));
+		expect(rekeyed).toContain("apiKey: k2");
+		expect(rekeyed).not.toContain("apiKey: k1");
+		expect(rekeyed.match(/auto-model-router:/g)).toHaveLength(1);
+		expect(rekeyed).toContain("openai:");
+	});
+
+	test("a hand-written provider of the same name is left alone", () => {
+		expect(hasForeignRouterProvider(yaml("providers:", "  auto-model-router:", "    baseUrl: http://127.0.0.1:1/v1"))).toBe(true);
+		expect(hasForeignRouterProvider(mergeModelsYml("", renderRemoteModelsYml("https://t", "k", BLEND)))).toBe(false);
+		expect(hasForeignRouterProvider(yaml("providers:", "  openai: {}"))).toBe(false);
 	});
 });

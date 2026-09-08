@@ -1296,10 +1296,21 @@ adds the Codex provider and the Aider settings, and prints (or with `--profile` 
 the environment lines for Claude Code. `--harness omp,hermes` restricts it; `--dry-run`
 shows the changes. Delete `remote.json` to go back to a local router. (`join` is an alias.)
 
+`connect` also writes omp's `models.yml` (a managed block, other providers untouched, the
+previous file backed up). That entry is what makes `auto-model-router/auto` resolvable at
+**startup**: omp builds the main model's handle before extensions load, so without it only
+the late-resolved roles (`smol`, `tiny`) reach the router and the main turns fall back to
+whatever else is authenticated. A local router deliberately gets no such entry — its port
+is ephemeral, so a persisted one names a dead socket next launch — but a remote's URL and
+key are stable. **The file then holds the member key: treat it as a secret.**
+
 In remote mode omp sends `X-Agentdox-Scope` derived from the workspace folder, so one
 remote router serves every repo on the machine with that repo's shared context. The remote
 decides what to do with it: a team edition that pins a scope on the member's group
-overrides it, and one that pins none follows the workspace.
+overrides it, and one that pins none follows the workspace. That header rides on the roles
+the extensions register; the **main** model's handle comes from `models.yml`, which is
+machine-wide, so it carries a scope only if you pass `--scope <slug>` to `connect` — right
+for a single-project machine, wrong for one with several repos.
 
 ## Multiple coding harnesses, one router
 

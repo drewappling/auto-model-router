@@ -26,7 +26,7 @@ Usage: auto-model-router <command> [options]
   stats      Show routed spend, per-model share, and escalation rates
   report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   export     One row per day, harness and model as CSV (--json for rows)
-  connect    Point this machine at a remote router (--url, --key; --profile persists the environment)
+  connect    Point this machine at a remote router (--url, --key; --scope labels a single-project machine; --profile persists the environment)
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
   config     Interactive wizard over the router's own config.yml

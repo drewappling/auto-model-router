@@ -93,13 +93,21 @@ function lastUserText(req: NormRequest): string {
 	return "";
 }
 
-/** Session title: the conversation's opening ask, truncated. */
+/**
+ * Session title: the conversation's opening ask, truncated.
+ *
+ * Read through `userContent`, the same filter the recorded user message uses:
+ * a harness wraps the first message in reminders (omp opens with a
+ * `<system-reminder>` naming the date and cwd), and titling a session with that
+ * wrapper both reads as noise in agentdox and is re-injected into later context
+ * assembly, which lists session titles.
+ */
 function sessionTitle(req: NormRequest): string {
 	for (const m of req.messages) {
-		if (m.role === "user" && m.text.trim() !== "") {
-			const t = m.text.trim().replace(/\s+/g, " ");
-			return t.length > 80 ? `${t.slice(0, 79)}…` : t;
-		}
+		if (m.role !== "user") continue;
+		const t = userContent(m.text);
+		if (t === "") continue;
+		return t.length > 80 ? `${t.slice(0, 79)}…` : t;
 	}
 	return `omp ${req.conversationKey.slice(0, 8)}`;
 }
