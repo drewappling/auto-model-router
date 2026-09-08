@@ -35,9 +35,8 @@ jobs:
           LOCAL=$(node -p "require('./package.json').version")
           PUBLISHED=$(npm view auto-model-router version 2>/dev/null || echo "0.0.0")
           echo "local=$LOCAL published=$PUBLISHED"
-          if [ "$LOCAL" != "$PUBLISHED" ] && [ "$(printf '%s
-%s
-' "$PUBLISHED" "$LOCAL" | sort -V | tail -1)" = "$LOCAL" ]; then
+          NEWEST=$(printf '%s\n' "$PUBLISHED" "$LOCAL" | sort -V | tail -1)
+          if [ "$LOCAL" != "$PUBLISHED" ] && [ "$NEWEST" = "$LOCAL" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
