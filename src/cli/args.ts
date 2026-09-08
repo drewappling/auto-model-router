@@ -33,6 +33,7 @@ const COMMANDS: Record<string, true> = {
 	stats: true,
 	report: true,
 	export: true,
+	connect: true,
 	join: true,
 	models: true,
 	explain: true,

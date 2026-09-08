@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { ompModelsPath } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
-import { readTeamClient, teamProviderRegistration } from "./team-logic.ts";
+import { readRemoteRouter, remoteProviderRegistration } from "./remote-logic.ts";
 import type { StartedServer } from "../src/server/http.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 
@@ -168,14 +168,14 @@ export default function (pi: ExtensionAPI): void {
 		// notifications to that exact session (see router-toast.ts).
 		const sessionId = ctx.sessionManager.getSessionId();
 
-		// Team-client mode (`auto-model-router join`): the team endpoint is the
-		// router. Register it as the provider with the member's key and bind
-		// nothing locally; the other extensions find the team through team.json.
-		const team = readTeamClient(routerHome());
-		if (team !== null) {
-			pi.registerProvider(EMBED_PROVIDER_ID, teamProviderRegistration(team, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend));
-			pi.setLabel(`auto-model-router team (${team.url.replace(/^https?:\/\//, "")})`);
-			writeEmbedLog(`team mode url=${team.url} user=${team.userId} session=${sessionId}`);
+		// Remote mode (`auto-model-router connect`): a router elsewhere is the
+		// router. Register it as the provider with its key and bind nothing
+		// locally; the other extensions find it through remote.json.
+		const remote = readRemoteRouter(routerHome());
+		if (remote !== null) {
+			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend));
+			pi.setLabel(`auto-model-router remote (${remote.url.replace(/^https?:\/\//, "")})`);
+			writeEmbedLog(`remote mode url=${remote.url} user=${remote.userId} session=${sessionId}`);
 			return;
 		}
 

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import { embedPortPath, readEmbedPort } from "./embed-logic.ts";
-import { readTeamClient } from "./team-logic.ts";
+import { readRemoteRouter } from "./remote-logic.ts";
 import { resolveRouterUrl } from "./toast-logic.ts";
 
 /** `$AUTO_MODEL_ROUTER_HOME` with `~` expanded, default `~/.auto-model-router`. */
@@ -37,9 +37,9 @@ export function readRouterConfigText(): string | null {
 
 /** Base URL of the router this omp process should talk to. */
 export function routerBaseUrl(): string {
-	// Team-client mode: the team endpoint is the router.
-	const team = readTeamClient(routerHome());
-	if (team !== null) return team.url;
+	// Remote mode: the router elsewhere is the router.
+	const remote = readRemoteRouter(routerHome());
+	if (remote !== null) return remote.url;
 	return resolveRouterUrl(
 		process.env.AUTO_MODEL_ROUTER_URL,
 		readRouterConfigText(),
@@ -51,8 +51,8 @@ export function routerBaseUrl(): string {
 
 /** Authorization header for a router configured with `server.apiKey`. */
 export function routerAuthHeaders(): Record<string, string> {
-	const team = readTeamClient(routerHome());
-	if (team !== null) return { authorization: `Bearer ${team.key}` };
+	const remote = readRemoteRouter(routerHome());
+	if (remote !== null) return { authorization: `Bearer ${remote.key}` };
 	const key = process.env.AUTO_MODEL_ROUTER_API_KEY;
 	return key === undefined || key === "" ? {} : { authorization: `Bearer ${key}` };
 }

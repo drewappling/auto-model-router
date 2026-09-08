@@ -12,7 +12,7 @@ import { parseArgv } from "./cli/args.ts";
 import { configCommand } from "./cli/config-cmd.ts";
 import { explainCommand } from "./cli/explain.ts";
 import { exportCommand } from "./cli/export.ts";
-import { joinCommand } from "./cli/join.ts";
+import { connectCommand } from "./cli/connect.ts";
 import { modelsCommand } from "./cli/models.ts";
 import { reportCommand } from "./cli/report.ts";
 import { serveCommand } from "./cli/serve.ts";
@@ -26,7 +26,7 @@ Usage: auto-model-router <command> [options]
   stats      Show routed spend, per-model share, and escalation rates
   report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   export     One row per day, harness and model as CSV (--json for rows)
-  join       Make this machine a member of a team router (--url, --key; --profile persists the environment)
+  connect    Point this machine at a remote router (--url, --key; --profile persists the environment)
   models     Show what each complexity tier would consider, and why
   explain    Route a saved request without dispatching it, and explain the decision
   config     Interactive wizard over the router's own config.yml
@@ -80,8 +80,9 @@ async function main(): Promise<number> {
 		case "export":
 			await exportCommand(args);
 			return 0;
-		case "join":
-			await joinCommand(args);
+		case "connect":
+		case "join": // the first release's name
+			await connectCommand(args);
 			return 0;
 		case "models":
 			await modelsCommand(args);

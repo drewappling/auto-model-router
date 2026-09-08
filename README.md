@@ -1247,18 +1247,18 @@ override already pinned one. Every field is optional; a malformed header is
 ignored rather than failing the turn. The decision trail records what the
 policy changed (`policy: …`).
 
-## Joining a team router
+## Using a remote router
 
-The team edition's install script runs `auto-model-router join --url <team> --key <key>`
-on a member's machine. It writes `<router home>/team.json`, after which the omp
-extensions run in **team-client mode**: the embed extension registers the team endpoint as
-omp's provider with the member's key instead of binding a local router, and the toast,
-`/router` hub and digest extensions talk to the team. Nothing is classified or selected
-locally; the team router is the router. The same command adds the extensions to omp's
-config, installs the Hermes plugins and points them at the team, adds the Codex provider
-and the Aider settings, and prints (or with `--profile` persists) the environment lines
-for Claude Code. `--harness omp,hermes` restricts it; `--dry-run` shows the changes.
-Delete `team.json` to leave team mode.
+`auto-model-router connect --url <router> --key <key>` points this machine at a router
+running elsewhere: a shared instance on a LAN, or a team edition front door. It writes
+`<router home>/remote.json`, after which the omp extensions run in **remote mode**: the
+embed extension registers the remote router as omp's provider with that key instead of
+binding a local one, and the toast, `/router` hub and digest extensions talk to it. Nothing
+is classified or selected locally; the remote router is the router. The same command adds
+the extensions to omp's config, installs the Hermes plugins and points them at the remote,
+adds the Codex provider and the Aider settings, and prints (or with `--profile` persists)
+the environment lines for Claude Code. `--harness omp,hermes` restricts it; `--dry-run`
+shows the changes. Delete `remote.json` to go back to a local router. (`join` is an alias.)
 
 ## Multiple coding harnesses, one router
 

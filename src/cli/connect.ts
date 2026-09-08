@@ -1,12 +1,12 @@
 /**
- * `auto-model-router join --url <team> --key <key>`: make this machine a
- * member of a team router. Writes `<router home>/team.json` (the omp
- * extensions then run in team-client mode and never bind a local router),
- * and configures every harness it finds:
+ * `auto-model-router connect --url <router> --key <key>`: point this machine
+ * at a remote router (a shared one on a LAN, or the team edition). Writes
+ * `<router home>/remote.json` (the omp extensions then run in remote mode and
+ * never bind a local router), and configures every harness it finds:
  *
  *   omp         the four extensions are added to ~/.omp/agent/config.yml
  *   Hermes      the provider plugin and the native plugin are copied into
- *               $HERMES_HOME/plugins and .env points them at the team
+ *               $HERMES_HOME/plugins and .env points them at the remote
  *   Codex       ~/.codex/config.toml gains the auto-model-router provider
  *   Aider       ~/.aider.conf.yml gains the base URL, key and model
  *   Claude Code ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY (printed; --profile persists)
@@ -21,10 +21,10 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { teamFilePath } from "../../omp-extension/team-logic.ts";
+import { remoteFilePath } from "../../omp-extension/remote-logic.ts";
 import { flagString, type CliArgs } from "./args.ts";
 
-export interface JoinOptions {
+export interface ConnectOptions {
 	url: string;
 	key: string;
 	userId: string;
@@ -41,8 +41,8 @@ export interface JoinOptions {
 	pathHas: (bin: string) => boolean;
 }
 
-export interface JoinReport {
-	teamFile: string;
+export interface ConnectReport {
+	remoteFile: string;
 	configured: string[];
 	skipped: string[];
 	envLines: string[];
@@ -51,22 +51,22 @@ export interface JoinReport {
 
 const expand = (raw: string, home: string): string => (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(home, raw.slice(1)) : raw);
 
-function routerHomeOf(o: JoinOptions): string {
+function routerHomeOf(o: ConnectOptions): string {
 	return expand(o.env.AUTO_MODEL_ROUTER_HOME ?? join(o.home, ".auto-model-router"), o.home);
 }
 
-function ompAgentDir(o: JoinOptions): string {
+function ompAgentDir(o: ConnectOptions): string {
 	const d = o.env.PI_CODING_AGENT_DIR;
 	return d !== undefined && d !== "" ? expand(d, o.home) : join(o.home, ".omp", "agent");
 }
 
-function hermesHome(o: JoinOptions): string {
+function hermesHome(o: ConnectOptions): string {
 	const d = o.env.HERMES_HOME;
 	if (d !== undefined && d !== "") return expand(d, o.home);
 	return o.platform === "win32" ? join(o.env.LOCALAPPDATA ?? join(o.home, "AppData", "Local"), "hermes") : join(o.home, ".hermes");
 }
 
-const wants = (o: JoinOptions, h: string): boolean => o.only.length === 0 || o.only.includes(h);
+const wants = (o: ConnectOptions, h: string): boolean => o.only.length === 0 || o.only.includes(h);
 
 /** Adds lines to a YAML `extensions:` list by text, keeping everything else byte-identical. */
 export function addExtensions(text: string, paths: readonly string[]): string {
@@ -95,7 +95,7 @@ export function setDotenv(text: string, values: Record<string, string>): string 
 export function codexBlock(url: string): string {
 	return `
 [model_providers.auto-model-router]
-name = "auto-model-router (team)"
+name = "auto-model-router (remote)"
 base_url = "${url}/v1"
 env_key = "AUTO_MODEL_ROUTER_API_KEY"
 wire_api = "responses"
@@ -103,18 +103,18 @@ http_headers = { "X-Omp-Harness" = "codex" }
 `;
 }
 
-export function joinTeam(o: JoinOptions): JoinReport {
-	const report: JoinReport = { teamFile: "", configured: [], skipped: [], envLines: [], notes: [] };
+export function connectRemote(o: ConnectOptions): ConnectReport {
+	const report: ConnectReport = { remoteFile: "", configured: [], skipped: [], envLines: [], notes: [] };
 	const write = (path: string, content: string): void => {
 		if (o.dryRun) return;
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, content, "utf8");
 	};
 
-	// 1. team.json: what puts the omp extensions into team-client mode.
+	// 1. remote.json: what puts the omp extensions into remote mode.
 	const rh = routerHomeOf(o);
-	report.teamFile = teamFilePath(rh);
-	write(report.teamFile, `${JSON.stringify({ url: o.url, key: o.key, userId: o.userId, name: o.name, joinedAtMs: Date.now() }, null, 2)}\n`);
+	report.remoteFile = remoteFilePath(rh);
+	write(report.remoteFile, `${JSON.stringify({ url: o.url, key: o.key, userId: o.userId, name: o.name, joinedAtMs: Date.now() }, null, 2)}\n`);
 
 	// 2. omp
 	const agentDir = ompAgentDir(o);
@@ -176,40 +176,37 @@ export function joinTeam(o: JoinOptions): JoinReport {
 		} else {
 			const shell = o.env.SHELL ?? "";
 			const rc = shell.includes("zsh") ? join(o.home, ".zshrc") : join(o.home, ".bashrc");
-			const block = `\n# auto-model-router team (added by \`auto-model-router join\`)\n${report.envLines.map((l) => `export ${l}`).join("\n")}\n`;
+			const block = `\n# auto-model-router remote (added by \`auto-model-router connect\`)\n${report.envLines.map((l) => `export ${l}`).join("\n")}\n`;
 			const before = existsSync(rc) ? readFileSync(rc, "utf8") : "";
-			if (!before.includes("# auto-model-router team")) appendFileSync(rc, block, "utf8");
-			else write(rc, before.replace(/\n# auto-model-router team[^\n]*\n(?:export [^\n]*\n)*/, block));
+			if (!before.includes("# auto-model-router remote") && !before.includes("# auto-model-router team")) appendFileSync(rc, block, "utf8");
+			else write(rc, before.replace(/\n# auto-model-router (?:remote|team)[^\n]*\n(?:export [^\n]*\n)*/, block));
 			report.notes.push(`environment appended to ${rc}; open a new shell or source it`);
 		}
 	} else report.notes.push("add the environment lines to your shell profile, or re-run with --profile");
 	return report;
 }
 
-export async function joinCommand(args: CliArgs): Promise<void> {
+export async function connectCommand(args: CliArgs): Promise<void> {
 	const url = (flagString(args, "url") ?? process.env.AUTO_MODEL_ROUTER_URL ?? "").replace(/\/+$/, "");
 	const key = flagString(args, "key") ?? process.env.AUTO_MODEL_ROUTER_API_KEY ?? "";
-	if (url === "" || key === "") throw new Error("join needs --url <team endpoint> and --key <your team key>");
+	if (url === "" || key === "") throw new Error("connect needs --url <remote router> and --key <its key>");
 	const only = (flagString(args, "harness") ?? "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => s !== "");
 	const pathHas = (bin: string): boolean => Bun.which(bin) !== null;
 	const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-	// Verify the key before touching anything.
+	// Verify the key against the route every router serves before touching anything.
 	let name = flagString(args, "name") ?? "";
 	let userId = flagString(args, "user-id") ?? "";
 	try {
-		const res = await fetch(`${url}/me`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-		if (res.status === 401) throw new Error("the team rejected this key");
-		if (res.ok) {
-			const me = (await res.json()) as { user?: { id?: string; name?: string } };
-			userId = me.user?.id ?? userId;
-			name = me.user?.name ?? name;
-		}
+		const res = await fetch(`${url}/v1/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+		if (res.status === 401) throw new Error("the remote router rejected this key");
 	} catch (err) {
 		if (err instanceof Error && err.message.includes("rejected")) throw err;
 		console.log(`warning: could not reach ${url} to verify the key (${err instanceof Error ? err.message : String(err)}); configuring anyway`);
 	}
-	const report = joinTeam({ url, key, userId, name, profile: args.flags.has("profile"), dryRun: args.flags.has("dry-run"), only, env: process.env, home: homedir(), packageDir, platform: process.platform, pathHas });
-	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.teamFile}${name === "" ? "" : ` for ${name}`}`);
+	// HOME wins when set (Git Bash, WSL, CI) so a caller can redirect every write; the OS profile otherwise.
+	const home = process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir();
+	const report = connectRemote({ url, key, userId, name, profile: args.flags.has("profile"), dryRun: args.flags.has("dry-run"), only, env: process.env, home, packageDir, platform: process.platform, pathHas });
+	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);
 	for (const s of report.skipped) console.log(`  skipped    ${s}`);
 	console.log("environment:");

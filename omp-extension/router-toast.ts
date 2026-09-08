@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI): void {
 				// The embedded router binds a free OS-assigned port, so the URL
 				// is resolved fresh each tick from the port file the embed
 				// extension writes at session_start.
-				// Team-client mode resolves to the team endpoint with the member key.
+				// Remote mode resolves to the remote router with its key.
 				const routerUrl = routerBaseUrl();
 
 				let res: Response;
