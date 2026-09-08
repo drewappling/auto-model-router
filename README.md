@@ -1178,6 +1178,24 @@ text, not the conversation, so a hard task that only becomes hard three tool
 calls in stays on the router (the router's own escalation still applies
 there); and the switch happens at prompt boundaries, never mid-turn.
 
+## Per-request routing policy
+
+A front door in front of the router (the team edition, or any proxy that
+knows who is calling) can constrain one turn with an `X-Omp-Policy` header
+carrying JSON:
+
+```json
+{ "allow": ["anthropic/*", "google/*"], "deny": ["openai/gpt-5-pro"], "minTier": "simple", "maxTier": "moderate", "pin": "anthropic/claude-sonnet-5" }
+```
+
+`allow` and `deny` are slug globs like `filters.allow`/`filters.deny`: a
+request allow list replaces the configured one, a deny list adds to it.
+`minTier`/`maxTier` narrow the requested profile's tier envelope and never
+widen it. `pin` forces one model the way `/router pin` does, unless a session
+override already pinned one. Every field is optional; a malformed header is
+ignored rather than failing the turn. The decision trail records what the
+policy changed (`policy: …`).
+
 ## Multiple coding harnesses, one router
 
 **One router process for everything.** omp's embed extension binds a private

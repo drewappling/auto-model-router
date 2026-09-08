@@ -12,6 +12,20 @@ import type { UsageCounts } from "../cost/types.ts";
 
 export type WireProtocol = "openai-chat" | "openai-responses" | "pi-native";
 
+/**
+ * A routing policy attached to one request. `allow`/`deny` are slug globs
+ * like `filters.allow`/`filters.deny` (a request allow list replaces the
+ * configured one; a deny list adds to it); `minTier`/`maxTier` narrow the
+ * profile's tier envelope; `pin` forces one slug, like `/router pin`.
+ */
+export interface RequestPolicy {
+	allow?: string[];
+	deny?: string[];
+	minTier?: "trivial" | "simple" | "moderate" | "hard";
+	maxTier?: "trivial" | "simple" | "moderate" | "hard";
+	pin?: string;
+}
+
 export type Role = "system" | "developer" | "user" | "assistant" | "tool";
 
 /** One tool call requested by an assistant turn. */
@@ -84,6 +98,12 @@ export interface NormRequest {
 	agentdoxScope: string;
 	/** `X-Omp-Subagent: 1`: the caller is an omp subagent (a session without a UI). */
 	isSubagent: boolean;
+	/**
+	 * Per-request routing policy from the `X-Omp-Policy` header (JSON), set by
+	 * a front door such as the team edition: narrows what this turn may route
+	 * to. Absent ⇒ the configured profile and filters alone.
+	 */
+	policy?: RequestPolicy;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	messages: NormMessage[];

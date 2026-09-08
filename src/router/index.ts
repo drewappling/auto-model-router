@@ -15,7 +15,7 @@ import type { ProfileConfig, RouterConfig } from "../config/types.ts";
 import type { Ledger } from "../cost/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
-import type { NormRequest } from "../wire/types.ts";
+import type { NormRequest, RequestPolicy } from "../wire/types.ts";
 import { classify, classifyTask } from "./classify.ts";
 import { extractFeatures } from "./features.ts";
 import { select } from "./select.ts";
@@ -37,6 +37,43 @@ export interface RouterDeps {
  * and family ratios differ by only a few percent anyway.
  */
 const NEUTRAL_TOKENIZER = "gpt";
+
+const TIER_RANK: Record<string, number> = { trivial: 0, simple: 1, moderate: 2, hard: 3 };
+
+/**
+ * Applies a request policy on top of the resolved profile and config: the
+ * tier envelope is narrowed (never widened), a request allow list replaces
+ * the configured one, a request deny list adds to it, and a pin becomes a
+ * forced slug unless a session override already forced one.
+ */
+export function applyRequestPolicy(
+	profile: ProfileConfig,
+	cfg: RouterConfig,
+	policy: RequestPolicy | undefined,
+	forceSlug: string | undefined,
+): { profile: ProfileConfig; cfg: RouterConfig; forceSlug: string | undefined; reasons: string[] } {
+	if (policy === undefined) return { profile, cfg, forceSlug, reasons: [] };
+	const reasons: string[] = [];
+	let minTier = profile.minTier;
+	let maxTier = profile.maxTier;
+	if (policy.minTier !== undefined && TIER_RANK[policy.minTier]! > TIER_RANK[minTier]!) minTier = policy.minTier;
+	if (policy.maxTier !== undefined && TIER_RANK[policy.maxTier]! < TIER_RANK[maxTier]!) maxTier = policy.maxTier;
+	if (TIER_RANK[minTier]! > TIER_RANK[maxTier]!) minTier = maxTier;
+	const narrowed = minTier !== profile.minTier || maxTier !== profile.maxTier;
+	const outProfile = narrowed ? { ...profile, id: `${profile.id}+policy`, minTier, maxTier } : profile;
+	if (narrowed) reasons.push(`policy: tiers narrowed to [${minTier}..${maxTier}]`);
+	let outCfg = cfg;
+	if (policy.allow !== undefined || policy.deny !== undefined) {
+		outCfg = { ...cfg, filters: { ...cfg.filters, ...(policy.allow === undefined ? {} : { allow: policy.allow }), ...(policy.deny === undefined ? {} : { deny: [...cfg.filters.deny, ...policy.deny] }) } };
+		reasons.push(`policy: ${policy.allow === undefined ? "" : `allow ${policy.allow.join("|")} `}${policy.deny === undefined ? "" : `deny ${policy.deny.join("|")}`}`.trim());
+	}
+	let outForce = forceSlug;
+	if (forceSlug === undefined && policy.pin !== undefined) {
+		outForce = policy.pin;
+		reasons.push(`policy: pinned to ${policy.pin}`);
+	}
+	return { profile: outProfile, cfg: outCfg, forceSlug: outForce, reasons };
+}
 
 export function resolveProfile(cfg: RouterConfig, requestedModel: string, isSubagent = false): ProfileConfig {
 	const fallback = cfg.profiles[0];
@@ -99,19 +136,22 @@ export function createRouter(deps: RouterDeps): Router {
 				classification = await classify(req, features, config, { upstream, ledger, catalog });
 			}
 
-			return select({
+			const policed = applyRequestPolicy(resolveProfile(config, req.requestedModel, req.isSubagent), config, req.policy, opts.forceSlug);
+			const decision = select({
 				req,
 				features,
 				classification,
-				profile: resolveProfile(config, req.requestedModel, req.isSubagent),
+				profile: policed.profile,
 				state,
 				snapshot,
 				ledger,
-				cfg: config,
+				cfg: policed.cfg,
 				nowMs: Date.now(),
 				...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
-				...(opts.forceSlug === undefined ? {} : { forceSlug: opts.forceSlug }),
+				...(policed.forceSlug === undefined ? {} : { forceSlug: policed.forceSlug }),
 			});
+			if (policed.reasons.length > 0) decision.reasons.unshift(...policed.reasons);
+			return decision;
 		},
 	};
 }

@@ -20,4 +20,6 @@ export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotal
 export { buildDailySummary, renderDailySummary, type DailySummary } from "./cost/summary.ts";
 export { openDb } from "./util/sqlite.ts";
 export { createLedger } from "./cost/ledger.ts";
+export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./cost/feedback.ts";
+export type { RequestPolicy } from "./wire/types.ts";
 export type { Ledger, LedgerEntry } from "./cost/types.ts";

@@ -1,4 +1,5 @@
 import type {
+	RequestPolicy,
 	CompactionEdit,
 	NormMessage,
 	NormRequest,
@@ -285,6 +286,34 @@ function renderUpstreamBody(
 	return body;
 }
 
+const TIER_NAMES = new Set(["trivial", "simple", "moderate", "hard"]);
+
+/** Parses the X-Omp-Policy header; malformed or empty ⇒ no policy (never a rejected turn). */
+export function parsePolicyHeader(raw: string | null): RequestPolicy | undefined {
+	if (raw === null || raw.trim() === "") return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+	const p = parsed as Record<string, unknown>;
+	const strs = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && s.trim() !== "").map((s) => s.trim()) : undefined);
+	const tier = (v: unknown): RequestPolicy["minTier"] => (typeof v === "string" && TIER_NAMES.has(v) ? (v as RequestPolicy["minTier"]) : undefined);
+	const out: RequestPolicy = {};
+	const allow = strs(p.allow);
+	const deny = strs(p.deny);
+	if (allow !== undefined && allow.length > 0) out.allow = allow;
+	if (deny !== undefined && deny.length > 0) out.deny = deny;
+	const min = tier(p.minTier);
+	const max = tier(p.maxTier);
+	if (min !== undefined) out.minTier = min;
+	if (max !== undefined) out.maxTier = max;
+	if (typeof p.pin === "string" && p.pin.trim() !== "") out.pin = p.pin.trim();
+	return Object.keys(out).length === 0 ? undefined : out;
+}
+
 export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		throw invalidRequest("Request body must be a JSON object");
@@ -305,6 +334,9 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 
 	// Subagent marker from the embed extension (sessions without a UI).
 	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
+
+	// Per-request routing policy (team edition): JSON in X-Omp-Policy.
+	const policy = parsePolicyHeader(headers.get("x-omp-policy"));
 
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
@@ -367,6 +399,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		ompSessionId,
 		agentdoxScope,
 		isSubagent,
+		...(policy === undefined ? {} : { policy }),
 		requestedModel,
 		messages,
 		tools,
