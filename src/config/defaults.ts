@@ -335,6 +335,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// One transcript message per day, at the first interactive session start.
 		dailySummary: true,
 	},
+	anthropic: {
+		// haiku is what Claude Code uses for background chores; everything else is a real turn.
+		models: { "*haiku*": "auto-cheap", "claude-*": "auto" },
+	},
 	harnessSwitch: {
 		// Off: moving the harness's own model is a visible change the operator opts into.
 		enabled: false,

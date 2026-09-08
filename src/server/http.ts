@@ -11,6 +11,7 @@ import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
 import { exportCsv, exportRows, feedbackView, harnessScopeParam, spendUsdSince } from "../cost/views.ts";
+import { anthropicErrorResponse, countAnthropicTokens, createMessagesWire } from "../wire/anthropic/messages.ts";
 import { buildDailySummary, createKv, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
@@ -334,9 +335,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		parse(body: unknown, headers: Headers): NormRequest;
 		streaming(model: string): { sink: ResponseSink; response: Response };
 		buffered(model: string): { sink: ResponseSink; response: Promise<Response> };
+		/** How a failure before the sink exists is rendered; the OpenAI envelope when absent. */
+		error?: (err: WireError) => Response;
 	}
 	const CHAT_WIRE: Wire = { parse: parseChatRequest, streaming: createStreamingSink, buffered: createBufferedSink };
 	const RESPONSES_WIRE: Wire = { parse: parseResponsesRequest, streaming: createResponsesStreamingSink, buffered: createResponsesBufferedSink };
+	const MESSAGES_WIRE: Wire = createMessagesWire(cfg.anthropic.models);
 
 	const handleTurn = async (req: Request, wire: Wire): Promise<Response> => {
 		let normReq: NormRequest;
@@ -347,8 +351,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			// runTurn's `finally`, so it must be released here or every malformed
 			// request permanently consumes one of maxConcurrentTurns.
 			releaseTurn();
-			if (err instanceof WireErrorException) return wireErrorResponse(err.wireError);
-			return wireErrorResponse({
+			const render = wire.error ?? wireErrorResponse;
+			if (err instanceof WireErrorException) return render(err.wireError);
+			return render({
 				status: 400,
 				code: "invalid_json",
 				message: err instanceof Error ? err.message : "request body is not valid JSON",
@@ -402,13 +407,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				return wireErrorResponse({ status: 403, code: "forbidden", message: "invalid host" });
 			}
 
+			const url = new URL(req.url);
+			// The Messages wire renders its own error envelope; everything else speaks OpenAI's.
+			const errorResponse = url.pathname.startsWith("/v1/messages") ? anthropicErrorResponse : wireErrorResponse;
 			if (cfg.server.apiKey !== undefined && cfg.server.apiKey !== "") {
-				if (req.headers.get("authorization") !== `Bearer ${cfg.server.apiKey}`) {
-					return wireErrorResponse({ status: 401, code: "unauthorized", message: "invalid or missing bearer token" });
-				}
+				// Anthropic clients (Claude Code) present the key as x-api-key rather than a bearer.
+				const presented = req.headers.get("authorization") === `Bearer ${cfg.server.apiKey}` || req.headers.get("x-api-key") === cfg.server.apiKey;
+				if (!presented) return errorResponse({ status: 401, code: "unauthorized", message: "invalid or missing API key" });
 			}
 
-			const url = new URL(req.url);
 			try {
 				if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
 					if (!acquireTurn()) {
@@ -422,6 +429,20 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						return wireErrorResponse({ status: 429, code: "too_many_requests", message: "too many concurrent turns" });
 					}
 					return await handleTurn(req, RESPONSES_WIRE);
+				}
+				if (req.method === "POST" && url.pathname === "/v1/messages") {
+					if (!acquireTurn()) {
+						return anthropicErrorResponse({ status: 429, code: "too_many_requests", message: "too many concurrent turns" });
+					}
+					return await handleTurn(req, MESSAGES_WIRE);
+				}
+				if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
+					try {
+						return json({ input_tokens: countAnthropicTokens(await req.json(), cfg.anthropic.models, ledger) });
+					} catch (err) {
+						if (err instanceof WireErrorException) return anthropicErrorResponse(err.wireError);
+						return anthropicErrorResponse({ status: 400, code: "invalid_json", message: err instanceof Error ? err.message : "request body is not valid JSON" });
+					}
 				}
 				if (req.method === "GET" && url.pathname === "/v1/models") {
 					return json(renderModelList(cfg, ledger.blendedRate(cfg.ledger.blendWindowDays)));

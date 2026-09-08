@@ -336,6 +336,13 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 		],
 	},
 	{
+		title: "Claude Code (Anthropic Messages wire)",
+		fields: [
+			{ path: "anthropic.models.*haiku*", label: "Model names matching *haiku* route to profile", kind: "string", optional: true, hint: "e.g. auto-cheap" },
+			{ path: "anthropic.models.claude-*", label: "Model names matching claude-* route to profile", kind: "string", optional: true, hint: "e.g. auto or auto-max" },
+		],
+	},
+	{
 		title: "Harness switch",
 		fields: [
 			{ path: "harnessSwitch.enabled", label: "Switch omp's model for mapped tiers (experimental)", kind: "boolean" },

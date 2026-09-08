@@ -277,6 +277,7 @@ export const configInputSchema = z.strictObject({
 	budget: budget.optional(),
 	profiles: z.array(profile).optional(),
 	report: z.strictObject({ baselines: z.array(z.string()).optional(), dailySummary: z.boolean().optional() }).optional(),
+	anthropic: z.object({ models: z.record(z.string(), z.string()).optional() }).strict().optional(),
 	harnessSwitch: z
 		.strictObject({
 			enabled: z.boolean().optional(),

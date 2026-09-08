@@ -1184,6 +1184,51 @@ text, not the conversation, so a hard task that only becomes hard three tool
 calls in stays on the router (the router's own escalation still applies
 there); and the switch happens at prompt boundaries, never mid-turn.
 
+## Claude Code (Anthropic Messages API)
+
+The router also speaks the Anthropic Messages API, which is the only wire Claude Code
+uses. Point Claude Code at the router and every turn is routed like any other harness's,
+to OpenRouter, Ollama Cloud, or whatever upstream is configured:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
+export ANTHROPIC_API_KEY=<server.apiKey, or any string when the router has no key>
+claude
+```
+
+`POST /v1/messages` (streaming and not) and `POST /v1/messages/count_tokens` are served;
+the key may arrive as `x-api-key` or as a bearer. Claude Code asks for `claude-*` model
+names, which `anthropic.models` maps to profiles (first matching glob wins):
+
+```yaml
+anthropic:
+  models:
+    "*haiku*": auto-cheap     # Claude Code's background chores
+    "claude-*": auto          # real turns; try auto-max for an opus-only feel
+```
+
+Profile ids pass through, so `ANTHROPIC_MODEL=auto-max` works too. The harness id defaults
+to `claude-code` (from the user agent) and the session id is taken from the `metadata`
+Claude Code sends, so reports, budgets and the team edition see it like any other harness.
+
+What is translated: system prompts (string or blocks), text, image, `tool_use` and
+`tool_result` blocks, custom tools and `tool_choice` (including
+`disable_parallel_tool_use`), `stop_sequences`, `thinking` budgets and `output_config.effort`
+(as reasoning effort), and back: text, `tool_use` and `thinking` blocks, the four stop
+reasons, and usage with cache read and cache creation counts. The routing summary rides on
+`message_delta` as `x_auto_model_router`.
+
+Not available through the router: Anthropic server-side tools (web search, web fetch, code
+execution) and Anthropic-schema client tools (`bash_*`, `text_editor_*`) are dropped from
+the tool list, since no upstream serves them; thinking blocks come back unsigned and are
+dropped again on replay; `count_tokens` is the router's own estimate. Client `cache_control`
+markers are replaced by the router's own breakpoint plan.
+
+Claude Code prices its own cost line from the Claude model name it asked for, so the
+figure it shows is not what was spent; the router's ledger (`/router report`, the team
+edition) is. Verified with Claude Code 2.1.263 headless (`claude -p` with the Read tool)
+routed to a DeepSeek model; the captured request is `test/fixtures/harness/claude-code.json`.
+
 ## Per-request routing policy
 
 A front door in front of the router (the team edition, or any proxy that
@@ -1229,6 +1274,7 @@ plus a harness header; the rest needs the harness's own hook API.
 | Harness | Wire | Harness id | Session id | Subagent flag | Toast | `/router` | Digest | Daily summary | Model switch |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | omp | native provider | yes | yes | yes | yes | full hub | yes | yes | experimental |
+| Claude Code | Anthropic Messages (`/v1/messages`) | derived (`claude-code`) | from `metadata` | no | no | no | no | no | no |
 | Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
 | Codex CLI | Responses API wire | yes | yes (from body) | yes (from body) | no | no | compaction only | no | no |
 | Aider | config only | via model settings | no | no | no | no | no tools | no | no |

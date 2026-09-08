@@ -10,7 +10,7 @@
 
 import type { UsageCounts } from "../cost/types.ts";
 
-export type WireProtocol = "openai-chat" | "openai-responses" | "pi-native";
+export type WireProtocol = "openai-chat" | "openai-responses" | "anthropic-messages" | "pi-native";
 
 /**
  * A routing policy attached to one request. `allow`/`deny` are slug globs

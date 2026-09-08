@@ -620,6 +620,16 @@ export interface ReportConfig {
  * each user prompt and the harness moves its own active model to a
  * harness-native one for the mapped tiers. See omp-extension/router-switch.ts.
  */
+/** The Anthropic Messages wire (`POST /v1/messages`, Claude Code). */
+export interface AnthropicConfig {
+	/**
+	 * Which router profile a Messages `model` name means, first matching glob
+	 * wins. Claude Code asks for `claude-*` names; unmatched names pass through
+	 * so profile ids (`auto`, `auto-max`) still work.
+	 */
+	models: Record<string, string>;
+}
+
 export interface HarnessSwitchConfig {
 	enabled: boolean;
 	/**
@@ -830,6 +840,7 @@ export interface RouterConfig {
 	report: ReportConfig;
 	digest: DigestConfig;
 	harnessSwitch: HarnessSwitchConfig;
+	anthropic: AnthropicConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
 	/**
