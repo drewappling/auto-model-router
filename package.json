@@ -4,6 +4,12 @@
   "private": false,
   "description": "Local cost/complexity-aware model router for Oh My Pi, backed by OpenRouter",
   "type": "module",
+  "main": "./src/lib.ts",
+  "types": "./src/lib.ts",
+  "exports": {
+    ".": "./src/lib.ts",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "auto-model-router": "./src/index.ts"
   },
