@@ -26,16 +26,22 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Check if version already published
+      # Publish only when the tagged version is NEWER than npm's latest. A tag that
+      # reaches GitHub late (git push --tags after the fact) must never publish an
+      # old version as a fresh release.
+      - name: Check if version is newer than the published one
         id: version
         run: |
           LOCAL=$(node -p "require('./package.json').version")
           PUBLISHED=$(npm view auto-model-router version 2>/dev/null || echo "0.0.0")
           echo "local=$LOCAL published=$PUBLISHED"
-          if [ "$LOCAL" != "$PUBLISHED" ]; then
+          if [ "$LOCAL" != "$PUBLISHED" ] && [ "$(printf '%s
+%s
+' "$PUBLISHED" "$LOCAL" | sort -V | tail -1)" = "$LOCAL" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::$LOCAL is not newer than the published $PUBLISHED; nothing published"
           fi
 
       - name: Publish to npm
@@ -45,6 +51,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
