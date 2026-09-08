@@ -521,7 +521,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 			if (fail) return new Response("down", { status: 503 });
 			return Response.json({ ...PAYLOAD, limits: { monthly: { usage: 42, models: [] } } });
 		};
-		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 20, timeoutMs: 1000, log, fetchImpl });
+		const src = createOllamaUsageSource({ apiKey: () => "k", pollMs: 20, timeoutMs: 1000, log, fetchImpl });
 		expect(src.peek()).toBeNull();
 		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6);
 		expect(src.peek()?.plan).toBe("pro");
@@ -531,7 +531,21 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		await new Promise((r) => setTimeout(r, 120)); // well past the 20ms poll interval
 		expect((await src.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 6); // last good reading survives a 503
 		expect(calls).toBe(2);
-		expect(createOllamaUsageSource({ apiKey: "", pollMs: 50, timeoutMs: 1000, log, fetchImpl })).toBe(NO_USAGE);
+		expect(createOllamaUsageSource({ apiKey: () => "k", pollMs: 0, timeoutMs: 1000, log, fetchImpl })).toBe(NO_USAGE);
+		// A key that is empty NOW is not structural: the reader idles and starts polling once one is set,
+		// which is what lets a key added from a dashboard work without restarting the router.
+		let liveKey = "";
+		let polls = 0;
+		const laterFetch = async (url: string): Promise<Response> => {
+			polls++;
+			if (url === "https://ollama.com/api/me") return Response.json({ ID: "x", Email: "e", Plan: "Pro" });
+			return Response.json({ ...PAYLOAD, limits: { monthly: { usage: 42, models: [] } } });
+		};
+		const later = createOllamaUsageSource({ apiKey: () => liveKey, pollMs: 1, timeoutMs: 1000, log, fetchImpl: laterFetch });
+		expect(await later.get()).toBeNull();
+		expect(polls).toBe(0); // no key, no network
+		liveKey = "k";
+		expect((await later.get())?.monthlyUsedFraction).toBeCloseTo(0.42, 5);
 	});
 
 	test("the composite snapshot carries the live bias and re-merges when it flips", async () => {
@@ -623,7 +637,7 @@ describe("ollama calibration", () => {
 			if (url.endsWith("/api/me")) return Response.json({ Plan: "pro" });
 			return Response.json({ limits: { monthly: { usage: frac, models: [] } } });
 		};
-		const src = createOllamaUsageSource({ apiKey: "k", pollMs: 5, timeoutMs: 1000, log, fetchImpl, calibration: { db, ledgerUsd: () => ledgerUsd, planCreditsOverrideUsd: 0 } });
+		const src = createOllamaUsageSource({ apiKey: () => "k", pollMs: 5, timeoutMs: 1000, log, fetchImpl, calibration: { db, ledgerUsd: () => ledgerUsd, planCreditsOverrideUsd: 0 } });
 		await src.get(); // meter $6 (10% of $60), ledger $1
 		expect(src.calibration()).toBeNull(); // one sample
 		await new Promise((r) => setTimeout(r, 20));

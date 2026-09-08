@@ -29,6 +29,7 @@
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { configInputSchema } from "./schema.ts";
+import { assignInPlace } from "./apply.ts";
 import { DEFAULT_CONFIG } from "./defaults.ts";
 import { deepMerge, resolveTilde } from "./load.ts";
 import type { RouterConfig } from "./types.ts";
@@ -97,26 +98,21 @@ export interface WatchConfigOptions {
  * is read at call time and hot-reloads. A bare block name pins the whole
  * block; `block.key` pins one key and lets its siblings through.
  */
+/**
+ * Config a RUNNING router cannot change, because the process is built around it:
+ * the bound socket and the ledger file it opened.
+ *
+ * Everything else now applies live. The upstream keys, the Ollama block and the
+ * agentdox bridge used to be pinned here because they were captured by
+ * construction; they are read (or re-pointed) at call time instead, and the
+ * server re-fetches the catalogs and rebuilds the bridge when they change.
+ */
 export const PINNED_CONFIG_PATHS: readonly string[] = [
 	"server.host",
 	"server.port",
 	"server.apiKey",
 	"server.harnessId",
 	"server.maxConcurrentTurns",
-	"openrouter",
-	"ollama.enabled",
-	"ollama.baseUrl",
-	"ollama.apiKey",
-	"ollama.timeoutMs",
-	"ollama.catalogTtlMs",
-	"ollama.includeLocal",
-	"ollama.prices",
-	"ollama.twins",
-	"ollama.usagePollMs",
-	"ollama.quotaCooldownMs",
-	"ollama.rateLimitCooldownMs",
-	"ollama.planCreditsUsd",
-	"context",
 	"ledger.path",
 ];
 
@@ -125,6 +121,11 @@ export const PINNED_CONFIG_PATHS: readonly string[] = [
  * entries are re-copied from `pinned` after every reload so file edits to
  * construction-captured settings cannot silently diverge: a top-level name
  * pins the whole block, `block.key` pins one key of it.
+ *
+ * "In place" is load-bearing, not an optimisation: consumers hold references
+ * INTO the config (the Ollama client binds `cfg.ollama`), so blocks keep their
+ * identity and only leaves are written. Replacing a block would leave every
+ * holder on the old object — which is what made those blocks restart-only.
  */
 export function watchConfig(
 	path: string,
@@ -159,8 +160,8 @@ export function watchConfig(
 			const block = f.slice(0, dot);
 			frozenKeys.set(block, [...(frozenKeys.get(block) ?? []), f.slice(dot + 1)]);
 		}
-		const changed: string[] = [];
 		const next = result.cfg as unknown as Record<string, unknown>;
+		const staged: Record<string, unknown> = {};
 		const pinnedRec = pinned as unknown as Record<string, unknown>;
 		for (const key of Object.keys(next)) {
 			// Frozen blocks belong to construction: keep the pinned values. A
@@ -176,11 +177,11 @@ export function watchConfig(
 				}
 				value = merged;
 			}
-			const before = JSON.stringify((live as unknown as Record<string, unknown>)[key]);
-			const after = JSON.stringify(value);
-			if (before !== after) changed.push(key);
-			(live as unknown as Record<string, unknown>)[key] = value;
+			staged[key] = value;
 		}
+		// One in-place pass over the whole config: block identity survives, and a
+		// knob deleted from the file reverts, exactly as a restart would leave it.
+		const changed = assignInPlace(live as unknown as Record<string, unknown>, staged, "", { prune: true });
 		if (changed.length > 0) opts.onReload?.({ changed });
 	};
 

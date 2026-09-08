@@ -12,10 +12,11 @@
  *   await router.stop();
  */
 
-export { startServer, type StartedServer } from "./server/http.ts";
+export { startServer, type ReconfigureResult, type StartedServer } from "./server/http.ts";
 export { loadConfig, apiKeySource } from "./config/load.ts";
 export { DEFAULT_CONFIG } from "./config/defaults.ts";
 export type { RouterConfig } from "./config/types.ts";
+export type { DeepPartial } from "./config/load.ts";
 export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotals } from "./cost/report.ts";
 export { buildDailySummary, renderDailySummary, type DailySummary } from "./cost/summary.ts";
 export { openDb } from "./util/sqlite.ts";

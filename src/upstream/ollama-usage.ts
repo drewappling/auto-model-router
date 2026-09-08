@@ -166,9 +166,11 @@ export interface CalibrationDeps {
 }
 
 export function createOllamaUsageSource(
-	opts: { apiKey: string; pollMs: number; timeoutMs: number; log: Logger; fetchImpl?: FetchLike; root?: string; calibration?: CalibrationDeps },
+	opts: { apiKey: () => string; pollMs: number; timeoutMs: number; log: Logger; fetchImpl?: FetchLike; root?: string; calibration?: CalibrationDeps },
 ): OllamaUsageSource {
-	if (opts.apiKey === "" || opts.pollMs <= 0) return NO_USAGE;
+	// Only the poll interval is structural. A key that is empty now may be set from
+	// the dashboard later, so the reader stays live and simply idles until it is.
+	if (opts.pollMs <= 0) return NO_USAGE;
 	const cal = opts.calibration;
 	const insertSample = cal === undefined ? null : cal.db.query("INSERT OR REPLACE INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, ?, ?)");
 	const readSamples = cal === undefined ? null : cal.db.query("SELECT at_ms, meter_usd, ledger_usd FROM ollama_meter_samples WHERE at_ms >= ? ORDER BY at_ms ASC");
@@ -199,7 +201,7 @@ export function createOllamaUsageSource(
 		try {
 			const res = await fetchImpl(`${root}/api/me`, {
 				method: "POST",
-				headers: { authorization: `Bearer ${opts.apiKey}` },
+				headers: { authorization: `Bearer ${opts.apiKey()}` },
 				signal: AbortSignal.timeout(opts.timeoutMs),
 			});
 			if (res.ok) {
@@ -222,7 +224,7 @@ export function createOllamaUsageSource(
 		await refreshPlan();
 		try {
 			const res = await fetchImpl(`${root}/api/usage`, {
-				headers: { authorization: `Bearer ${opts.apiKey}` },
+				headers: { authorization: `Bearer ${opts.apiKey()}` },
 				signal: AbortSignal.timeout(opts.timeoutMs),
 			});
 			if (res.ok) {
@@ -253,6 +255,7 @@ export function createOllamaUsageSource(
 
 	return {
 		async get() {
+			if (opts.apiKey() === "") return null;
 			if (Date.now() - checkedAtMs < opts.pollMs) return current;
 			inflight ??= refresh().finally(() => {
 				inflight = null;

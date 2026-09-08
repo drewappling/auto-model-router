@@ -129,7 +129,9 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fetch): OllamaClient {
 	const o = cfg.ollama;
-	const baseUrl = o.baseUrl.replace(/\/+$/, "");
+	// Read per call, not captured: `o` is the live config block, so a base URL
+	// changed while the router runs takes effect on the next dispatch.
+	const baseUrl = (): string => o.baseUrl.replace(/\/+$/, "");
 	const log = createLogger(cfg.logLevel);
 	let cooldownUntil = 0;
 	let lastTrip: { kind: UpstreamErrorKind; atMs: number; message: string } | null = null;
@@ -189,7 +191,7 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 			const body = toOllamaBody({ ...opts.body, stream: true });
 			let res: Response;
 			try {
-				res = await fetchImpl(`${baseUrl}/chat/completions`, {
+				res = await fetchImpl(`${baseUrl()}/chat/completions`, {
 					method: "POST",
 					headers: headers(),
 					body: JSON.stringify(body),
@@ -237,7 +239,7 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }> {
 			let res: Response;
 			try {
-				res = await fetchImpl(`${baseUrl}/chat/completions`, {
+				res = await fetchImpl(`${baseUrl()}/chat/completions`, {
 					method: "POST",
 					headers: headers(),
 					body: JSON.stringify(toOllamaBody({ ...body, stream: false })),
@@ -258,7 +260,7 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 		async fetchModels(signal?: AbortSignal): Promise<unknown[]> {
 			let res: Response;
 			try {
-				res = await fetchImpl(`${baseUrl}/models`, { headers: headers(), signal: composeSignal(signal) });
+				res = await fetchImpl(`${baseUrl()}/models`, { headers: headers(), signal: composeSignal(signal) });
 			} catch (err) {
 				throw transportError(err);
 			}

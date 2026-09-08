@@ -87,7 +87,7 @@ describe("watchConfig", () => {
 		writeFileSync(CFG, yamlOf({ tiers: { hard: { capabilityFloorUsd: 0.35 } } }));
 		await settle();
 		expect(live.tiers.hard.capabilityFloorUsd).toBe(0.35);
-		expect(reloads.flat()).toContain("tiers");
+		expect(reloads.flat()).toContain("tiers.hard.capabilityFloorUsd");
 	});
 
 	test("a second edit replaces the value and reverting restores the default", async () => {
@@ -138,7 +138,7 @@ describe("watchConfig pins by path", () => {
 	beforeAll(() => {
 		writeFileSync(CFG2, "");
 		const pinned = structuredClone(DEFAULT_CONFIG);
-		pinned.ollama.apiKey = "pinned-key";
+		pinned.server.port = 8788;
 		watcher = watchConfig(CFG2, live, pinned, PINNED_CONFIG_PATHS);
 	});
 	afterAll(() => watcher?.close());
@@ -148,7 +148,8 @@ describe("watchConfig pins by path", () => {
 		await settle();
 		expect(live.ollama.costBias).toBe(0.25);
 		expect(live.ollama.biasUntilUsage).toBe(0.5);
-		expect(live.ollama.apiKey).toBe("pinned-key");
+		// The upstream key is no longer pinned: the router re-points its clients instead.
+		expect(live.ollama.apiKey).toBe("from-file");
 		expect(live.server.port).toBe(DEFAULT_CONFIG.server.port);
 		expect(live.server.subagentProfile).toBe("auto");
 		expect(live.ledger.retentionDays).toBe(30);

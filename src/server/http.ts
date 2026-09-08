@@ -20,6 +20,8 @@ import { UpstreamError } from "../upstream/types.ts";
 import { apiKeySource, ollamaKeySource } from "../config/load.ts";
 import { ollamaMeter } from "../upstream/ollama-usage.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
+import { applyConfigPatch, touched } from "../config/apply.ts";
+import type { DeepPartial } from "../config/load.ts";
 import { PINNED_CONFIG_PATHS, watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
@@ -35,8 +37,32 @@ import { runTurn } from "./turn.ts";
 export interface StartedServer {
 	// No websocket upgrade path, so the Server payload type is `undefined`.
 	server: Server<undefined>;
+	/**
+	 * Applies a config change to the RUNNING router and reports the dotted paths
+	 * that changed. Everything a turn reads through the config (tiers, filters,
+	 * budgets, provider keys) takes effect on the next turn; the pieces built
+	 * from config — the agentdox bridge, the catalogs — are re-pointed here. No
+	 * socket closes and no turn in flight is cut.
+	 *
+	 * `server.*` and `ledger.path` are the exceptions: the listener and the
+	 * database file are the process. Changing those still means a restart, and
+	 * they are rejected rather than half-applied.
+	 */
+	reconfigure(patch: DeepPartial<RouterConfig>): Promise<ReconfigureResult>;
 	stop(): Promise<void>;
 }
+
+export interface ReconfigureResult {
+	/** Dotted config paths whose value changed. */
+	changed: string[];
+	/** Paths that were refused because they belong to construction (`server.*`, `ledger.path`). */
+	rejected: string[];
+	/** True when an upstream changed and a catalog re-fetch was started in the background. */
+	catalogRefreshing: boolean;
+}
+
+/** Config a running router cannot change: the bound socket and the ledger file. */
+const RESTART_ONLY_PATHS: readonly string[] = ["server", "ledger.path"];
 
 export interface ModelSpendRow {
 	slug: string;
@@ -200,7 +226,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
-	const { upstream, catalog, ollama, ollamaUsage, ollamaCostScale } = createProviders(cfg, db, log);
+	const { upstream, catalog, ollama, ollamaServing, ollamaUsage, ollamaCostScale } = createProviders(cfg, db, log);
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
@@ -225,6 +251,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		{
 			onReload: ({ changed }) => {
 				log.info("config reloaded", { changed: changed.join(", ") });
+				// The file is a config change like any other: same live application.
+				void applyLive(changed).catch((err: unknown) => log.warn("applying the reloaded config failed", { error: err instanceof Error ? err.message : String(err) }));
 			},
 			onError: (message) => {
 				log.warn("config reload rejected; keeping the running config", { error: message });
@@ -241,10 +269,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	}
 
 	if (cfg.openrouter.apiKey === "") {
-		if (ollama !== null) log.warn("no OpenRouter key: routing over Ollama Cloud models only (OpenRouter's catalog is read for metadata, never served)");
+		if (cfg.ollama.enabled) log.warn("no OpenRouter key: routing over Ollama Cloud models only (OpenRouter's catalog is read for metadata, never served)");
 		else log.warn("OPENROUTER_API_KEY is not set and Ollama is off; /v1/chat/completions will fail at dispatch time");
 	}
-	if (ollama !== null) {
+	if (cfg.ollama.enabled) {
 		log.info("ollama cloud upstream enabled", {
 			baseUrl: cfg.ollama.baseUrl,
 			// Provenance only; never the key itself.
@@ -509,7 +537,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const meter = ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd);
 					const runway = ollamaRunway(meter, ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1);
 					const ollamaSummary: SummaryOllama | null =
-						ollama === null || meter === null ? null : { plan: meter.plan ?? null, usedUsd: meter.usedUsd, creditsUsd: meter.creditsUsd, runwayDays: runway?.days ?? null };
+						!cfg.ollama.enabled || meter === null ? null : { plan: meter.plan ?? null, usedUsd: meter.usedUsd, creditsUsd: meter.creditsUsd, runwayDays: runway?.days ?? null };
 					const summary = buildDailySummary(db, {
 						harnessId,
 						baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)),
@@ -611,7 +639,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
 						// Which upstreams turns can actually be served from: OpenRouter needs
 						// its key; Ollama needs to be on and out of cooldown.
-						serving: [...(cfg.openrouter.apiKey !== "" ? ["openrouter"] : []), ...(ollama !== null && ollama.available() ? ["ollama"] : [])],
+						serving: [...(cfg.openrouter.apiKey !== "" ? ["openrouter"] : []), ...(ollamaServing() ? ["ollama"] : [])],
 						// Provenance only; never the key itself.
 						apiKeySource: apiKeySource(cfg).source,
 						// Provenance only; never the agentdox token itself.
@@ -621,7 +649,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						// Never the key. `available` is the circuit breaker: false while a
 						// 402/429 cooldown routes every turn around Ollama.
 						ollama:
-							ollama === null
+							!cfg.ollama.enabled
 								? null
 								: {
 										baseUrl: cfg.ollama.baseUrl,
@@ -665,8 +693,57 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		},
 	});
 
+	/**
+	 * The one place that turns a config change into a live router. The watcher
+	 * (file edits) and `reconfigure` (an embedder, e.g. the team edition) both
+	 * come through here, so the two can never drift apart.
+	 */
+	async function applyLive(changed: readonly string[]): Promise<boolean> {
+		if (changed.length === 0) return false;
+		if (touched(changed, "context")) {
+			await context.reconfigure();
+			log.info("agentdox bridge reconfigured", {
+				enabled: context.enabled,
+				url: cfg.context.baseUrl === "" ? "(none)" : cfg.context.baseUrl,
+				defaultScope: cfg.context.defaultScope === "" ? "(per-request header only)" : cfg.context.defaultScope,
+			});
+		}
+		if (!touched(changed, "openrouter", "ollama")) return false;
+		// A key change makes the catalog key-scoped (or not), and enabling Ollama adds
+		// its models: the snapshot is rebuilt before the next turn ranks. Started, not
+		// awaited — the caller is a settings save, not a network client, and the
+		// previous snapshot serves turns until the new one lands.
+		void catalog
+			.refresh()
+			.then((snap) => log.info("catalog refreshed after an upstream change", { models: snap.models.length, ollama: cfg.ollama.enabled }))
+			.catch((err: unknown) => log.warn("catalog refresh after an upstream change failed; the previous snapshot stands", { error: err instanceof Error ? err.message : String(err) }));
+		return true;
+	}
+
 	return {
 		server,
+		async reconfigure(patch) {
+			const rejected: string[] = [];
+			const rec = patch as Record<string, unknown>;
+			for (const block of RESTART_ONLY_PATHS) {
+				const [head, key] = block.split(".") as [string, string | undefined];
+				const value = rec[head];
+				if (value === undefined) continue;
+				if (key === undefined) rejected.push(head);
+				else if ((value as Record<string, unknown>)[key] !== undefined) rejected.push(block);
+			}
+			const safe = structuredClone(rec);
+			for (const block of rejected) {
+				const [head, key] = block.split(".") as [string, string | undefined];
+				if (key === undefined) delete safe[head];
+				else delete (safe[head] as Record<string, unknown>)[key];
+			}
+			const changed = applyConfigPatch(cfg, safe as DeepPartial<RouterConfig>);
+			const catalogRefreshing = await applyLive(changed);
+			if (changed.length > 0) log.info("config reconfigured", { changed: changed.join(", ") });
+			if (rejected.length > 0) log.warn("config change needs a restart; not applied", { paths: rejected.join(", ") });
+			return { changed, rejected, catalogRefreshing };
+		},
 		stop: async () => {
 			configWatcher.close();
 			clearInterval(pruneTimer);

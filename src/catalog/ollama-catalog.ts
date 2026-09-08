@@ -218,10 +218,11 @@ export function loadOllamaCatalogCache(db: Database): { models: CatalogModel[]; 
 }
 
 export function createOllamaCatalog(cfg: OllamaConfig, log: Logger, fetchImpl: FetchLike = fetch, db?: Database): OllamaCatalogSource {
-	const root = ollamaApiRoot(cfg.baseUrl);
-	const direct = isOllamaDotCom(cfg.baseUrl);
-	const headers: Record<string, string> = {};
-	if (cfg.apiKey !== "") headers.authorization = `Bearer ${cfg.apiKey}`;
+	// `cfg` is the live config block: resolve per call so a changed base URL or
+	// key applies without a restart.
+	const root = (): string => ollamaApiRoot(cfg.baseUrl);
+	const direct = (): boolean => isOllamaDotCom(cfg.baseUrl);
+	const headers = (): Record<string, string> => (cfg.apiKey === "" ? {} : { authorization: `Bearer ${cfg.apiKey}` });
 	// Hydrate from disk so a restart peeks a real set before the first listing;
 	// listedAtMs stays 0 so the first get() still refreshes.
 	let models: CatalogModel[] = db === undefined ? [] : loadOllamaCatalogCache(db).models;
@@ -237,23 +238,23 @@ export function createOllamaCatalog(cfg: OllamaConfig, log: Logger, fetchImpl: F
 	const shown = new Map<string, { contextLength: number | null; capabilities: string[] }>();
 
 	async function list(): Promise<OllamaListing[]> {
-		const res = await fetchImpl(`${root}/api/tags`, { headers, signal: AbortSignal.timeout(cfg.timeoutMs) });
+		const res = await fetchImpl(`${root()}/api/tags`, { headers: headers(), signal: AbortSignal.timeout(cfg.timeoutMs) });
 		if (!res.ok) throw new Error(`ollama /api/tags HTTP ${res.status}`);
 		const json = asRec(await res.json());
 		const raw = json !== null && Array.isArray(json.models) ? json.models : [];
 		const out: OllamaListing[] = [];
 		for (const r of raw) {
-			const l = parseOllamaListing(r, direct ? "ollama.com" : "daemon");
+			const l = parseOllamaListing(r, direct() ? "ollama.com" : "daemon");
 			if (l !== null) out.push(l);
 		}
 		// ollama.com's listing has no context/capabilities; ask per model, once.
-		if (direct) {
+		if (direct()) {
 			for (const l of out) {
 				if (l.contextLength !== null && l.capabilities.length > 0) continue;
 				let s = shown.get(l.id);
 				if (s === undefined) {
 					try {
-						const r = await fetchImpl(`${root}/api/show`, {
+						const r = await fetchImpl(`${root()}/api/show`, {
 							method: "POST",
 							headers: { ...headers, "content-type": "application/json" },
 							body: JSON.stringify({ model: l.id }),

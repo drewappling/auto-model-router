@@ -1162,6 +1162,35 @@ router handles for you: no `models[]` fallback cascade, no `tool_choice`,
 `reasoning_effort` instead of the `reasoning` object, and no `cache_control`
 markers (they are stripped before dispatch).
 
+## Changing the config while it runs
+
+Ranking knobs have always hot-reloaded: every consumer reads the shared config
+object at call time, so editing `config.yml` changes the next turn. Since
+v0.7.0 that covers the settings that used to be captured at construction — the
+**OpenRouter key**, the whole **`ollama` block** (including turning it on or
+off), and the **agentdox bridge**. The clients read them per call, the catalogs
+re-fetch in the background, and the bridge is re-pointed in place. Only the
+bound socket (`server.*`) and the ledger file (`ledger.path`) still need a
+restart, because the process is built around them.
+
+An embedder gets the same thing as a call. `startServer` returns
+`reconfigure(patch)`:
+
+```ts
+const router = startServer(cfg);
+const { changed, rejected, catalogRefreshing } = await router.reconfigure({
+  openrouter: { apiKey: "sk-or-…" },
+  ollama: { enabled: true, apiKey: "…", baseUrl: "https://ollama.com/v1" },
+  context: { enabled: true, baseUrl: "http://agentdox:3003", token: "…" },
+});
+```
+
+`changed` lists the dotted paths that actually moved, `rejected` the ones that
+need a restart, and `catalogRefreshing` says whether an upstream change started
+a catalog re-fetch. No socket closes and no turn in flight is cut: the config
+object keeps its identity and only its leaves are written, which is what lets a
+client that bound `cfg.ollama` at construction see the new key.
+
 ## Harness-side model switch (experimental)
 
 Most engineers reach Claude through a subscription, not an API key, and a

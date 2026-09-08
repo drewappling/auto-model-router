@@ -83,7 +83,8 @@ export function createCompositeCatalog(
 	return {
 		async get(): Promise<CatalogSnapshot> {
 			const base = await openrouter.get();
-			const models = await ollama.get(base.models);
+			// Nothing to fetch while Ollama cannot serve (off, or its breaker open).
+			const models = availability.available() ? await ollama.get(base.models) : ollama.peek();
 			// Refreshes on its own poll interval; a cached reading returns at once.
 			await bias.usage.get();
 			return combine(base, models);
@@ -91,7 +92,7 @@ export function createCompositeCatalog(
 		async refresh(): Promise<CatalogSnapshot> {
 			const base = await openrouter.refresh();
 			ollama.invalidate();
-			const models = await ollama.get(base.models);
+			const models = availability.available() ? await ollama.get(base.models) : ollama.peek();
 			await bias.usage.get();
 			return combine(base, models);
 		},
