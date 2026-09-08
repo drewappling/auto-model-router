@@ -1,0 +1,31 @@
+name: unpublish
+
+# One-off, manual: remove a version that was published by mistake (npm allows
+# this within 72 hours of publishing). Only 0.2.33 / 0.2.34 are accepted: those
+# were re-published on 2026-09-08 by stale tags reaching GitHub late.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to unpublish (0.2.33 or 0.2.34)"
+        required: true
+        type: string
+
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Unpublish
+        run: |
+          case "${{ inputs.version }}" in
+            0.2.33|0.2.34) ;;
+            *) echo "refusing to unpublish ${{ inputs.version }}"; exit 1 ;;
+          esac
+          npm unpublish "auto-model-router@${{ inputs.version }}"
+          echo "remaining dist-tags:"; npm view auto-model-router dist-tags
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
