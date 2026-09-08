@@ -28,6 +28,7 @@ export interface SummaryWindow {
 	modelSwitches: number;
 	digests: number;
 	digestSpendUsd: number;
+	digestReruns: number;
 	subagentSpendUsd: number;
 }
 
@@ -81,6 +82,7 @@ function windowOf(r: UsageReport): SummaryWindow {
 		modelSwitches: t.modelSwitches,
 		digests: t.digests,
 		digestSpendUsd: t.digestSpendUsd,
+		digestReruns: t.digestReruns,
 		subagentSpendUsd: t.subagentSpendUsd,
 	};
 }
@@ -172,7 +174,7 @@ export function renderDailySummary(s: DailySummary): string {
 			out.push(b.savedShare >= 0 ? `saved ${pct(b.savedShare)} vs ${b.slug} (${usd(b.usd)} at list)` : `cost ${pct(-b.savedShare)} MORE than ${b.slug} (${usd(b.usd)} at list)`);
 		}
 		const extras: string[] = [];
-		if (c.digests > 0) extras.push(`${c.digests} digests for ${usd(c.digestSpendUsd)}`);
+		if (c.digests > 0) extras.push(`${c.digests} digests for ${usd(c.digestSpendUsd)} (re-run rate ${pct(c.digestReruns / c.digests)})`);
 		if (c.subagentSpendUsd > 0) extras.push(`subagents ${usd(c.subagentSpendUsd)}`);
 		if (extras.length > 0) out.push(extras.join(" · "));
 	}

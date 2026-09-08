@@ -95,7 +95,7 @@ describe("buildDailySummary", () => {
 			// Tiny seeded turns cost more than Opus would have at list price: the honest branch renders.
 			expect(text).toContain("cost 574% MORE than anthropic/claude-opus-5 ($0.079 at list)");
 			expect(renderDailySummary({ ...s, baseline: { slug: "anthropic/claude-opus-5", usd: 2.5, savedShare: 0.7876 } })).toContain("saved 79% vs anthropic/claude-opus-5 ($2.50 at list)");
-			expect(text).toContain("1 digests for $0.001");
+			expect(text).toContain("1 digests for $0.001 (re-run rate 0%)");
 			expect(text).toContain("soft failures SPIKING (1):\n  vendor/big: 50% of 8 failed in the last 1h (7d baseline 3% of 90)");
 			expect(text).toContain("ollama: pro plan $25.20 of $60 · ~23 days of credits left");
 		} finally {

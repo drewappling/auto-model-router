@@ -138,6 +138,9 @@ describe("captured harness requests", () => {
 		expect(req.harnessId).toBe("codex");
 		expect(req.requestedModel).toBe("auto");
 		expect(req.stream).toBe(true);
+		// The thread id in the body becomes the session id; the root agent is not a subagent.
+		expect(req.ompSessionId).toBe((f.body.client_metadata as { thread_id: string }).thread_id);
+		expect(req.isSubagent).toBe(false);
 		// instructions became the system message; the input items follow in order.
 		expect(req.messages.map((m) => m.role)).toEqual(["system", "developer", "user", "user"]);
 		expect(req.messages[0]?.text).toContain("coding agent running in the Codex CLI");

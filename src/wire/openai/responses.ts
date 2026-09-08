@@ -123,8 +123,35 @@ export function responsesToChatBody(body: unknown): Rec {
 	return out;
 }
 
+/**
+ * Codex carries its identity in the body, not in headers: the thread id under
+ * `client_metadata` (also the `prompt_cache_key`), and the agent name inside
+ * the JSON-encoded `x-codex-turn-metadata` (`/root` is the main agent). When
+ * the caller sent no X-Omp-Session / X-Omp-Subagent header, they are derived
+ * from those, so Codex gets per-session reports, feedback and the subagent
+ * profile without a plugin.
+ */
+export function identityHeadersFromBody(body: unknown, headers: Headers): Headers {
+	if (!isRec(body)) return headers;
+	const h = new Headers(headers);
+	const cm = isRec(body.client_metadata) ? body.client_metadata : {};
+	if ((h.get("x-omp-session") ?? "").trim() === "") {
+		const id = [cm.thread_id, cm.session_id, body.prompt_cache_key].find((v): v is string => typeof v === "string" && v !== "");
+		if (id !== undefined) h.set("x-omp-session", id);
+	}
+	if ((h.get("x-omp-subagent") ?? "").trim() === "" && typeof cm["x-codex-turn-metadata"] === "string") {
+		try {
+			const meta: unknown = JSON.parse(cm["x-codex-turn-metadata"]);
+			if (isRec(meta) && typeof meta.agent_name === "string" && meta.agent_name !== "" && meta.agent_name !== "/root") h.set("x-omp-subagent", "1");
+		} catch {
+			// Not JSON: no subagent signal.
+		}
+	}
+	return h;
+}
+
 export function parseResponsesRequest(body: unknown, headers: Headers): NormRequest {
-	const norm = parseChatRequest(responsesToChatBody(body), headers);
+	const norm = parseChatRequest(responsesToChatBody(body), identityHeadersFromBody(body, headers));
 	return { ...norm, protocol: "openai-responses" };
 }
 

@@ -376,6 +376,9 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
 	const pruneStmt = db.query("DELETE FROM ledger WHERE created_at_ms < ?");
+	// Ollama meter samples (one per usage poll) only matter for the current
+	// billing cycle's calibration; they age out with the ledger rows.
+	const pruneMeterStmt = db.query("DELETE FROM ollama_meter_samples WHERE at_ms < ?");
 	const wasteStmt = db.query("UPDATE ledger SET wasted = 1 WHERE id = ?");
 	const providerSpendStmt = db.query(
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND COALESCE(served_slug, slug) LIKE ?",
@@ -627,7 +630,9 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 		},
 		prune(retentionDays: number, nowMs = Date.now()): number {
 			if (retentionDays <= 0) return 0;
-			return pruneStmt.run(nowMs - retentionDays * DAY_MS).changes;
+			const cutoff = nowMs - retentionDays * DAY_MS;
+			pruneMeterStmt.run(cutoff);
+			return pruneStmt.run(cutoff).changes;
 		},
 		markWasted(id: string): void {
 			wasteStmt.run(id);

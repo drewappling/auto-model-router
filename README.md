@@ -430,12 +430,14 @@ wire_api = "responses"
 http_headers = { "X-Omp-Harness" = "codex" }
 ```
 
-Verified live with codex 0.153: the captured request is
-`test/fixtures/harness/codex-responses.json`. Stateless only — Codex sends
-`store: false` and the full input each turn; `previous_response_id` is
-rejected. Reasoning summaries and encrypted reasoning are not produced. No
-session id or hooks: reports are per harness, and there is no toast, digest
-or `/router`.
+Verified live with codex 0.153, text and tool-call turns: the captured
+request is `test/fixtures/harness/codex-responses.json`. Stateless only —
+Codex sends `store: false` and the full input each turn; `previous_response_id`
+is rejected. Reasoning summaries and encrypted reasoning are not produced.
+Codex's thread id (sent in the body) becomes the session id and its agent
+name marks subagents, so per-session reports, feedback over the HTTP API and
+the subagent profile work without a plugin. No hooks: there is no toast,
+digest or `/router`.
 
 ### Aider
 
@@ -447,10 +449,18 @@ aider --model openai/auto
 
 Verified live with aider 0.86 (captured request:
 `test/fixtures/harness/aider.json`). Aider sends no tool calls, so every turn
-classifies on its text alone, and no custom headers, so its rows carry no
-harness id unless you set one in a model settings file
-(`extra_params: { extra_headers: { X-Omp-Harness: aider } }`). No session
-id or hooks.
+classifies on its text alone. It sends no custom headers by default; a model
+settings file in the project adds the harness id (verified live):
+
+```yaml
+# .aider.model.settings.yml
+- name: openai/auto
+  extra_params:
+    extra_headers:
+      X-Omp-Harness: aider
+```
+
+No session id or hooks.
 
 ### Cline, Roo Code, Kilo Code
 
@@ -1101,6 +1111,25 @@ there); and the switch happens at prompt boundaries, never mid-turn.
 
 ## Multiple coding harnesses, one router
 
+**One router process for everything.** omp's embed extension binds a private
+router on an ephemeral port per session by default, while Hermes, Codex,
+OpenCode and Aider talk to a standalone router on port 8788. Those are two
+processes over two homes, and per-process state (pins, the digest re-run
+memory) and reports stay apart. To share one router:
+
+1. Run it once, before the harnesses start: `auto-model-router serve --port 8788`
+   (against the default home, `~/.auto-model-router`).
+2. Set `AUTO_MODEL_ROUTER_PORT=8788` in omp's environment. The embed then
+   attaches to the router already answering on that port instead of binding
+   its own (it still binds 8788 itself if nothing is there, which the others
+   then reuse).
+3. Point Hermes, Codex, OpenCode and Aider at `http://127.0.0.1:8788/v1` as
+   in their recipes. Hermes's provider plugin only spawns a router when
+   nothing listens on 8788, so it joins the shared one too.
+
+Each harness keeps its own `X-Omp-Harness` id, so budgets and reports stay
+per harness while the ledger, catalog and conversation state are shared.
+
 What each harness gets today. "Config only" means the OpenAI-compatible wire
 plus a harness header; the rest needs the harness's own hook API.
 
@@ -1108,7 +1137,7 @@ plus a harness header; the rest needs the harness's own hook API.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | omp | native provider | yes | yes | yes | yes | full hub | yes | yes | experimental |
 | Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
-| Codex CLI | Responses API wire | yes | no | no | no | no | compaction only | no | no |
+| Codex CLI | Responses API wire | yes | yes (from body) | yes (from body) | no | no | compaction only | no | no |
 | Aider | config only | via model settings | no | no | no | no | no tools | no | no |
 | Cline / Roo / Kilo | config only | if headers supported | no | no | no | no | compaction only | no | no |
 | OpenCode | config + plugin | yes | yes (plugin) | yes (plugin) | yes (plugin) | no | yes (plugin) | no | no |

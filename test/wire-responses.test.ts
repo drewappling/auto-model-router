@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { WireErrorException } from "../src/wire/openai/errors.ts";
-import { createResponsesBufferedSink, createResponsesStreamingSink, parseResponsesRequest, responsesToChatBody } from "../src/wire/openai/responses.ts";
+import { createResponsesBufferedSink, createResponsesStreamingSink, identityHeadersFromBody, parseResponsesRequest, responsesToChatBody } from "../src/wire/openai/responses.ts";
 import type { StreamEvent, TurnSummary, UpstreamChunk } from "../src/wire/types.ts";
 
 /**
@@ -65,6 +65,20 @@ describe("responsesToChatBody", () => {
 		expect(withImage.messages).toEqual([{ role: "user", content: [{ type: "text", text: "what is this" }, { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] }]);
 		expect(() => responsesToChatBody({ model: "auto", input: "x", previous_response_id: "resp_1" })).toThrow(WireErrorException);
 		expect(() => responsesToChatBody({ model: "auto", input: [] })).toThrow(WireErrorException);
+	});
+
+	test("Codex identity is read from the body when the headers carry none", () => {
+		const meta = (agent: string) => JSON.stringify({ session_id: "t1", thread_id: "t1", agent_name: agent, turn_id: "u1" });
+		const body = { model: "auto", input: "x", prompt_cache_key: "t1", client_metadata: { thread_id: "t1", session_id: "t1", "x-codex-turn-metadata": meta("/root") } };
+		const main = parseResponsesRequest(body, HEADERS);
+		expect(main.ompSessionId).toBe("t1");
+		expect(main.isSubagent).toBe(false);
+		const sub = parseResponsesRequest({ ...body, client_metadata: { ...body.client_metadata, "x-codex-turn-metadata": meta("/root/explorer") } }, HEADERS);
+		expect(sub.isSubagent).toBe(true);
+		// Explicit headers win; a body without metadata adds nothing.
+		expect(identityHeadersFromBody(body, new Headers({ "X-Omp-Session": "mine" })).get("x-omp-session")).toBe("mine");
+		expect(identityHeadersFromBody({ model: "auto", input: "x" }, HEADERS).get("x-omp-session")).toBeNull();
+		expect(identityHeadersFromBody({ model: "auto", input: "x", client_metadata: { "x-codex-turn-metadata": "not json" } }, HEADERS).get("x-omp-subagent")).toBeNull();
 	});
 
 	test("parseResponsesRequest yields a routed request tagged with the wire", () => {
