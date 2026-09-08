@@ -63,7 +63,7 @@ export const REMOTE_MODELS: readonly { id: string; name: string }[] = [
  * the session and subagent tags, and the virtual models. Costs are USD per
  * million tokens, like the embedded config.
  */
-export function remoteProviderRegistration(remote: RemoteRouter, sessionId: string, subagent: boolean, blend: { inputPerMtok: number; outputPerMtok: number }): {
+export function remoteProviderRegistration(remote: RemoteRouter, sessionId: string, subagent: boolean, blend: { inputPerMtok: number; outputPerMtok: number }, agentdoxScope = ""): {
 	baseUrl: string;
 	api: string;
 	apiKey: string;
@@ -73,6 +73,10 @@ export function remoteProviderRegistration(remote: RemoteRouter, sessionId: stri
 	const headers: Record<string, string> = {};
 	if (sessionId !== "") headers["X-Omp-Session"] = sessionId;
 	if (subagent) headers["X-Omp-Subagent"] = "1";
+	// Which project's shared context this workspace draws on. The bridge lives on the remote
+	// router, so this is sent whatever the local config says; the remote decides what to do with
+	// it (a team that pins a scope for the group overrides it, and one that pins none follows it).
+	if (agentdoxScope !== "") headers["X-Agentdox-Scope"] = agentdoxScope;
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
 	return {
 		baseUrl: `${remote.url}/v1`,

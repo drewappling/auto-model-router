@@ -22,6 +22,10 @@ describe("remote-logic", () => {
 		expect(reg).toMatchObject({ baseUrl: "https://team.example/v1", api: "openai-completions", apiKey: "amrt_k", headers: { "X-Omp-Session": "sess-1", "X-Omp-Subagent": "1" } });
 		expect(reg.models.map((m) => m.id)).toEqual(["auto", "auto-cheap", "auto-max"]);
 		expect(reg.models[0]!.cost).toEqual({ input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1.25 });
+		// The workspace's project travels with the turn, so one remote router serves every repo on
+		// the machine with the right context; the remote may still override it.
+		expect(reg.headers["X-Agentdox-Scope"]).toBeUndefined();
+		expect(remoteProviderRegistration(t, "", false, { inputPerMtok: 1, outputPerMtok: 4 }, "omp-router").headers).toEqual({ "X-Agentdox-Scope": "omp-router" });
 		const dir = mkdtempSync(join(tmpdir(), "amr-remote-"));
 		expect(readRemoteRouter(dir)).toBeNull();
 		writeFileSync(join(dir, "remote.json"), JSON.stringify({ url: "https://t", key: "k" }));

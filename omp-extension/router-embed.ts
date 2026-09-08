@@ -32,17 +32,7 @@ import type { RouterConfig } from "../src/config/types.ts";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import {
-	buildProviderConfig,
-	EMBED_DUMMY_API_KEY,
-	EMBED_PROVIDER_ID,
-	embedPortPath,
-	readEmbedPort,
-	modelsYmlPort,
-	probeEmbed,
-	resolveEmbedPort,
-	writeEmbedPort,
-} from "./embed-logic.ts";
+import { EMBED_DUMMY_API_KEY, EMBED_PROVIDER_ID, buildProviderConfig, deriveAgentdoxScope, embedPortPath, modelsYmlPort, probeEmbed, readEmbedPort, resolveEmbedPort, writeEmbedPort } from "./embed-logic.ts";
 
 /** omp's models.yml as text, or "" when it does not exist / cannot be read. */
 function readModelsYml(): string {
@@ -173,7 +163,7 @@ export default function (pi: ExtensionAPI): void {
 		// locally; the other extensions find it through remote.json.
 		const remote = readRemoteRouter(routerHome());
 		if (remote !== null) {
-			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend));
+			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend, deriveAgentdoxScope(process.cwd())));
 			pi.setLabel(`auto-model-router remote (${remote.url.replace(/^https?:\/\//, "")})`);
 			writeEmbedLog(`remote mode url=${remote.url} user=${remote.userId} session=${sessionId}`);
 			return;

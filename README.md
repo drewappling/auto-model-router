@@ -1267,6 +1267,11 @@ adds the Codex provider and the Aider settings, and prints (or with `--profile` 
 the environment lines for Claude Code. `--harness omp,hermes` restricts it; `--dry-run`
 shows the changes. Delete `remote.json` to go back to a local router. (`join` is an alias.)
 
+In remote mode omp sends `X-Agentdox-Scope` derived from the workspace folder, so one
+remote router serves every repo on the machine with that repo's shared context. The remote
+decides what to do with it: a team edition that pins a scope on the member's group
+overrides it, and one that pins none follows the workspace.
+
 ## Multiple coding harnesses, one router
 
 **One router process for everything.** omp's embed extension binds a private
