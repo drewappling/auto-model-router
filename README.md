@@ -706,7 +706,8 @@ escalation signal, error. Three views aggregate it, all from the same
   transcript. Falls back to reading the ledger directly if the router is
   unreachable.
 - `auto-model-router report --days 7 [--harness <id>] [--json]` on the terminal.
-- `GET /v1/router/report?days=7&harness=<id>` for dashboards.
+- `GET /v1/router/report?days=7&harness=<id>` for dashboards (`harness` may be
+  a comma-separated set of ids, for a group).
 - `GET /v1/router/summary?harness=<id>` — the daily summary as JSON (`auto=1`
   applies the once-a-day gate and returns `due: false` when nothing is due).
 

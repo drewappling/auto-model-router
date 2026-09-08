@@ -187,9 +187,20 @@ function toRow(r: RawRow, windowSpend: number): ReportRow {
 	};
 }
 
+/** A harness filter: one id, or several comma-separated (a team's members); empty ⇒ everything. */
+export function harnessFilter(harnessId: string, param = "$harness"): { sql: string[]; bind: Record<string, string> } {
+	const ids = harnessId.split(",").map((s) => s.trim()).filter((s) => s !== "");
+	if (ids.length === 0) return { sql: [], bind: {} };
+	if (ids.length === 1) return { sql: [`harness_id = ${param}`], bind: { [param]: ids[0]! } };
+	const bind: Record<string, string> = {};
+	ids.forEach((id, i) => (bind[`${param}${i}`] = id));
+	return { sql: [`harness_id IN (${ids.map((_, i) => `${param}${i}`).join(", ")})`], bind };
+}
+
 /**
  * Builds the report for the last `windowDays`. `harnessId` narrows to one
- * harness (the `X-Omp-Harness` header); empty means everything.
+ * harness (the `X-Omp-Harness` header) or a comma-separated set of them (a
+ * team edition group); empty means everything.
  */
 export function buildUsageReport(
 	db: Database,
@@ -200,12 +211,9 @@ export function buildUsageReport(
 	const sinceMs = nowMs - windowDays * 86_400_000;
 	const harnessId = opts.harnessId ?? "";
 	const untilMs = opts.untilMs;
-	const where = [
-		"created_at_ms >= $since",
-		...(untilMs === undefined ? [] : ["created_at_ms < $until"]),
-		...(harnessId === "" ? [] : ["harness_id = $harness"]),
-	].join(" AND ");
-	const bind = { $since: sinceMs, ...(untilMs === undefined ? {} : { $until: untilMs }), ...(harnessId === "" ? {} : { $harness: harnessId }) };
+	const hf = harnessFilter(harnessId);
+	const where = ["created_at_ms >= $since", ...(untilMs === undefined ? [] : ["created_at_ms < $until"]), ...hf.sql].join(" AND ");
+	const bind = { $since: sinceMs, ...(untilMs === undefined ? {} : { $until: untilMs }), ...hf.bind };
 
 	const t = db
 		.query(

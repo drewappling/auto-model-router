@@ -13,7 +13,7 @@
 
 import type { Database } from "bun:sqlite";
 import { TIER_ORDER } from "../router/types.ts";
-import { buildUsageReport, type BaselinePrice, type BaselineRow, type UsageReport } from "./report.ts";
+import { buildUsageReport, harnessFilter, type BaselinePrice, type BaselineRow, type UsageReport } from "./report.ts";
 import type { SoftFailureSpike } from "./types.ts";
 
 /** One 24-hour window's headline numbers. */
@@ -89,8 +89,9 @@ function windowOf(r: UsageReport): SummaryWindow {
 
 /** Counts tier moves up and down between consecutive kept turns of each conversation since `sinceMs`. */
 export function countTierChanges(db: Database, sinceMs: number, harnessId: string): { up: number; down: number } {
-	const where = harnessId === "" ? "created_at_ms >= $since" : "created_at_ms >= $since AND harness_id = $harness";
-	const bind = harnessId === "" ? { $since: sinceMs } : { $since: sinceMs, $harness: harnessId };
+	const hf = harnessFilter(harnessId);
+	const where = ["created_at_ms >= $since", ...hf.sql].join(" AND ");
+	const bind = { $since: sinceMs, ...hf.bind };
 	const seq = db
 		.query(`SELECT conversation_key AS ck, tier FROM ledger WHERE ${where} AND wasted = 0 AND requested_model <> 'digest' ORDER BY conversation_key, created_at_ms`)
 		.all(bind) as { ck: string; tier: string }[];
@@ -155,7 +156,7 @@ function delta(current: number, previous: number): string {
 
 /** Renders the summary as a few plain lines for the transcript. */
 export function renderDailySummary(s: DailySummary): string {
-	const scope = s.harnessId === "" ? "all harnesses" : `harness ${s.harnessId}`;
+	const scope = s.harnessId === "" ? "all harnesses" : s.harnessId.includes(",") ? `${s.harnessId.split(",").length} harnesses` : `harness ${s.harnessId}`;
 	const out: string[] = [`auto-model-router daily summary — last 24h (${scope})`];
 	const c = s.current;
 	if (c.dispatches === 0) {

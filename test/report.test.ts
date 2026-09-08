@@ -156,6 +156,20 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
+	test("a comma-separated harness list reports the union (a team group)", () => {
+		const { db, ledger } = seeded();
+		try {
+			ledger.record(entry({ harnessId: "u_a", reportedUsd: 1 }));
+			ledger.record(entry({ harnessId: "u_b", reportedUsd: 2 }));
+			ledger.record(entry({ harnessId: "u_c", reportedUsd: 4 }));
+			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_a,u_b" }).totals.spendUsd).toBeCloseTo(3, 6);
+			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: " u_c , u_a " }).totals.spendUsd).toBeCloseTo(5, 6);
+			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_b" }).totals.spendUsd).toBeCloseTo(2, 6);
+		} finally {
+			db.close();
+		}
+	});
+
 	test("prompt anatomy averages the recorded byte shares", () => {
 		const { db, ledger } = seeded();
 		const feat = (tool: number, older: number, stale: number) => ({ toolSchemaBytes: 1000, anatomy: { messages: 30, systemBytes: 1000, userBytes: 500, assistantBytes: 500, toolBytes: tool, olderHalfBytes: older, staleToolBytes: stale } });
