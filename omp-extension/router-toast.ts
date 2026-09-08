@@ -23,40 +23,17 @@
  * the poll authenticates.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
-import { parse as parseYaml } from "yaml";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import { embedPortPath, readEmbedPort } from "./embed-logic.ts";
-import { newestId, resolveRouterUrl, selectToasts, type ToastDecision } from "./toast-logic.ts";
+import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
+import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
 
 /** Raw router config.yml, or null when there is none to read. */
-function readRouterConfig(): string | null {
-	const raw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
-	const home =
-		raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
-	const path = join(home, "config.yml");
-	if (!existsSync(path)) return null;
-	try {
-		return readFileSync(path, "utf8");
-	} catch {
-		return null;
-	}
-}
 
 /** Absolute path of the shared embed port file (main session writes it). */
-function embedPortFile(): string {
-	const raw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
-	const home =
-		raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(homedir(), raw.slice(1)) : raw;
-	return embedPortPath(home);
-}
 
-const ROUTER_API_KEY = process.env.AUTO_MODEL_ROUTER_API_KEY;
 // This harness's id, matching the X-Omp-Harness header the router records.
 // Empty ⇒ toast every harness (single-harness default).
 const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
@@ -91,19 +68,13 @@ export default function (pi: ExtensionAPI): void {
 				// The embedded router binds a free OS-assigned port, so the URL
 				// is resolved fresh each tick from the port file the embed
 				// extension writes at session_start.
-				const embedPort = readEmbedPort(embedPortFile());
-				const routerUrl = resolveRouterUrl(
-					process.env.AUTO_MODEL_ROUTER_URL,
-					readRouterConfig(),
-					parseYaml,
-					process.env.AUTO_MODEL_ROUTER_PORT,
-					embedPort,
-				);
+				// Team-client mode resolves to the team endpoint with the member key.
+				const routerUrl = routerBaseUrl();
 
 				let res: Response;
 				try {
 					res = await fetch(`${routerUrl}/v1/router/decisions?limit=20`, {
-						headers: ROUTER_API_KEY === undefined ? {} : { authorization: `Bearer ${ROUTER_API_KEY}` },
+						headers: routerAuthHeaders(),
 						signal: AbortSignal.timeout(3_000),
 					});
 				} catch {

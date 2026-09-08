@@ -20,6 +20,8 @@ export interface CliArgs {
  */
 const BOOLEAN_FLAGS: Record<string, true> = {
 	json: true,
+	profile: true,
+	"dry-run": true,
 	write: true,
 	print: true,
 	help: true,
@@ -31,6 +33,7 @@ const COMMANDS: Record<string, true> = {
 	stats: true,
 	report: true,
 	export: true,
+	join: true,
 	models: true,
 	explain: true,
 	config: true,

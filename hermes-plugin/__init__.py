@@ -30,7 +30,11 @@ from providers.base import ProviderProfile
 
 # Fixed port the standalone router binds. Hermes points at this URL.
 PORT = int(os.environ.get("AUTO_MODEL_ROUTER_PORT", "8788"))
-BASE_URL = f"http://127.0.0.1:{PORT}/v1"
+# Team mode: `auto-model-router join` sets AUTO_MODEL_ROUTER_URL (and the key) in
+# $HERMES_HOME/.env; the plugin then points Hermes at the team endpoint and
+# spawns nothing locally.
+TEAM_URL = os.environ.get("AUTO_MODEL_ROUTER_URL", "").rstrip("/")
+BASE_URL = f"{TEAM_URL}/v1" if TEAM_URL else f"http://127.0.0.1:{PORT}/v1"
 
 # The router binary, provided by `npm install -g auto-model-router`.
 BIN = "auto-model-router"
@@ -94,8 +98,8 @@ def _spawn_router() -> None:
     raise RuntimeError(f"auto-model-router did not come up on port {PORT}")
 
 
-_spawn_router()
-
+if not TEAM_URL:
+    _spawn_router()
 profile = ProviderProfile(
     name="auto-model-router",
     api_mode="chat_completions",

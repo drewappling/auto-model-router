@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { ompModelsPath } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
+import { readTeamClient, teamProviderRegistration } from "./team-logic.ts";
 import type { StartedServer } from "../src/server/http.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 
@@ -166,6 +167,17 @@ export default function (pi: ExtensionAPI): void {
 		// The omp UI session id tags every request so the toast can scope its
 		// notifications to that exact session (see router-toast.ts).
 		const sessionId = ctx.sessionManager.getSessionId();
+
+		// Team-client mode (`auto-model-router join`): the team endpoint is the
+		// router. Register it as the provider with the member's key and bind
+		// nothing locally; the other extensions find the team through team.json.
+		const team = readTeamClient(routerHome());
+		if (team !== null) {
+			pi.registerProvider(EMBED_PROVIDER_ID, teamProviderRegistration(team, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend));
+			pi.setLabel(`auto-model-router team (${team.url.replace(/^https?:\/\//, "")})`);
+			writeEmbedLog(`team mode url=${team.url} user=${team.userId} session=${sessionId}`);
+			return;
+		}
 
 		// This module is cached per PROCESS, so `app` and `boundPort` are
 		// process-global even when omp loads the extension into more than one
