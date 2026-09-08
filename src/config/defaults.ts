@@ -322,6 +322,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 			shell: "bash",
 			web_extract: "web_fetch",
 			fetch_url: "web_fetch",
+			// Cline CLI 3.x
+			read_files: "read",
+			search_codebase: "grep",
+			run_commands: "bash",
+			fetch_web_content: "web_fetch",
 		},
 	},
 	report: {

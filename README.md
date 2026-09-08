@@ -462,16 +462,84 @@ settings file in the project adds the harness id (verified live):
 
 No session id or hooks.
 
-### Cline, Roo Code, Kilo Code
+### Cline CLI
+
+```bash
+cline auth -p openai -b http://127.0.0.1:8788/v1 -k local -m auto
+cline -P openai -m auto "your task"
+```
+
+Verified live with cline 3.0 (captured request:
+`test/fixtures/harness/cline-cli.json`). The CLI sends native tool calls
+(`read_files`, `search_codebase`, `run_commands`, `fetch_web_content`, …),
+all in `digest.toolAliases`, and no custom headers, so its rows carry no
+harness id. No session id or hooks.
+
+### Kilo Code CLI
+
+Kilo's CLI is built on OpenCode, so its config is OpenCode's with a different
+file name:
+
+```json
+// kilo.json in the project (or ~/.config/kilo/kilo.json)
+{
+  "provider": {
+    "auto-model-router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "auto-model-router",
+      "options": { "baseURL": "http://127.0.0.1:8788/v1", "apiKey": "local", "headers": { "X-Omp-Harness": "kilo" } },
+      "models": { "auto": { "name": "auto" }, "auto-cheap": { "name": "auto-cheap" } }
+    }
+  },
+  "model": "auto-model-router/auto"
+}
+```
+
+Verified live with kilo 7.5 (captured request:
+`test/fixtures/harness/kilo.json`); tool names match OpenCode's. The
+OpenCode plugin was not picked up from `.kilo/plugin`, `.opencode/plugin` or
+the config's `plugin` list in this test, so Kilo is config-only for now.
+
+### Roo Code (VS Code)
+
+Roo's welcome screen has *Import Settings*; a profile file skips the form:
+
+```json
+{
+  "providerProfiles": {
+    "currentApiConfigName": "auto-model-router",
+    "apiConfigs": {
+      "auto-model-router": {
+        "apiProvider": "openai",
+        "openAiBaseUrl": "http://127.0.0.1:8788/v1",
+        "openAiApiKey": "local",
+        "openAiModelId": "auto",
+        "openAiHeaders": { "X-Omp-Harness": "roo" },
+        "openAiCustomModelInfo": { "maxTokens": 8192, "contextWindow": 400000, "supportsImages": true, "supportsPromptCache": true, "inputPrice": 0, "outputPrice": 0 },
+        "id": "amr-0001"
+      }
+    }
+  }
+}
+```
+
+Verified live with Roo Code 3.54 (captured request:
+`test/fixtures/harness/roo.json`, including a tool round trip): native tool
+calls (`read_file`, `search_files`, `list_files`, `apply_diff`, …), all in
+`digest.toolAliases`, and the harness header through `openAiHeaders`. Two
+cautions: 3.54 announces itself as the last Roo Code release, and its
+Architect mode loops on a model that never calls `attempt_completion`, so
+start in Code mode or pin a stronger profile (`auto-max`) for it. No session
+id or hooks: the digest applies only through summarising compaction.
+
+### Cline (VS Code)
 
 Choose the *OpenAI Compatible* provider in the extension's settings, set the
 base URL to `http://127.0.0.1:8788/v1`, any API key, and the model id `auto`
-(or `auto-cheap` / `auto-max`). Where the extension offers custom headers,
-add `X-Omp-Harness` with the harness name. Their tool names
-(`read_file`, `search_files`, `execute_command`, `list_files`) are already
-in `digest.toolAliases`, but with no hook to intercept tool results the
-digest applies only through summarising compaction
-(`compaction.digestToolResults`), which runs inside the router.
+(or `auto-cheap` / `auto-max`); add `X-Omp-Harness` under custom headers if
+offered. Not verified live here (the CLI above was); its tool names are in
+`digest.toolAliases`, and the digest applies only through summarising
+compaction.
 
 ### OpenCode
 
@@ -1139,7 +1207,10 @@ plus a harness header; the rest needs the harness's own hook API.
 | Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
 | Codex CLI | Responses API wire | yes | yes (from body) | yes (from body) | no | no | compaction only | no | no |
 | Aider | config only | via model settings | no | no | no | no | no tools | no | no |
-| Cline / Roo / Kilo | config only | if headers supported | no | no | no | no | compaction only | no | no |
+| Cline CLI | config only | no | no | no | no | no | compaction only | no | no |
+| Kilo Code CLI | config only | yes | no | no | no | no | compaction only | no | no |
+| Roo Code (VS Code) | config only | yes | no | no | no | no | compaction only | no | no |
+| Cline (VS Code) | config only, unverified | if headers supported | no | no | no | no | compaction only | no | no |
 | OpenCode | config + plugin | yes | yes (plugin) | yes (plugin) | yes (plugin) | no | yes (plugin) | no | no |
 | Claude Code | needs an Anthropic Messages wire module | — | — | — | — | — | — | — | — |
 

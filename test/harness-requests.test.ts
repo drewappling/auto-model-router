@@ -131,6 +131,40 @@ describe("captured harness requests", () => {
 		expect(out.max_tokens).toBe(f.body.max_tokens);
 	});
 
+	test("cline cli 3.0: chat completions with native tool calls, no harness header", async () => {
+		const f = await fixture("cline-cli");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(f.headers["user-agent"]).toContain("ai-sdk/openai-compatible");
+		expect(req.harnessId).toBe("");
+		const names = req.tools.map((t) => t.name);
+		for (const n of ["read_files", "search_codebase", "run_commands", "fetch_web_content"]) {
+			expect(names).toContain(n);
+			expect(DEFAULT_CONFIG.digest.tools).toContain(canonicalTool(DEFAULT_CONFIG.digest, n));
+		}
+		expect("stream_options" in req.renderUpstreamBody(MUT)).toBe(false);
+	});
+
+	test("kilo cli 7.5: an OpenCode-derived request with the harness header and OpenCode tool names", async () => {
+		const f = await fixture("kilo");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(f.headers["user-agent"]).toContain("Kilo-Code");
+		expect(req.harnessId).toBe("kilo");
+		const names = req.tools.map((t) => t.name);
+		for (const n of ["read", "grep", "glob", "bash", "webfetch"]) expect(names).toContain(n);
+	});
+
+	test("roo code 3.54 (VS Code): native tool calls with a tool round trip and the harness header", async () => {
+		const f = await fixture("roo");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(f.headers["user-agent"]).toContain("RooCode");
+		expect(req.harnessId).toBe("roo");
+		const names = req.tools.map((t) => t.name);
+		for (const n of ["read_file", "search_files", "list_files", "apply_diff", "attempt_completion"]) expect(names).toContain(n);
+		expect(req.messages.some((m) => m.role === "tool")).toBe(true);
+		expect(req.messages.find((m) => m.role === "assistant" && m.toolCalls.length > 0)).toBeDefined();
+		expect("stream_options" in req.renderUpstreamBody(MUT)).toBe(false);
+	});
+
 	test("codex 0.153: Responses API body translates to a routed chat request", async () => {
 		const f = await fixture("codex-responses");
 		const req = parseResponsesRequest(structuredClone(f.body), new Headers(f.headers));
