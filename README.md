@@ -1149,6 +1149,13 @@ What happens once it is on:
   cooldown.
 - **Ollama reports no cost per response**, so the ledger records the
   predicted figure at list price for those rows.
+- **Ollama Cloud alone works.** With `ollama.enabled` and no OpenRouter key,
+  the router routes over Ollama's models only. OpenRouter's catalog is public,
+  so it is still read (the twins' benchmarks and capabilities come from it),
+  but its models are never candidates; `/health` lists what can serve under
+  `serving` (`["ollama"]`, `["openrouter","ollama"]`, …). Tier coverage is
+  whatever Ollama's catalog spans; a tier with nothing in it relaxes to the
+  best available band, as it does under any other narrowing.
 
 Ollama's compatibility layer differs from OpenRouter's in a few ways the
 router handles for you: no `models[]` fallback cascade, no `tool_choice`,

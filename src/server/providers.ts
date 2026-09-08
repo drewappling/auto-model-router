@@ -55,6 +55,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 			biasUntilUsage: cfg.ollama.biasUntilUsage,
 			usage: ollamaUsage,
 			live: () => ({ costBias: cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage }),
+			serveOpenRouter: () => cfg.openrouter.apiKey !== "",
 		}),
 		ollama,
 		ollamaUsage,

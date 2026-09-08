@@ -104,6 +104,8 @@ export function renderSoftFailureSpikes(spikes: readonly SoftFailureSpikeView[] 
 export interface HealthSnapshot {
 	status?: string;
 	apiKeyConfigured?: boolean;
+	/** Upstreams that can serve a turn right now (`openrouter` needs its key; `ollama` needs to be on and out of cooldown). */
+	serving?: string[];
 	apiKeySource?: string;
 	agentdox?: { url?: string; defaultScope?: string; recordTurns?: boolean } | null;
 	ollama?: {
@@ -133,7 +135,9 @@ const mins = (ms: number): string => (ms >= 3_600_000 ? `${(ms / 3_600_000).toFi
 /** Renders `/health` as a few plain lines for the transcript. */
 export function renderStatus(baseUrl: string, h: HealthSnapshot, nowMs = Date.now()): string {
 	const out: string[] = [`auto-model-router at ${baseUrl}: ${h.status ?? "unknown"}`];
-	out.push(`openrouter: key ${h.apiKeyConfigured === true ? `configured (${h.apiKeySource ?? "?"})` : "MISSING"}`);
+	const orKey = h.apiKeyConfigured === true ? `configured (${h.apiKeySource ?? "?"})` : h.serving?.includes("ollama") === true ? "missing · routing over ollama cloud only" : "MISSING";
+	out.push(`openrouter: key ${orKey}`);
+	if (h.serving !== undefined && h.serving.length === 0) out.push("serving: NOTHING (no OpenRouter key and Ollama off or cooling down)");
 	const c = h.catalog;
 	if (c !== undefined && c !== null) {
 		const shrink = c.shrink !== undefined && c.shrink !== null ? ` · SHRANK ${c.shrink.fromModels ?? "?"} -> ${c.shrink.toModels ?? "?"}` : "";

@@ -241,7 +241,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	}
 
 	if (cfg.openrouter.apiKey === "") {
-		log.warn("OPENROUTER_API_KEY is not set; /v1/chat/completions will fail at dispatch time");
+		if (ollama !== null) log.warn("no OpenRouter key: routing over Ollama Cloud models only (OpenRouter's catalog is read for metadata, never served)");
+		else log.warn("OPENROUTER_API_KEY is not set and Ollama is off; /v1/chat/completions will fail at dispatch time");
 	}
 	if (ollama !== null) {
 		log.info("ollama cloud upstream enabled", {
@@ -608,6 +609,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					return json({
 						status: "ok",
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
+						// Which upstreams turns can actually be served from: OpenRouter needs
+						// its key; Ollama needs to be on and out of cooldown.
+						serving: [...(cfg.openrouter.apiKey !== "" ? ["openrouter"] : []), ...(ollama !== null && ollama.available() ? ["ollama"] : [])],
 						// Provenance only; never the key itself.
 						apiKeySource: apiKeySource(cfg).source,
 						// Provenance only; never the agentdox token itself.

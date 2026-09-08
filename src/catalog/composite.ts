@@ -10,6 +10,13 @@
  * Ollama models are left out entirely: a candidate that will 402 or 429 is
  * not a candidate, and hiding it here means the turn routes straight to an
  * OpenRouter model instead of paying a doomed dispatch first.
+ *
+ * The same rule covers OpenRouter: without a key its models cannot be
+ * dispatched (its catalog is public, so they would still be listed), and
+ * `serveOpenRouter` leaves them out so an Ollama-only deployment routes over
+ * Ollama Cloud alone instead of picking models that 401 at dispatch time. The
+ * OpenRouter catalog is still fetched: Ollama's models borrow their twins'
+ * benchmarks and capabilities from it.
  */
 
 import type { OllamaAvailability } from "../upstream/ollama.ts";
@@ -25,6 +32,8 @@ export interface CompositeBias {
 	usage: OllamaUsageSource;
 	/** When given, read on every use instead of the static pair, so a config hot reload applies. */
 	live?: () => { costBias: number; biasUntilUsage: number };
+	/** False when OpenRouter cannot dispatch (no key): its models are listed for metadata only, never served. Default true. */
+	serveOpenRouter?: () => boolean;
 }
 
 export function createCompositeCatalog(
@@ -36,6 +45,7 @@ export function createCompositeCatalog(
 	let lastBase: CatalogSnapshot | null = null;
 	let lastOllama: readonly CatalogModel[] = [];
 	let lastAvailable = true;
+	let lastServeBase = true;
 	let lastBias = 1;
 	let merged: CatalogSnapshot | null = null;
 
@@ -47,13 +57,15 @@ export function createCompositeCatalog(
 
 	function combine(base: CatalogSnapshot, models: readonly CatalogModel[]): CatalogSnapshot {
 		const available = availability.available();
+		const serveBase = bias.serveOpenRouter?.() ?? true;
 		const providerBias = currentBias();
-		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable && providerBias === lastBias) return merged;
+		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable && serveBase === lastServeBase && providerBias === lastBias) return merged;
 		lastBase = base;
 		lastOllama = models;
 		lastAvailable = available;
+		lastServeBase = serveBase;
 		lastBias = providerBias;
-		merged = mergeSnapshots(base, available ? models : []);
+		merged = serveBase ? mergeSnapshots(base, available ? models : []) : { ...base, models: available ? [...models] : [] };
 		// A fresh object either way once anything changed; stamp the live bias so
 		// candidate scoring reads it off the snapshot it is ranking.
 		merged = { ...merged, providerBias: { ollama: providerBias } };

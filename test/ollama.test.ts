@@ -398,6 +398,32 @@ describe("multi upstream + composite catalog", () => {
 		expect(catalog.ollamaModels()).toHaveLength(3); // still known, just hidden
 		expect(mergeSnapshots(base, []).models).toBe(base.models);
 	});
+
+	test("without an OpenRouter key only the Ollama models are served; the OpenRouter catalog still feeds metadata and lookups", async () => {
+		const base: CatalogSnapshot = { models: OR_MODELS, fetchedAtMs: 1, keyScoped: false };
+		const openrouter: CatalogSource = { get: async () => base, refresh: async () => base, peek: () => base, find: (s) => OR_MODELS.find((m) => m.slug === s) };
+		const ollamaModels = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg: OLLAMA, log });
+		let available = true;
+		let keyed = false;
+		const source = { get: async () => ollamaModels, peek: () => ollamaModels, invalidate: () => {} };
+		const breaker = { available: () => available, cooldownUntilMs: () => null, lastTrip: () => null };
+		const catalog = createCompositeCatalog(openrouter, source, breaker, { costBias: 1, biasUntilUsage: 1, usage: NO_USAGE, serveOpenRouter: () => keyed });
+
+		const a = await catalog.get();
+		expect(a.models.map((m) => m.provider)).toEqual(["ollama", "ollama", "ollama"]);
+		expect(a.fetchedAtMs).toBe(1);
+		expect(await catalog.get()).toBe(a); // memoised while nothing changes
+		expect(catalog.find("z-ai/glm-5.3-flash")?.provider).toBe("openrouter"); // lookups (served-model attribution) still resolve
+		expect(a.models[0]?.quality).toEqual(OR_MODELS.find((m) => m.slug === "z-ai/glm-5.3-flash")?.quality); // twin metadata borrowed
+
+		available = false;
+		expect((await catalog.get()).models).toEqual([]); // nothing can serve: breaker open, no key
+		available = true;
+		keyed = true; // a hot-reloaded key brings OpenRouter back without a restart
+		const c = await catalog.get();
+		expect(c.models.length).toBe(OR_MODELS.length + 3);
+		expect(c).not.toBe(a);
+	});
 });
 
 describe("selection over a mixed catalog", () => {

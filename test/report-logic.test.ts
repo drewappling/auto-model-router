@@ -99,6 +99,8 @@ describe("renderStatus", () => {
 	test("degrades cleanly when sections are absent", () => {
 		const text = renderStatus("http://h", { status: "ok", apiKeyConfigured: false });
 		expect(text).toContain("key MISSING");
+		expect(renderStatus("http://h", { status: "ok", apiKeyConfigured: false, serving: ["ollama"] })).toContain("routing over ollama cloud only");
+		expect(renderStatus("http://h", { status: "ok", apiKeyConfigured: false, serving: [] })).toContain("serving: NOTHING");
 		expect(text).toContain("catalog: not fetched yet");
 		expect(text).toContain("ollama cloud: disabled");
 		expect(text).toContain("agentdox: off");
