@@ -1340,6 +1340,21 @@ sends the name itself, which the router does not accept as a scope (a scope is a
 lowercase slug) and falls back to its default. `--scope <slug>` pins one project for the
 whole machine instead; a refresh keeps a pin, and `connect --scope ""` removes it.
 
+### One file to install
+
+A remote that serves members can hand them this package as a single executable: the CLI
+compiled by `bun build --compile` for their operating system (`buildExecutable` in the
+library, one of `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`,
+`windows-x64`), with the package's own source files embedded. Nothing else is installed —
+no bun, no npm. omp still loads the extensions from disk and Hermes still copies its
+plugin, so the first `connect` from the executable writes the embedded files out under
+`<router home>/package/<version>/` and points every harness there; the executable itself
+becomes Claude Code's key helper and, with `--profile`, goes on PATH. `connect
+--setup-token <token>` trades a one-time onboarding token at the remote's
+`/setup/exchange` for the credential, so the install command carries no key at all.
+`remote.json` records the executable, and a refresh from inside omp keeps the helper
+pointed at it.
+
 ## Multiple coding harnesses, one router
 
 **One router process for everything.** omp's embed extension binds a private

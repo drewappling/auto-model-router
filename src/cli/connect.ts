@@ -25,11 +25,12 @@
  */
 
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
 import { SCOPE_ENV } from "../context/scope.ts";
+import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
 import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
 import { flagString, type CliArgs } from "./args.ts";
 
@@ -58,6 +59,12 @@ export interface ConnectOptions {
 	keyExpiresAtMs?: number;
 	refreshExpiresAtMs?: number;
 	device?: string;
+	/**
+	 * The compiled executable running this, when one is (see embedded.ts). It
+	 * becomes Claude Code's key helper and goes on PATH with --profile, and
+	 * remote.json records it so a refresh from omp keeps pointing at it.
+	 */
+	exePath?: string;
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -257,6 +264,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 				...(o.keyExpiresAtMs !== undefined ? { keyExpiresAtMs: o.keyExpiresAtMs } : {}),
 				...(o.refreshExpiresAtMs !== undefined ? { refreshExpiresAtMs: o.refreshExpiresAtMs } : {}),
 				...(o.device !== undefined && o.device !== "" ? { device: o.device } : {}),
+				...(o.exePath !== undefined && o.exePath !== "" ? { executable: o.exePath } : {}),
 			},
 			null,
 			2,
@@ -339,8 +347,9 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		const env: Record<string, unknown> = { ...((settings.env as Record<string, unknown> | undefined) ?? {}), ANTHROPIC_BASE_URL: o.url };
 		// Never leave a stale key beside the helper: the helper is the source now.
 		delete env.ANTHROPIC_API_KEY;
-		const entry = resolve(o.packageDir, "src", "index.ts").replaceAll("\\", "/");
-		const next = { ...settings, env, apiKeyHelper: `bun run "${entry}" token` };
+		// The executable is its own helper; under bun the source entry is.
+		const helper = o.exePath !== undefined && o.exePath !== "" ? `"${o.exePath.replaceAll("\\", "/")}" token` : `bun run "${resolve(o.packageDir, "src", "index.ts").replaceAll("\\", "/")}" token`;
+		const next = { ...settings, env, apiKeyHelper: helper };
 		const after = `${JSON.stringify(next, null, 2)}\n`;
 		if (after !== before) {
 			if (before !== "" && !o.dryRun) writeFileSync(`${settingsPath}.${new Date().toISOString().replaceAll(":", "-")}.bak`, before, "utf8");
@@ -358,11 +367,14 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 				const [k, ...v] = line.split("=");
 				Bun.spawnSync(["setx", k!, v.join("=")], { stdout: "ignore", stderr: "ignore" });
 			}
+			// Not setx for PATH: it truncates at 1024 characters and would eat the rest.
+			if (o.exePath !== undefined && o.exePath !== "") addToUserPathWindows(dirname(o.exePath));
 			report.notes.push("user environment variables set with setx; open a new terminal");
 		} else {
 			const shell = o.env.SHELL ?? "";
 			const rc = shell.includes("zsh") ? join(o.home, ".zshrc") : join(o.home, ".bashrc");
-			const block = `\n# auto-model-router remote (added by \`auto-model-router connect\`)\n${report.envLines.map((l) => `export ${l}`).join("\n")}\n`;
+			const pathLine = o.exePath !== undefined && o.exePath !== "" ? [`export PATH="${dirname(o.exePath)}:$PATH"`] : [];
+			const block = `\n# auto-model-router remote (added by \`auto-model-router connect\`)\n${[...report.envLines.map((l) => `export ${l}`), ...pathLine].join("\n")}\n`;
 			const before = existsSync(rc) ? readFileSync(rc, "utf8") : "";
 			if (!before.includes("# auto-model-router remote") && !before.includes("# auto-model-router team")) appendFileSync(rc, block, "utf8");
 			else write(rc, before.replace(/\n# auto-model-router (?:remote|team)[^\n]*\n(?:export [^\n]*\n)*/, block));
@@ -374,16 +386,84 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	return report;
 }
 
+/** What a team's one-time setup token is traded for. */
+export interface IssuedCredential {
+	key: string;
+	refreshToken: string;
+	keyExpiresAtMs?: number;
+	refreshExpiresAtMs?: number;
+	userId: string;
+	name: string;
+}
+
+/**
+ * Trades a one-time setup token for this machine's credential at the team's
+ * exchange route, so the install needs nothing on the machine but this
+ * program: the token is the only secret in the install command and dies on use.
+ */
+export async function exchangeSetupToken(url: string, token: string, device: string, fetchImpl: typeof fetch = fetch): Promise<IssuedCredential> {
+	const res = await fetchImpl(`${url}/setup/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token, device }), signal: AbortSignal.timeout(15_000) });
+	if (res.status === 401) throw new Error("the setup token was refused (expired or already used); get a new one from the team's portal");
+	if (!res.ok) throw new Error(`the team's setup exchange answered ${res.status}`);
+	const body = (await res.json()) as Record<string, unknown>;
+	if (typeof body.key !== "string" || body.key === "") throw new Error("the team's setup exchange returned no key");
+	return {
+		key: body.key,
+		refreshToken: typeof body.refreshToken === "string" ? body.refreshToken : "",
+		...(typeof body.keyExpiresAtMs === "number" ? { keyExpiresAtMs: body.keyExpiresAtMs } : {}),
+		...(typeof body.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: body.refreshExpiresAtMs } : {}),
+		userId: typeof body.userId === "string" ? body.userId : "",
+		name: typeof body.name === "string" ? body.name : "",
+	};
+}
+
+/** Adds `dir` to the user's PATH on Windows, once, through the registry-backed API rather than setx. */
+function addToUserPathWindows(dir: string): void {
+	const quoted = `'${dir.replaceAll("'", "''")}'`;
+	const script = `$d=${quoted}; $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $p) { $p='' }; if (($p -split ';') -notcontains $d) { [Environment]::SetEnvironmentVariable('Path', (($p.TrimEnd(';') + ';' + $d).TrimStart(';')), 'User') }`;
+	Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], { stdout: "ignore", stderr: "ignore" });
+}
+
+/**
+ * Where the harness integrations are read from. Under bun that is this
+ * package; in the compiled executable it is the copy written out from the
+ * executable's own embedded files.
+ */
+async function resolvePackageDir(): Promise<string> {
+	const embedded = await readEmbeddedPackage();
+	if (embedded === null) return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+	const raw = process.env.AUTO_MODEL_ROUTER_HOME ?? join(homedir(), ".auto-model-router");
+	return materializePackage(expand(raw, homedir()), embedded);
+}
+
 export async function connectCommand(args: CliArgs): Promise<void> {
 	const url = (flagString(args, "url") ?? process.env.AUTO_MODEL_ROUTER_URL ?? "").replace(/\/+$/, "");
-	const key = flagString(args, "key") ?? process.env.AUTO_MODEL_ROUTER_API_KEY ?? "";
-	if (url === "" || key === "") throw new Error("connect needs --url <remote router> and --key <its key>");
+	let key = flagString(args, "key") ?? process.env.AUTO_MODEL_ROUTER_API_KEY ?? "";
+	const setupToken = flagString(args, "setup-token") ?? "";
+	if (url === "" || (key === "" && setupToken === "")) throw new Error("connect needs --url <remote router> and either --key <its key> or --setup-token <one-time token from the team>");
 	const only = (flagString(args, "harness") ?? "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => s !== "");
 	const pathHas = (bin: string): boolean => Bun.which(bin) !== null;
-	const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-	// Verify the key against the route every router serves before touching anything.
+	const packageDir = await resolvePackageDir();
+	const exePath = executablePath();
 	let name = flagString(args, "name") ?? "";
 	let userId = flagString(args, "user-id") ?? "";
+	let device = flagString(args, "device") ?? "";
+	// A remote that issues short-lived keys hands these over beside the key.
+	let refreshToken = flagString(args, "refresh-token") ?? "";
+	let keyExpires = Number.parseInt(flagString(args, "key-expires") ?? "", 10);
+	let refreshExpires = Number.parseInt(flagString(args, "refresh-expires") ?? "", 10);
+	if (setupToken !== "") {
+		if (device === "") device = hostname();
+		const issued = await exchangeSetupToken(url, setupToken, device);
+		key = issued.key;
+		refreshToken = issued.refreshToken;
+		keyExpires = issued.keyExpiresAtMs ?? Number.NaN;
+		refreshExpires = issued.refreshExpiresAtMs ?? Number.NaN;
+		if (issued.userId !== "") userId = issued.userId;
+		if (issued.name !== "") name = issued.name;
+		console.log(`credential issued for ${name === "" ? userId : name} (device ${device})`);
+	}
+	// Verify the key against the route every router serves before touching anything.
 	try {
 		const res = await fetch(`${url}/v1/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
 		if (res.status === 401) throw new Error("the remote router rejected this key");
@@ -396,11 +476,6 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	// A single-project machine can label every request; a machine with several
 	// repos should leave it off and let the extensions send the workspace's own.
 	const scopeFlag = flagString(args, "scope");
-	// A remote that issues short-lived keys hands these over beside the key.
-	const refreshToken = flagString(args, "refresh-token") ?? "";
-	const keyExpires = Number.parseInt(flagString(args, "key-expires") ?? "", 10);
-	const refreshExpires = Number.parseInt(flagString(args, "refresh-expires") ?? "", 10);
-	const device = flagString(args, "device") ?? "";
 	const report = connectRemote({
 		url,
 		key,
@@ -419,7 +494,9 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 		...(Number.isFinite(keyExpires) ? { keyExpiresAtMs: keyExpires } : {}),
 		...(Number.isFinite(refreshExpires) ? { refreshExpiresAtMs: refreshExpires } : {}),
 		...(device === "" ? {} : { device }),
+		...(exePath === null ? {} : { exePath }),
 	});
+	if (exePath !== null) console.log(`executable ${exePath}; package files under ${packageDir}`);
 	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);
 	for (const s of report.skipped) console.log(`  skipped    ${s}`);

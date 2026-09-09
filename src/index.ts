@@ -13,6 +13,7 @@ import { configCommand } from "./cli/config-cmd.ts";
 import { explainCommand } from "./cli/explain.ts";
 import { exportCommand } from "./cli/export.ts";
 import { connectCommand } from "./cli/connect.ts";
+import { isCompiled, readEmbeddedPackage } from "./cli/embedded.ts";
 import { refreshCommand, tokenCommand } from "./cli/refresh.ts";
 import { modelsCommand } from "./cli/models.ts";
 import { reportCommand } from "./cli/report.ts";
@@ -27,7 +28,7 @@ Usage: auto-model-router <command> [options]
   stats      Show routed spend, per-model share, and escalation rates
   report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   export     One row per day, harness and model as CSV (--json for rows)
-  connect    Point this machine at a remote router (--url, --key[, --refresh-token]; --scope pins one project for the whole machine (default: each workspace's own); --profile persists the environment)
+  connect    Point this machine at a remote router (--url with --key[, --refresh-token] or --setup-token <one-time token from a team>; --scope pins one project for the whole machine (default: each workspace's own); --profile persists the environment and, from the compiled executable, PATH)
   refresh    Trade the refresh token for a new access key and re-write every harness config (--force: even when not near expiry)
   token      Print an access key that is good right now, refreshing first if needed (for a harness key-helper)
   models     Show what each complexity tier would consider, and why
@@ -56,7 +57,9 @@ async function main(): Promise<number> {
 	const args = parseArgv(process.argv.slice(2));
 
 	if (args.flags.has("version")) {
-		const pkg: unknown = await Bun.file(join(import.meta.dir, "..", "package.json")).json();
+		// The compiled executable has no package.json beside it; its embedded copy answers.
+		const embedded = await readEmbeddedPackage();
+		const pkg: unknown = embedded ?? (await Bun.file(join(import.meta.dir, "..", "package.json")).json());
 		const value =
 			typeof pkg === "object" && pkg !== null && "version" in pkg && typeof pkg.version === "string"
 				? pkg.version
@@ -108,7 +111,8 @@ async function main(): Promise<number> {
 	}
 }
 
-if (import.meta.main) {
+// The compiled executable loads this module from its entry, so it is never import.meta.main there.
+if (import.meta.main || isCompiled()) {
 	try {
 		const code = await main();
 		if (code !== 0) process.exit(code);

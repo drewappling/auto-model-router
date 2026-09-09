@@ -36,6 +36,12 @@ export interface RemoteRouter {
 	refreshExpiresAtMs?: number;
 	/** What the remote calls this machine. */
 	device?: string;
+	/**
+	 * The compiled executable that ran `connect`, when one did. A refresh from
+	 * inside omp re-writes every harness config and must point Claude Code's key
+	 * helper at it, not at a `bun run` of the extracted source.
+	 */
+	executable?: string;
 }
 
 export function remoteFilePath(routerHome: string): string {
@@ -59,6 +65,7 @@ export function parseRemoteRouter(text: string): RemoteRouter | null {
 			...(typeof raw.keyExpiresAtMs === "number" ? { keyExpiresAtMs: raw.keyExpiresAtMs } : {}),
 			...(typeof raw.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: raw.refreshExpiresAtMs } : {}),
 			...(typeof raw.device === "string" && raw.device !== "" ? { device: raw.device } : {}),
+			...(typeof raw.executable === "string" && raw.executable !== "" ? { executable: raw.executable } : {}),
 		};
 	} catch {
 		return null;

@@ -13,6 +13,7 @@
  * its own expiry, so a session still holding it is never cut.
  */
 
+import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,7 +90,12 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 	const rh = opts.routerHome ?? routerHome();
 	const fresh = await refreshCredential(opts.remote, opts.fetchImpl ?? fetch, rh, opts.storeDeps ?? {});
 	const home = opts.home ?? (process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir());
-	const packageDir = opts.packageDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+	// The compiled executable rewrites from its own extracted package and keeps
+	// itself as the key helper; the omp extension, running from that extracted
+	// package, learns the executable from remote.json.
+	const embedded = opts.packageDir === undefined ? await readEmbeddedPackage() : null;
+	const packageDir = opts.packageDir ?? (embedded === null ? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..") : materializePackage(rh, embedded));
+	const exePath = opts.remote.executable ?? executablePath() ?? undefined;
 	connectRemote({
 		url: opts.remote.url,
 		key: fresh.key,
@@ -110,6 +116,7 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 		// The store that already holds it keeps it; a machine never silently changes store.
 		...(opts.remote.refreshTokenStore !== undefined ? { store: opts.remote.refreshTokenStore } : {}),
 		...(opts.storeDeps !== undefined ? { storeDeps: opts.storeDeps } : {}),
+		...(exePath !== undefined ? { exePath } : {}),
 		// undefined keeps whatever scope the managed models.yml block already carries.
 	});
 	return fresh;
