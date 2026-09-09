@@ -242,6 +242,8 @@ describe("verbose toast", () => {
 		expect(whyReasons(undefined)).toEqual([]);
 		// At most two lines, however many reasons the router recorded.
 		expect(whyReasons(["failover: a", "policy: b", "held: c", "cache warm"]).length).toBe(2);
+		// The same fact recorded twice from different angles takes one line, not both.
+		expect(whyReasons(["policy: pinned to ollama/gpt-oss:20b", "pinned to ollama/gpt-oss:20b by session override"])).toEqual(["policy: pinned to ollama/gpt-oss:20b"]);
 	});
 
 	test("an unreported cost falls back to the prediction, and thin decisions stay short", () => {

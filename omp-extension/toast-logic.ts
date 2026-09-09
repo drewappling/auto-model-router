@@ -152,14 +152,13 @@ const clip = (text: string, max: number): string => (text.length > max ? `${text
 export function whyReasons(reasons: readonly string[] | undefined, limit = 2): string[] {
 	if (reasons === undefined || reasons.length === 0) return [];
 	const picked: string[] = [];
-	const seen = new Set<number>();
+	// One line per category: the router often records the same fact twice from
+	// different angles ("policy: pinned to x" beside "pinned to x by session
+	// override"), and a toast that says it twice has wasted half its room.
 	for (const re of REASON_PRIORITY) {
-		for (let i = 0; i < reasons.length && picked.length < limit; i++) {
-			const r = reasons[i];
-			if (r === undefined || seen.has(i) || !re.test(r)) continue;
-			seen.add(i);
-			picked.push(clip(r.replace(/\s+/g, " ").trim(), 90));
-		}
+		const hit = reasons.find((r) => re.test(r));
+		if (hit === undefined) continue;
+		picked.push(clip(hit.replace(/\s+/g, " ").trim(), 90));
 		if (picked.length >= limit) break;
 	}
 	// Nothing matched a pattern: the first reason is the ranking rationale itself.
