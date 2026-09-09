@@ -95,6 +95,7 @@ const filters = z.strictObject({
 	trustScopedByHarness: z.boolean().optional(),
 	trustWindowDays: z.number().nonnegative().optional(),
 	contextHeadroom: z.number().positive().optional(),
+	reasoningCompletionFloor: z.number().int().nonnegative().optional(),
 	latencyWeight: z.number().nonnegative().optional(),
 	latencyReferenceMs: z.number().positive().optional(),
 	latencyReferenceTokensPerSec: z.number().positive().optional(),

@@ -907,6 +907,7 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 | `minTrustSamples` | `12` | Attempts before trust is enforced. |
 | `trustScopedByHarness` | `false` | `true` = each harness reads only its own trust rows. |
 | `contextHeadroom` | `1.25` | Fraction of context kept free (a model must fit prompt × this). |
+| `reasoningCompletionFloor` | `512` | Smallest completion budget a **reasoning** model is dispatched with. A reasoning model spends the budget thinking before it answers, so a caller's tight cap (omp asks ~12 tokens for a conversation title) returns nothing: measured on `ollama/gpt-oss:20b`, which hit the cap having produced no content and cost a dead dispatch plus a failover. Raised only for models that reason, never above the model's own ceiling, and a cap is an upper bound so a direct answer still stops early. 0 disables. |
 | `latencyWeight` | `0` | How hard to penalise slow models in scoring (soft multiplier on effective cost). `0` disables it. |
 | `latencyMinSamples` | `20` | Streamed samples before latency is judged against a model. |
 | `cacheReliabilityMinSamples` | `10` | Warm-expected samples before a model's observed cache hit rate discounts its "stay warm" price in the stay/switch comparison. A model whose cache misses when it should be warm (measured: 5-6% on glm/gemini, 11% on ling, 50% on nex) is kept less eagerly. `0` assumes every cache is reliable. |

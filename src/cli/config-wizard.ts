@@ -189,6 +189,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.trustScopedByHarness", label: "Scope trust per harness", kind: "boolean" },
 			{ path: "filters.trustWindowDays", label: "Trust window", kind: "number", min: 0, hint: "days, 0=all time" },
 			{ path: "filters.contextHeadroom", label: "Context headroom", kind: "number", min: 1 },
+			{ path: "filters.reasoningCompletionFloor", label: "Reasoning completion floor", kind: "number", min: 0 },
 			{ path: "filters.latencyWeight", label: "Latency weight", kind: "number", min: 0, hint: "0=ignore speed" },
 			{ path: "filters.latencyReferenceMs", label: "Latency reference TTFT", kind: "number", min: 1, hint: "ms" },
 			{ path: "filters.latencyReferenceTokensPerSec", label: "Latency reference speed", kind: "number", min: 1, hint: "tok/s" },

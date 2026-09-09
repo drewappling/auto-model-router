@@ -114,6 +114,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// opt-in after a replay run prices it.
 		trustWindowDays: 0,
 		contextHeadroom: 1.25,
+		// Enough for a short chain of thought plus a brief answer. Measured against
+		// the failure it fixes: gpt-oss:20b and nemotron-3-nano returned empty at a
+		// 12-token cap, then failed over.
+		reasoningCompletionFloor: 512,
 		// Latency scoring is off by default (weight 0): opt in after establishing a
 		// baseline. Expected total wait (TTFT + expected completion / throughput)
 		// above the references inflates a model's effective cost.

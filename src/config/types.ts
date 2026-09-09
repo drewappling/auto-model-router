@@ -221,6 +221,21 @@ export interface FilterConfig {
 	includeFree: boolean;
 	/** Require `supported_parameters` to include `tools` whenever the request offers tools. */
 	requireToolSupport: boolean;
+	/**
+	 * Smallest completion budget a REASONING model is dispatched with, tokens.
+	 *
+	 * A reasoning model spends the budget thinking before it answers, so a
+	 * caller's tight cap returns nothing at all: omp asks for ~12 tokens for a
+	 * conversation title, and `ollama/gpt-oss:20b` hit the cap having produced
+	 * no content, which cost a dead dispatch and a failover to another model.
+	 * When the chosen model reasons and the caller asked for less than this, the
+	 * dispatch is raised to this floor (never above the model's own completion
+	 * ceiling). Models that answer directly keep the caller's cap.
+	 *
+	 * A cap is an upper bound, not a target — a model that answers in ten tokens
+	 * still stops at ten. 0 disables the floor.
+	 */
+	reasoningCompletionFloor: number;
 	/** Drop models whose ledger success rate is below this, once `minTrustSamples` is met. */
 	minTrust: number;
 	/**

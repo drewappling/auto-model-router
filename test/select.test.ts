@@ -82,9 +82,11 @@ function run(opts: {
 	tier?: Tier;
 	ledger?: Ledger | null;
 	harnessId?: string;
+	maxTokens?: number;
 }) {
 	const cfg = opts.cfg ?? BASE;
-	const req = request(opts.userText ?? "tidy the retry helper");
+	const base = request(opts.userText ?? "tidy the retry helper");
+	const req = opts.maxTokens === undefined ? base : { ...base, maxTokens: opts.maxTokens };
 	const features = extractFeatures(req, opts.promptTokens ?? 4000);
 	const heuristic = scoreHeuristic(features, cfg);
 	const classification = opts.tier === undefined ? heuristic : { ...heuristic, tier: opts.tier };
@@ -351,6 +353,31 @@ describe("decision shape", () => {
 		if (ceiling !== undefined && d.maxTokens !== undefined) {
 			expect(d.maxTokens).toBeLessThanOrEqual(ceiling);
 		}
+	});
+
+	test("a reasoning model gets the completion floor; a direct one keeps the caller's cap", () => {
+		const usable = (m: (typeof MODELS)[number]): boolean => m.supportsTools && m.contextLength >= 32_000 && (m.maxCompletionTokens ?? 100_000) >= 4096;
+		const thinker = MODELS.find((m) => usable(m) && m.supportsReasoning);
+		const direct = MODELS.find((m) => usable(m) && !m.supportsReasoning && !m.reasoningMandatory);
+		expect(thinker).toBeDefined();
+		expect(direct).toBeDefined();
+		const withFloor = (slug: string, floor: number): RouterConfig => ({ ...BASE, filters: { ...BASE.filters, allow: [slug], reasoningCompletionFloor: floor } });
+
+		// omp asks for a dozen tokens for a title; a reasoning model would spend them thinking
+		// and return nothing, so the dispatch is raised.
+		const raised = run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 12 });
+		expect(raised.slug).toBe(thinker!.slug);
+		expect(raised.maxTokens).toBe(512);
+		expect(raised.reasons.some((r) => r.includes("reasons before it answers"))).toBe(true);
+
+		// A model that answers directly is untouched: its cap is the caller's.
+		const kept = run({ tier: "trivial", cfg: withFloor(direct!.slug, 512), maxTokens: 12 });
+		expect(kept.slug).toBe(direct!.slug);
+		expect(kept.maxTokens).toBe(12);
+
+		// The floor never raises past what the caller already asked for, and 0 disables it.
+		expect(run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 4000 }).maxTokens).toBe(4000);
+		expect(run({ tier: "trivial", cfg: withFloor(thinker!.slug, 0), maxTokens: 12 }).maxTokens).toBe(12);
 	});
 
 	test("plans a probe for cheap tiers and leaves the top tier unprobed", () => {

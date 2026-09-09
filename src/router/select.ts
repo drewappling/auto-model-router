@@ -608,6 +608,18 @@ export function select(args: SelectArgs): Decision {
 		// The ceiling is a hard limit anyway; passing it explicitly also caps runaway completions.
 		maxTokens = maxTokens === undefined ? ceiling : Math.min(maxTokens, ceiling);
 	}
+	// A reasoning model spends the budget thinking before it answers, so a caller's
+	// tight cap returns nothing and the turn fails over having paid for the dispatch.
+	// Raise it to the floor for those models only; the ceiling still wins.
+	const floor = cfg.filters.reasoningCompletionFloor;
+	const thinksBeforeAnswering = chosen.model.reasoningMandatory || (chosen.model.supportsReasoning && reasoning !== "off");
+	if (floor > 0 && thinksBeforeAnswering && maxTokens !== undefined && maxTokens < floor) {
+		const raised = ceiling === undefined ? floor : Math.min(floor, ceiling);
+		if (raised > maxTokens) {
+			reasons.push(`completion budget raised ${maxTokens} → ${raised}: ${chosen.model.slug} reasons before it answers`);
+			maxTokens = raised;
+		}
+	}
 	const stripAssistantReasoning = !(chosen.model.supportsReasoning && REASONING_REPLAY_AUTHORS[chosen.model.author] === true);
 
 	// The recorded forecast is the EXPECTED price of this dispatch, not the
