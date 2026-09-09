@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
 import { SCOPE_ENV } from "../context/scope.ts";
 import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
+import { fetchSkills, installSkills, type SkillsBundle, type SkillsInstallReport, type SkillsTarget } from "./skills.ts";
 import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
 import { flagString, type CliArgs } from "./args.ts";
 
@@ -65,6 +66,8 @@ export interface ConnectOptions {
 	 * remote.json records it so a refresh from omp keeps pointing at it.
 	 */
 	exePath?: string;
+	/** The remote's skills bundle, installed into every configured harness that reads user-level skills. */
+	skills?: SkillsBundle;
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -75,6 +78,8 @@ export interface ConnectReport {
 	skipped: string[];
 	envLines: string[];
 	notes: string[];
+	/** What the remote's skills bundle did, when there was one. */
+	skills?: SkillsInstallReport;
 }
 
 const expand = (raw: string, home: string): string => (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(home, raw.slice(1)) : raw);
@@ -360,6 +365,17 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	report.envLines.unshift(`AUTO_MODEL_ROUTER_URL=${o.url}`, `AUTO_MODEL_ROUTER_API_KEY=${o.key}`);
 	report.envLines = [...new Set(report.envLines)];
 
+	// 6b. The remote's skills, into the harnesses configured above that read a
+	// user-level skills directory. Hermes, Codex and Aider have none we know of.
+	if (o.skills !== undefined) {
+		const targets: SkillsTarget[] = [];
+		if (report.configured.some((c) => c.startsWith("omp ("))) targets.push({ harness: "omp", dir: join(agentDir, "skills") });
+		if (report.configured.some((c) => c.startsWith("Claude Code ("))) targets.push({ harness: "Claude Code", dir: join(claudeDir, "skills") });
+		report.skills = installSkills(o.skills, targets, rh, o.dryRun);
+		if (report.skills.placed.length > 0) report.configured.push(`skills ${o.skills.version} (${report.skills.placed.join(", ")})`);
+		for (const s of report.skills.skipped) report.notes.push(`skill ${s}`);
+	}
+
 	// 7. Persist the environment.
 	if (o.profile && !o.dryRun) {
 		if (o.platform === "win32") {
@@ -445,6 +461,7 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	const pathHas = (bin: string): boolean => Bun.which(bin) !== null;
 	const packageDir = await resolvePackageDir();
 	const exePath = executablePath();
+	const fetchImpl = fetch;
 	let name = flagString(args, "name") ?? "";
 	let userId = flagString(args, "user-id") ?? "";
 	let device = flagString(args, "device") ?? "";
@@ -476,6 +493,8 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	// A single-project machine can label every request; a machine with several
 	// repos should leave it off and let the extensions send the workspace's own.
 	const scopeFlag = flagString(args, "scope");
+	// The remote's skills for the agents on this machine; a remote without any serves 404.
+	const skills = await fetchSkills(url, key, fetchImpl);
 	const report = connectRemote({
 		url,
 		key,
@@ -495,7 +514,9 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 		...(Number.isFinite(refreshExpires) ? { refreshExpiresAtMs: refreshExpires } : {}),
 		...(device === "" ? {} : { device }),
 		...(exePath === null ? {} : { exePath }),
+		...(skills.bundle === null ? {} : { skills: skills.bundle }),
 	});
+	if (skills.note !== undefined) report.notes.push(skills.note);
 	if (exePath !== null) console.log(`executable ${exePath}; package files under ${packageDir}`);
 	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);

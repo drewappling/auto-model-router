@@ -24,5 +24,6 @@ export { spendUsdSince, feedbackView, exportRows, exportCsv, harnessScopeParam, 
 export { createLedger } from "./cost/ledger.ts";
 export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./cost/feedback.ts";
 export { buildExecutable, collectPackageFiles, executableFileName, hostTarget, isExecutableTarget, EXECUTABLE_TARGETS, type ExecutableTarget, type BuildExecutableResult } from "./cli/build-executable.ts";
+export { parseSkillsBundle, type SkillsBundle } from "./cli/skills.ts";
 export type { RequestPolicy } from "./wire/types.ts";
 export type { Ledger, LedgerEntry } from "./cost/types.ts";

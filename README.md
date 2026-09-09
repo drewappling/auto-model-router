@@ -1355,6 +1355,16 @@ becomes Claude Code's key helper and, with `--profile`, goes on PATH. `connect
 `remote.json` records the executable, and a refresh from inside omp keeps the helper
 pointed at it.
 
+### The remote's skills come along
+
+A remote that serves a skills bundle (`GET <url>/setup/skills` with the member key: a
+version and a list of `{ name, files }`, each with a `SKILL.md`) has it installed by
+`connect`, and by every refresh, into the harnesses it configured that read user-level
+skills: Claude Code's `~/.claude/skills/<name>/` and omp's `~/.omp/agent/skills/<name>/`.
+`<router home>/skills-installed.json` records what was placed, so an update removes what
+the bundle no longer carries, and a skill of the same name the member wrote themselves is
+left alone with a note. A remote without skills answers 404 and nothing happens.
+
 ## Multiple coding harnesses, one router
 
 **One router process for everything.** omp's embed extension binds a private
