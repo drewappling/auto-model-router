@@ -108,7 +108,7 @@ describe("static catalog", () => {
 		applyConfigPatch(cfg, { upstreams: [{ id: "vllm", kind: "openai", baseUrl: "http://vllm:8000/v1", models: [{ id: "llama", input: 0, output: 0 }] }] } as never);
 		const second = src.get(twins);
 		expect(second).not.toBe(first);
-		expect(second[0]!.isFree).toBe(true);
+		expect(second[0]!.isFree).toBe(false); // $0 self-hosted models must not fall under the free-tier exclusion
 	});
 });
 

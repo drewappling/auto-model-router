@@ -82,7 +82,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 	};
 	const namedServing = (): string[] => cfg.upstreams.filter((u) => u.enabled && namedServingOne(u.id)).map((u) => u.id);
 	const staticCatalog = createStaticCatalogSource(cfg, log);
-	setKnownUpstreamIds(cfg.upstreams.map((u) => u.id));
+	setKnownUpstreamIds(() => cfg.upstreams.map((u) => u.id));
 	return {
 		upstream: createMultiUpstream(openrouter, ollama, named, () => cfg.upstreams.map((u) => u.id)),
 		catalog: createCompositeCatalog(openrouterCatalog, createOllamaCatalog(cfg.ollama, log, fetch, db), { available: ollamaServing, cooldownUntilMs: () => ollama.cooldownUntilMs(), lastTrip: () => ollama.lastTrip() }, {

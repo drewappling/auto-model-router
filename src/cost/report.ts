@@ -138,12 +138,14 @@ const PT = "json_extract(usage, '$.promptTokens')";
 const CT = "json_extract(usage, '$.cachedTokens')";
 const COMP = "json_extract(usage, '$.completionTokens')";
 /** Named upstream ids the ledger's provider derivation knows; set by createProviders from the live config. */
-let knownUpstreamIds: readonly string[] = [];
-export function setKnownUpstreamIds(ids: readonly string[]): void {
-	knownUpstreamIds = ids.filter((id) => /^[a-z0-9][a-z0-9-]{0,31}$/.test(id));
+let knownUpstreamIds: () => readonly string[] = () => [];
+/** Ids, or a getter read live so a hot-reloaded list applies; an embedder (the team edition) calls this too, since the registry is per process. */
+export function setKnownUpstreamIds(ids: readonly string[] | (() => readonly string[])): void {
+	const read = typeof ids === "function" ? ids : () => ids;
+	knownUpstreamIds = () => read().filter((id) => /^[a-z0-9][a-z0-9-]{0,31}$/.test(id));
 }
 export function knownUpstreams(): readonly string[] {
-	return knownUpstreamIds;
+	return knownUpstreamIds();
 }
 /** The provider of a slug: its namespace when that names a known upstream, else OpenRouter's own. */
 export function providerOfSlug(slug: string): string {
@@ -151,13 +153,13 @@ export function providerOfSlug(slug: string): string {
 	const cut = slug.indexOf("/");
 	if (cut > 0) {
 		const head = slug.slice(0, cut);
-		if (knownUpstreamIds.includes(head)) return head;
+		if (knownUpstreamIds().includes(head)) return head;
 	}
 	return "openrouter";
 }
 /** SQL twin of providerOfSlug; ids are validated to a slug alphabet so they can be inlined. */
 function providerCase(): string {
-	return `CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ${knownUpstreamIds.map((id) => `WHEN slug LIKE '${id}/%' THEN '${id}'`).join(" ")} ELSE 'openrouter' END`;
+	return `CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ${knownUpstreamIds().map((id) => `WHEN slug LIKE '${id}/%' THEN '${id}'`).join(" ")} ELSE 'openrouter' END`;
 }
 const STREAMED = "ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL";
 const EST = "json_extract(usage, '$.cachedEstimated') = 1";

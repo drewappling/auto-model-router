@@ -30,6 +30,7 @@ import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { configInputSchema } from "./schema.ts";
 import { assignInPlace } from "./apply.ts";
+import { completeUpstreams } from "./upstreams.ts";
 import { DEFAULT_CONFIG } from "./defaults.ts";
 import { deepMerge, resolveTilde } from "./load.ts";
 import type { RouterConfig } from "./types.ts";
@@ -182,6 +183,8 @@ export function watchConfig(
 		// One in-place pass over the whole config: block identity survives, and a
 		// knob deleted from the file reverts, exactly as a restart would leave it.
 		const changed = assignInPlace(live as unknown as Record<string, unknown>, staged, "", { prune: true });
+		// A reloaded upstream list is as sparse as the file; clients read complete records.
+		if (changed.some((c) => c === "upstreams" || c.startsWith("upstreams."))) completeUpstreams(live);
 		if (changed.length > 0) opts.onReload?.({ changed });
 	};
 

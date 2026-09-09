@@ -47,7 +47,8 @@ export function buildUpstreamModels(entry: UpstreamEntry, openrouter: readonly C
 			priceTiers: [],
 			quality: m.quality !== undefined ? { ...m.quality } : twin === null ? {} : { ...twin.quality },
 			tokenizer: tokenizerFor(entry.kind, twin),
-			isFree: m.input === 0 && m.output === 0,
+			// A $0 model here is a self-hosted server, not a public provider's rate-limited free tier: never excluded as "free".
+			isFree: false,
 			createdAtMs: twin?.createdAtMs ?? 0,
 			author: entry.id,
 		};
