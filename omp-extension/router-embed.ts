@@ -34,6 +34,19 @@ import type { RouterConfig } from "../src/config/types.ts";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import { EMBED_DUMMY_API_KEY, EMBED_PROVIDER_ID, buildProviderConfig, deriveAgentdoxScope, embedPortPath, modelsYmlPort, probeEmbed, readEmbedPort, resolveEmbedPort, writeEmbedPort } from "./embed-logic.ts";
+import { SCOPE_ENV } from "../src/context/scope.ts";
+
+// The workspace's scope for the MAIN model. omp builds that handle from
+// models.yml before this file loads, so its X-Agentdox-Scope cannot come from
+// the provider we register; instead the managed entry names SCOPE_ENV as the
+// header's value, omp resolves that from the environment on every request,
+// and this module runs inside omp's process — so setting it here reaches
+// every turn of this session, main and side roles alike. A workspace that
+// derives no scope (no folder name) leaves whatever the shell set.
+{
+	const workspaceScope = deriveAgentdoxScope(process.cwd());
+	if (workspaceScope !== "") process.env[SCOPE_ENV] = workspaceScope;
+}
 
 /** omp's models.yml as text, or "" when it does not exist / cannot be read. */
 function readModelsYml(): string {

@@ -1330,10 +1330,15 @@ short-lived key rotates underneath a running session.
 In remote mode omp sends `X-Agentdox-Scope` derived from the workspace folder, so one
 remote router serves every repo on the machine with that repo's shared context. The remote
 decides what to do with it: a team edition that pins a scope on the member's group
-overrides it, and one that pins none follows the workspace. That header rides on the roles
-the extensions register; the **main** model's handle comes from `models.yml`, which is
-machine-wide, so it carries a scope only if you pass `--scope <slug>` to `connect` — right
-for a single-project machine, wrong for one with several repos.
+overrides it, and one that pins none follows the workspace. The roles the extensions
+register carry the header directly. The **main** model's handle comes from `models.yml`,
+which is machine-wide and resolved before extensions load, so `connect` writes that
+entry's header value as the *name* of an environment variable,
+`AUTO_MODEL_ROUTER_SCOPE`; omp resolves it from the environment on every request, and
+the embed extension sets it from the workspace as it loads. If the variable is unset omp
+sends the name itself, which the router does not accept as a scope (a scope is a
+lowercase slug) and falls back to its default. `--scope <slug>` pins one project for the
+whole machine instead; a refresh keeps a pin, and `connect --scope ""` removes it.
 
 ## Multiple coding harnesses, one router
 

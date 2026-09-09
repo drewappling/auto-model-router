@@ -27,7 +27,7 @@ Usage: auto-model-router <command> [options]
   stats      Show routed spend, per-model share, and escalation rates
   report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   export     One row per day, harness and model as CSV (--json for rows)
-  connect    Point this machine at a remote router (--url, --key[, --refresh-token]; --scope labels a single-project machine; --profile persists the environment)
+  connect    Point this machine at a remote router (--url, --key[, --refresh-token]; --scope pins one project for the whole machine (default: each workspace's own); --profile persists the environment)
   refresh    Trade the refresh token for a new access key and re-write every harness config (--force: even when not near expiry)
   token      Print an access key that is good right now, refreshing first if needed (for a harness key-helper)
   models     Show what each complexity tier would consider, and why

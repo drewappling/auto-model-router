@@ -29,6 +29,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
+import { SCOPE_ENV } from "../context/scope.ts";
 import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
 import { flagString, type CliArgs } from "./args.ts";
 
@@ -47,7 +48,7 @@ export interface ConnectOptions {
 	packageDir: string;
 	/** Cost figures omp shows for the remote's virtual models, USD per million tokens. */
 	blend?: { inputPerMtok: number; outputPerMtok: number };
-	/** Adds `X-Agentdox-Scope` to omp's models.yml entry. Machine-wide: only for a single-project machine. Undefined keeps what the managed block already has. */
+	/** Pins `X-Agentdox-Scope` in omp's models.yml entry to one slug, machine-wide. Without it the entry follows the workspace (see renderRemoteModelsYml). Undefined keeps what the managed block already has. */
 	agentdoxScope?: string;
 	/** Short-lived credential fields from a remote that issues them; absent for a permanent key. */
 	refreshToken?: string;
@@ -141,10 +142,13 @@ const MODELS_YML_END = "  # END auto-model-router (remote)";
  * neither problem — the URL and the key are stable — and the entry is what makes
  * omp's main model resolvable at startup, before extensions load.
  *
- * `scope` adds `X-Agentdox-Scope` to every request through this provider. It is
- * off by default on purpose: the file is machine-wide, so a scope here would
- * label turns from every workspace with one project. The extensions still send
- * the workspace's own scope on the roles that resolve after they load.
+ * `X-Agentdox-Scope` on this entry reaches the MAIN model's turns, which the
+ * extensions' own registration cannot (they load after the handle is built).
+ * The file is machine-wide, so a literal slug here would label every
+ * workspace's turns with one project; by default the value is the NAME of
+ * `SCOPE_ENV`, which omp resolves from its environment per request, and the
+ * embed extension sets that variable from the workspace folder as it loads.
+ * `scope` pins a literal slug instead, for a single-project machine.
  */
 export function renderRemoteModelsYml(url: string, key: string, blend: { inputPerMtok: number; outputPerMtok: number }, scope = ""): string {
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
@@ -162,7 +166,7 @@ export function renderRemoteModelsYml(url: string, key: string, blend: { inputPe
 		"    api: openai-completions",
 		`    apiKey: ${key}`,
 	];
-	if (scope !== "") lines.push("    headers:", `      X-Agentdox-Scope: ${scope}`);
+	lines.push("    headers:", `      X-Agentdox-Scope: ${scope !== "" ? scope : SCOPE_ENV}`);
 	lines.push("    models:");
 	for (const m of REMOTE_MODEL_ROWS) {
 		lines.push(
@@ -201,14 +205,15 @@ export function mergeModelsYml(before: string, blockText: string): string {
 	return `${body.replace(/\s*$/, "")}${eol}providers:${eol}${block}${eol}`;
 }
 
-/** The `X-Agentdox-Scope` the managed block carries, or "" when none. */
+/** The literal `X-Agentdox-Scope` the managed block pins, or "" when it follows the workspace (or has none). */
 export function existingBlockScope(text: string): string {
 	const begin = text.indexOf(MODELS_YML_BEGIN);
 	if (begin < 0) return "";
 	const end = text.indexOf(MODELS_YML_END, begin);
 	const block = text.slice(begin, end < 0 ? text.length : end);
 	const m = /X-Agentdox-Scope:\s*(\S+)/.exec(block);
-	return m?.[1] ?? "";
+	const value = m?.[1] ?? "";
+	return value === SCOPE_ENV ? "" : value;
 }
 
 /** True when the file already defines our provider outside a block we manage. */

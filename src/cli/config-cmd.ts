@@ -15,6 +15,7 @@
  * keys survive.
  */
 
+import { SCOPE_ENV } from "../context/scope.ts";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,16 +60,20 @@ export interface SpliceResult {
  */
 /**
  * Headers omp attaches to every request through this provider. Both are
- * optional: absent harness id ⇒ single-harness defaults, absent agentdox scope
- * ⇒ the router falls back to its own `context.defaultScope`.
+ * optional: absent harness id ⇒ single-harness defaults; the agentdox scope
+ * names `SCOPE_ENV`, which omp resolves from its environment per request and
+ * the embed extension sets from the workspace folder, so the MAIN model's turns
+ * carry the repository's own scope rather than one for the whole machine. When
+ * the variable is unset the router ignores the literal and falls back to its
+ * own `context.defaultScope`.
  */
 function providerHeaders(cfg: RouterConfig): Record<string, string> {
 	const headers: Record<string, string> = {};
 	if (cfg.server.harnessId !== undefined && cfg.server.harnessId !== "") {
 		headers["X-Omp-Harness"] = cfg.server.harnessId;
 	}
-	if (cfg.context.enabled && cfg.context.defaultScope !== "") {
-		headers["X-Agentdox-Scope"] = cfg.context.defaultScope;
+	if (cfg.context.enabled) {
+		headers["X-Agentdox-Scope"] = SCOPE_ENV;
 	}
 	return headers;
 }

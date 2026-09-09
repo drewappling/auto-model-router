@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { addExtensions, codexBlock, connectRemote, setDotenv, type ConnectOptions } from "../src/cli/connect.ts";
 import { parseRemoteRouter, readRemoteRouter, remoteProviderRegistration } from "../omp-extension/remote-logic.ts";
 import { existingBlockScope, hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
+import { SCOPE_ENV } from "../src/context/scope.ts";
 import { refreshAndRewrite, refreshCredential, RefreshError, resolveRefreshToken, shouldRefresh } from "../src/cli/refresh.ts";
 import { loadRefreshToken, pickStore, removeRefreshToken, saveRefreshToken } from "../src/cli/credential-store.ts";
 import { hasRefresh, refreshAccountOf } from "../omp-extension/remote-logic.ts";
@@ -114,7 +115,7 @@ describe("omp models.yml for a remote router", () => {
 	const NL = String.fromCharCode(10);
 	const yaml = (...lines: string[]): string => lines.join(NL) + NL;
 
-	test("the block names the remote, the key and the three virtual models; a scope is opt-in", () => {
+	test("the block names the remote, the key and the three virtual models; the scope follows the workspace unless pinned", () => {
 		const block = renderRemoteModelsYml("https://team.example/", "amrt_k", BLEND);
 		expect(block).toContain("baseUrl: https://team.example/v1");
 		expect(block).toContain("apiKey: amrt_k");
@@ -122,9 +123,15 @@ describe("omp models.yml for a remote router", () => {
 		expect(block).toContain("- id: auto-cheap");
 		expect(block).toContain("- id: auto-max");
 		expect(block).toContain("cost: { input: 1.1, output: 4.4, cacheRead: 0.11, cacheWrite: 1.375 }");
-		// Machine-wide file: no scope unless the caller asks for one.
-		expect(block).not.toContain("X-Agentdox-Scope");
-		expect(renderRemoteModelsYml("https://team.example", "k", BLEND, "omp-router")).toContain("X-Agentdox-Scope: omp-router");
+		// Machine-wide file: the header names the env var the extension sets per
+		// workspace, so the MAIN model's turns carry each repo's own scope.
+		expect(block).toContain(`X-Agentdox-Scope: ${SCOPE_ENV}`);
+		expect(existingBlockScope(mergeModelsYml("", block))).toBe("");
+		// --scope pins one slug for the whole machine.
+		const pinned = renderRemoteModelsYml("https://team.example", "k", BLEND, "omp-router");
+		expect(pinned).toContain("X-Agentdox-Scope: omp-router");
+		expect(pinned).not.toContain(SCOPE_ENV);
+		expect(existingBlockScope(mergeModelsYml("", pinned))).toBe("omp-router");
 	});
 
 	test("merging keeps other providers, replaces our own block, and is idempotent", () => {

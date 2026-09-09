@@ -1,3 +1,4 @@
+import { acceptScope } from "../../context/scope.ts";
 import type {
 	RequestPolicy,
 	CompactionEdit,
@@ -329,8 +330,10 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	const ompSessionId = (headers.get("x-omp-session") ?? "").trim();
 
 	// agentdox project scope. Selects whose shared context is injected; absent
-	// ⇒ the server falls back to its configured default scope.
-	const agentdoxScope = (headers.get("x-agentdox-scope") ?? "").trim();
+	// or not a slug (omp sends the literal env-var NAME when the variable that
+	// models.yml names is unset — see src/context/scope.ts) ⇒ the server falls
+	// back to its configured default scope.
+	const agentdoxScope = acceptScope(headers.get("x-agentdox-scope"));
 
 	// Subagent marker from the embed extension (sessions without a UI).
 	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
