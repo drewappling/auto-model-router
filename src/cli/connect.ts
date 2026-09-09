@@ -68,6 +68,12 @@ export interface ConnectOptions {
 	exePath?: string;
 	/** The remote's skills bundle, installed into every configured harness that reads user-level skills. */
 	skills?: SkillsBundle;
+	/**
+	 * The remote's MCP endpoint (a team edition serving shared context): written as the
+	 * `team-context` server for omp and Claude Code with the member key, rewritten on every
+	 * refresh like models.yml. `null` removes an entry a previous connect wrote.
+	 */
+	mcp?: { url: string | null };
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -80,6 +86,39 @@ export interface ConnectReport {
 	notes: string[];
 	/** What the remote's skills bundle did, when there was one. */
 	skills?: SkillsInstallReport;
+	/** Files that gained (or lost) the team-context MCP server. */
+	mcp?: string[];
+}
+
+/** The name of the MCP server connect manages in a harness's config. */
+export const MCP_SERVER_NAME = "team-context";
+
+/**
+ * Merges the team-context server into an `mcpServers` JSON file (omp's mcp.json, Claude
+ * Code's ~/.claude.json), leaving every other key and server alone; `url` null removes it.
+ * Returns the new text, or null when nothing changes.
+ */
+export function mergeMcpServers(before: string, url: string | null, key: string): string | null {
+	let root: Record<string, unknown> = {};
+	if (before.trim() !== "") {
+		try {
+			const parsed = JSON.parse(before) as unknown;
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+			root = parsed as Record<string, unknown>;
+		} catch {
+			return null; // a file we cannot parse is not ours to rewrite
+		}
+	}
+	const servers = { ...((root.mcpServers as Record<string, unknown> | undefined) ?? {}) };
+	if (url === null) {
+		if (!(MCP_SERVER_NAME in servers)) return null;
+		delete servers[MCP_SERVER_NAME];
+	} else {
+		const next = { type: "http", url, headers: { Authorization: `Bearer ${key}` } };
+		if (JSON.stringify(servers[MCP_SERVER_NAME]) === JSON.stringify(next)) return null;
+		servers[MCP_SERVER_NAME] = next;
+	}
+	return `${JSON.stringify({ ...root, mcpServers: servers }, null, 2)}\n`;
 }
 
 const expand = (raw: string, home: string): string => (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\") ? join(home, raw.slice(1)) : raw);
@@ -376,6 +415,24 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		for (const s of report.skills.skipped) report.notes.push(`skill ${s}`);
 	}
 
+	// 6c. The remote's MCP endpoint (shared context tools), for the harnesses configured above
+	// that read a user-level mcpServers file; the member key travels in the header and is
+	// rewritten with every refresh, like models.yml.
+	if (o.mcp !== undefined) {
+		const files: string[] = [];
+		if (report.configured.some((c) => c.startsWith("omp ("))) files.push(join(agentDir, "mcp.json"));
+		if (report.configured.some((c) => c.startsWith("Claude Code ("))) files.push(join(o.home, ".claude.json"));
+		report.mcp = [];
+		for (const path of files) {
+			const before = existsSync(path) ? readFileSync(path, "utf8") : "";
+			const after = mergeMcpServers(before, o.mcp.url, o.key);
+			if (after === null) continue;
+			write(path, after);
+			report.mcp.push(path);
+		}
+		if (o.mcp.url !== null && files.length > 0) report.configured.push(`MCP (${MCP_SERVER_NAME} → ${o.mcp.url}: ${files.map((f) => f.replaceAll("\\", "/")).join(", ")})`);
+	}
+
 	// 7. Persist the environment.
 	if (o.profile && !o.dryRun) {
 		if (o.platform === "win32") {
@@ -431,6 +488,18 @@ export async function exchangeSetupToken(url: string, token: string, device: str
 		userId: typeof body.userId === "string" ? body.userId : "",
 		name: typeof body.name === "string" ? body.name : "",
 	};
+}
+
+/** What a team edition says about itself at /setup/info; a plain router answers nothing. */
+export async function fetchSetupInfo(url: string, fetchImpl: typeof fetch = fetch): Promise<{ mcp: boolean }> {
+	try {
+		const res = await fetchImpl(`${url}/setup/info`, { signal: AbortSignal.timeout(10_000) });
+		if (!res.ok) return { mcp: false };
+		const body = (await res.json()) as { mcp?: unknown };
+		return { mcp: body.mcp === true };
+	} catch {
+		return { mcp: false };
+	}
 }
 
 /** Adds `dir` to the user's PATH on Windows, once, through the registry-backed API rather than setx. */
@@ -495,6 +564,8 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	const scopeFlag = flagString(args, "scope");
 	// The remote's skills for the agents on this machine; a remote without any serves 404.
 	const skills = await fetchSkills(url, key, fetchImpl);
+	// Its shared-context MCP endpoint, when it is a team edition serving one.
+	const info = await fetchSetupInfo(url, fetchImpl);
 	const report = connectRemote({
 		url,
 		key,
@@ -515,6 +586,7 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 		...(device === "" ? {} : { device }),
 		...(exePath === null ? {} : { exePath }),
 		...(skills.bundle === null ? {} : { skills: skills.bundle }),
+		mcp: { url: info.mcp ? `${url}/mcp` : null },
 	});
 	if (skills.note !== undefined) report.notes.push(skills.note);
 	if (exePath !== null) console.log(`executable ${exePath}; package files under ${packageDir}`);

@@ -1365,6 +1365,12 @@ skills: Claude Code's `~/.claude/skills/<name>/` and omp's `~/.omp/agent/skills/
 the bundle no longer carries, and a skill of the same name the member wrote themselves is
 left alone with a note. A remote without skills answers 404 and nothing happens.
 
+A remote whose `/setup/info` says `mcp: true` (a team edition serving shared context) also
+gets a `team-context` MCP server written for omp (`~/.omp/agent/mcp.json`) and Claude Code
+(`~/.claude.json`): `type: http`, the remote's `/mcp`, the member key in the Authorization
+header. Every refresh rewrites it with the current key, like models.yml; other servers in
+those files are untouched, and a remote that stops serving MCP has the entry removed.
+
 ## Direct upstreams: OpenAI, Azure OpenAI, Anthropic, vLLM
 
 OpenRouter and Ollama Cloud are the built-in upstreams. `upstreams:` adds named ones the

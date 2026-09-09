@@ -14,6 +14,7 @@
  */
 
 import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
+import { fetchSetupInfo } from "./connect.ts";
 import { fetchSkills } from "./skills.ts";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -99,6 +100,7 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 	const exePath = opts.remote.executable ?? executablePath() ?? undefined;
 	// A refresh is when the team's skills reach a machine that has not re-run connect.
 	const skills = await fetchSkills(opts.remote.url, fresh.key, opts.fetchImpl ?? fetch);
+	const info = await fetchSetupInfo(opts.remote.url, opts.fetchImpl ?? fetch);
 	connectRemote({
 		url: opts.remote.url,
 		key: fresh.key,
@@ -121,6 +123,7 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 		...(opts.storeDeps !== undefined ? { storeDeps: opts.storeDeps } : {}),
 		...(exePath !== undefined ? { exePath } : {}),
 		...(skills.bundle === null ? {} : { skills: skills.bundle }),
+		mcp: { url: info.mcp ? `${opts.remote.url}/mcp` : null },
 		// undefined keeps whatever scope the managed models.yml block already carries.
 	});
 	return fresh;
