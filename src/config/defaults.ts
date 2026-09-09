@@ -62,6 +62,9 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// its dashboard is that share × the plan's credits. Unknown until set.
 		planCreditsUsd: 0,
 	},
+	// Named direct upstreams (OpenAI, Azure OpenAI, Anthropic, vLLM…): none until configured.
+	// Each entry's own defaults are filled in by loadConfig (see load.ts).
+	upstreams: [],
 	benchmarks: {
 		// Keyless BenchLM alone fills real gaps, so this is on by default; the AA
 		// feed only actually fires once a key is present (config or env).

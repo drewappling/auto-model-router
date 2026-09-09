@@ -8,6 +8,7 @@
  * columns and accept a read-only database handle.
  */
 
+import { providerOfSlug } from "./report.ts";
 import type { Database } from "bun:sqlite";
 import { harnessFilter } from "./report.ts";
 
@@ -120,7 +121,7 @@ export function exportRows(db: Database, sinceMs: number, harness: HarnessScope)
 		day: r.day,
 		harnessId: r.harness_id,
 		slug: r.slug,
-		provider: r.slug.startsWith("ollama/") ? "ollama" : "openrouter",
+		provider: providerOfSlug(r.slug),
 		dispatches: r.dispatches,
 		promptTokens: r.prompt_tokens,
 		cachedTokens: r.cached_tokens,

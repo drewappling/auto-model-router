@@ -226,7 +226,8 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
 	const db = openDb(cfg.ledger.path);
 	const ledger = createLedger(db, cfg);
-	const { upstream, catalog, ollama, ollamaServing, ollamaUsage, ollamaCostScale } = createProviders(cfg, db, log);
+	const providers = createProviders(cfg, db, log);
+	const { upstream, catalog, ollama, ollamaServing, ollamaUsage, ollamaCostScale } = providers;
 	const conversations = createConversationStore(db);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 	const context = createBridgeFromConfig(cfg, db);
@@ -271,6 +272,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	if (cfg.openrouter.apiKey === "") {
 		if (cfg.ollama.enabled) log.warn("no OpenRouter key: routing over Ollama Cloud models only (OpenRouter's catalog is read for metadata, never served)");
 		else log.warn("OPENROUTER_API_KEY is not set and Ollama is off; /v1/chat/completions will fail at dispatch time");
+	}
+	for (const u of cfg.upstreams) {
+		if (!u.enabled) continue;
+		log.info(`named upstream enabled: ${u.id}`, { kind: u.kind, baseUrl: u.baseUrl, models: u.models.length, apiKeyConfigured: u.apiKey !== "" });
 	}
 	if (cfg.ollama.enabled) {
 		log.info("ollama cloud upstream enabled", {
@@ -639,7 +644,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
 						// Which upstreams turns can actually be served from: OpenRouter needs
 						// its key; Ollama needs to be on and out of cooldown.
-						serving: [...(cfg.openrouter.apiKey !== "" ? ["openrouter"] : []), ...(ollamaServing() ? ["ollama"] : [])],
+						serving: [...(cfg.openrouter.apiKey !== "" ? ["openrouter"] : []), ...(ollamaServing() ? ["ollama"] : []), ...providers.namedServing()],
+						// Named direct upstreams: never the key. `available` is each one's breaker.
+						upstreams: cfg.upstreams.map((u) => {
+							const client = providers.named(u.id);
+							return { id: u.id, kind: u.kind, enabled: u.enabled, baseUrl: u.baseUrl, apiKeyConfigured: u.apiKey !== "", models: u.models.length, available: client?.available() ?? true, cooldownUntilMs: client?.cooldownUntilMs() ?? null, lastTrip: client?.lastTrip() ?? null };
+						}),
 						// Provenance only; never the key itself.
 						apiKeySource: apiKeySource(cfg).source,
 						// Provenance only; never the agentdox token itself.

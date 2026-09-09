@@ -843,10 +843,65 @@ export interface CompactionConfig {
 	collapseDuplicateResults: boolean;
 }
 
+/** Which API a named upstream speaks. */
+export type UpstreamKind = "openai" | "azure" | "anthropic";
+
+/** One model a named upstream serves, with what routing needs since there is no catalog to fetch. */
+export interface UpstreamModelConfig {
+	/** The model id the provider knows (an Azure deployment name for `azure`). The catalog slug is `<upstream id>/<id>`. */
+	id: string;
+	name?: string;
+	/** USD per million prompt tokens. */
+	input: number;
+	/** USD per million completion tokens. */
+	output: number;
+	/** USD per million cached prompt tokens, when the provider discounts them. */
+	cachedInput?: number;
+	/** USD per million prompt tokens written to cache (Anthropic). */
+	cacheWrite?: number;
+	/** Absent ⇒ the OpenRouter twin's, else 128k. */
+	contextLength?: number;
+	maxCompletionTokens?: number;
+	supportsTools?: boolean;
+	supportsReasoning?: boolean;
+	supportsToolChoice?: boolean;
+	/** Accepts images. Absent ⇒ the twin's. */
+	vision?: boolean;
+	/** 0-100 scores; absent ⇒ borrowed from the OpenRouter twin. */
+	quality?: { intelligence?: number; coding?: number; agentic?: number };
+	/** The OpenRouter slug whose scores and capabilities this model borrows; absent ⇒ matched by name. */
+	twin?: string;
+}
+
+/**
+ * A named upstream beside OpenRouter and Ollama Cloud: OpenAI, Azure OpenAI,
+ * Anthropic, or any OpenAI-compatible server (vLLM, a gateway). Its models
+ * enter the catalog as `<id>/<model>` and dispatch to it.
+ */
+export interface UpstreamEntry {
+	/** Lowercase slug; the catalog namespace. Must not be an OpenRouter vendor namespace such as `openai` or `anthropic`. */
+	id: string;
+	kind: UpstreamKind;
+	enabled: boolean;
+	/** `https://api.openai.com/v1`, `https://<resource>.openai.azure.com`, `https://api.anthropic.com`, `http://vllm:8000/v1`. */
+	baseUrl: string;
+	apiKey: string;
+	/** Azure only: the `api-version` query parameter. */
+	apiVersion: string;
+	/** Extra request headers, e.g. a gateway's own auth. */
+	headers: Record<string, string>;
+	timeoutMs: number;
+	rateLimitCooldownMs: number;
+	quotaCooldownMs: number;
+	models: UpstreamModelConfig[];
+}
+
 export interface RouterConfig {
 	server: ServerConfig;
 	openrouter: OpenRouterConfig;
 	ollama: OllamaConfig;
+	/** Named direct upstreams; empty by default. */
+	upstreams: UpstreamEntry[];
 	benchmarks: BenchmarksConfig;
 	tiers: Record<Tier, TierConfig>;
 	tasks: Record<TaskType, TaskConfig>;

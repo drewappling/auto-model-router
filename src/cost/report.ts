@@ -137,7 +137,28 @@ const USD = "COALESCE(reported_usd, predicted_usd)";
 const PT = "json_extract(usage, '$.promptTokens')";
 const CT = "json_extract(usage, '$.cachedTokens')";
 const COMP = "json_extract(usage, '$.completionTokens')";
-const PROVIDER = "CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ELSE 'openrouter' END";
+/** Named upstream ids the ledger's provider derivation knows; set by createProviders from the live config. */
+let knownUpstreamIds: readonly string[] = [];
+export function setKnownUpstreamIds(ids: readonly string[]): void {
+	knownUpstreamIds = ids.filter((id) => /^[a-z0-9][a-z0-9-]{0,31}$/.test(id));
+}
+export function knownUpstreams(): readonly string[] {
+	return knownUpstreamIds;
+}
+/** The provider of a slug: its namespace when that names a known upstream, else OpenRouter's own. */
+export function providerOfSlug(slug: string): string {
+	if (slug.startsWith("ollama/")) return "ollama";
+	const cut = slug.indexOf("/");
+	if (cut > 0) {
+		const head = slug.slice(0, cut);
+		if (knownUpstreamIds.includes(head)) return head;
+	}
+	return "openrouter";
+}
+/** SQL twin of providerOfSlug; ids are validated to a slug alphabet so they can be inlined. */
+function providerCase(): string {
+	return `CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ${knownUpstreamIds.map((id) => `WHEN slug LIKE '${id}/%' THEN '${id}'`).join(" ")} ELSE 'openrouter' END`;
+}
 const STREAMED = "ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL";
 const EST = "json_extract(usage, '$.cachedEstimated') = 1";
 /** Rows a forecast can be judged on: a reported cost, a prediction, clean and kept, not a side call. */
@@ -277,7 +298,7 @@ export function buildUsageReport(
 
 	const windowSpend = t.spend;
 	const providers = (
-		db.query(`SELECT ${PROVIDER} AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY key ORDER BY spend DESC`).all(bind) as RawRow[]
+		db.query(`SELECT ${providerCase()} AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY key ORDER BY spend DESC`).all(bind) as RawRow[]
 	).map((r) => toRow(r, windowSpend));
 
 	const modelRows = db

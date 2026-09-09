@@ -1365,6 +1365,56 @@ skills: Claude Code's `~/.claude/skills/<name>/` and omp's `~/.omp/agent/skills/
 the bundle no longer carries, and a skill of the same name the member wrote themselves is
 left alone with a note. A remote without skills answers 404 and nothing happens.
 
+## Direct upstreams: OpenAI, Azure OpenAI, Anthropic, vLLM
+
+OpenRouter and Ollama Cloud are the built-in upstreams. `upstreams:` adds named ones the
+router dispatches to directly, each with a static, priced model list (a direct provider
+publishes no routing catalog): OpenAI-compatible servers (`kind: openai` — OpenAI itself,
+vLLM, a gateway), Azure OpenAI (`kind: azure`, the deployment name is the model and the
+`api-version` is a field), and Anthropic natively (`kind: anthropic`, translated to and from
+the Messages API, `cache_control` markers kept because Anthropic honours them).
+
+```yaml
+upstreams:
+  - id: openai-direct                 # the catalog namespace: openai-direct/gpt-4o
+    kind: openai
+    baseUrl: https://api.openai.com/v1
+    apiKey: sk-…
+    models:
+      - { id: gpt-4o, input: 2.5, output: 10, cachedInput: 1.25 }          # USD per million tokens
+      - { id: gpt-4o-mini, input: 0.15, output: 0.6, cachedInput: 0.075 }
+  - id: azure-eu
+    kind: azure
+    baseUrl: https://my-resource.openai.azure.com
+    apiVersion: 2024-10-21
+    apiKey: …
+    models: [{ id: gpt-4o-deploy, twin: openai/gpt-4o, input: 2.5, output: 10 }]
+  - id: anthropic-direct
+    kind: anthropic
+    baseUrl: https://api.anthropic.com
+    apiKey: sk-ant-…
+    models:
+      - { id: claude-sonnet-4-20250514, twin: anthropic/claude-sonnet-4, input: 3, output: 15, cachedInput: 0.3, cacheWrite: 3.75, supportsReasoning: true, maxCompletionTokens: 64000 }
+  - id: vllm
+    kind: openai
+    baseUrl: http://vllm.internal:8000/v1
+    models: [{ id: llama-3.3-70b, input: 0, output: 0, contextLength: 128000, quality: { coding: 60, intelligence: 55 } }]
+```
+
+Each model enters the catalog as `<id>/<model>` and ranks beside everything else: prices from
+the entry, context length, capabilities and quality scores from the OpenRouter **twin** of the
+same model (`twin` names it, or the normalised name finds it — `gpt-4o` matches
+`openai/gpt-4o`), or from the entry when it says so. A model with no scores serves only the
+trivial tier, as an unbenchmarked OpenRouter model would. `id` must not be an OpenRouter vendor
+namespace (`openai`, `anthropic`, …), or `openai/gpt-4o` would be ambiguous. A 429 opens a
+short breaker and an out-of-quota answer a longer one, and the catalog hides that upstream's
+models while it is open, exactly as for Ollama Cloud. The list hot-reloads: a changed key or a
+new entry applies to the next turn. `/health` lists each upstream's state, never its key;
+`report` and `export` name the upstream as the provider of its slugs.
+
+Not here: Bedrock and Vertex need cloud signing and are a later addition; a gateway that
+speaks OpenAI in front of them works today as `kind: openai`.
+
 ## Multiple coding harnesses, one router
 
 **One router process for everything.** omp's embed extension binds a private

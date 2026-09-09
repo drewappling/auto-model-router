@@ -45,8 +45,8 @@ export interface QualityScores {
 	agentic?: number;
 }
 
-/** Which upstream serves a catalog model. Slugs are namespaced per provider (`ollama/…`). */
-export type CatalogProvider = "openrouter" | "ollama";
+/** Which upstream serves a catalog model: `openrouter`, `ollama`, or a named upstream's id. Slugs are namespaced per provider (`ollama/…`, `<id>/…`). */
+export type CatalogProvider = string;
 
 export interface CatalogModel {
 	/** OpenRouter slug, e.g. `anthropic/claude-sonnet-4.5`, or `ollama/<id>`. Routing identity. */

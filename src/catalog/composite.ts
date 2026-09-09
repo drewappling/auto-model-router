@@ -34,7 +34,12 @@ export interface CompositeBias {
 	live?: () => { costBias: number; biasUntilUsage: number };
 	/** False when OpenRouter cannot dispatch (no key): its models are listed for metadata only, never served. Default true. */
 	serveOpenRouter?: () => boolean;
+	/** Named upstreams' models, built from the OpenRouter models (twins) and filtered by each upstream's breaker. */
+	named?: { models(openrouter: readonly CatalogModel[]): readonly CatalogModel[]; serving(id: string): boolean };
 }
+
+/** Shared empty list, so a deployment without named upstreams keeps the merged snapshot's identity. */
+const NO_NAMED: readonly CatalogModel[] = [];
 
 export function createCompositeCatalog(
 	openrouter: CatalogSource,
@@ -47,6 +52,8 @@ export function createCompositeCatalog(
 	let lastAvailable = true;
 	let lastServeBase = true;
 	let lastBias = 1;
+	let lastNamed: readonly CatalogModel[] = [];
+	let lastNamedServing = "";
 	let merged: CatalogSnapshot | null = null;
 
 	/** The multiplier in force from the latest usage reading (no network). */
@@ -59,13 +66,20 @@ export function createCompositeCatalog(
 		const available = availability.available();
 		const serveBase = bias.serveOpenRouter?.() ?? true;
 		const providerBias = currentBias();
-		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable && serveBase === lastServeBase && providerBias === lastBias) return merged;
+		// Named upstreams: every enabled entry's models, minus those of an upstream in cooldown.
+		const namedAll = bias.named?.models(base.models) ?? NO_NAMED;
+		const namedServing = namedAll.map((m) => (bias.named?.serving(m.provider) ?? true ? "1" : "0")).join("");
+		if (merged !== null && base === lastBase && models === lastOllama && available === lastAvailable && serveBase === lastServeBase && providerBias === lastBias && namedAll === lastNamed && namedServing === lastNamedServing) return merged;
 		lastBase = base;
 		lastOllama = models;
 		lastAvailable = available;
 		lastServeBase = serveBase;
 		lastBias = providerBias;
+		lastNamed = namedAll;
+		lastNamedServing = namedServing;
+		const named = namedAll.filter((m) => bias.named?.serving(m.provider) ?? true);
 		merged = serveBase ? mergeSnapshots(base, available ? models : []) : { ...base, models: available ? [...models] : [] };
+		if (named.length > 0) merged = { ...merged, models: [...merged.models, ...named] };
 		// A fresh object either way once anything changed; stamp the live bias so
 		// candidate scoring reads it off the snapshot it is ranking.
 		merged = { ...merged, providerBias: { ollama: providerBias } };
@@ -77,6 +91,7 @@ export function createCompositeCatalog(
 		if (fromBase !== undefined) return fromBase;
 		for (const m of lastOllama) if (m.slug === slug) return m;
 		for (const m of ollama.peek()) if (m.slug === slug) return m;
+		for (const m of lastNamed) if (m.slug === slug) return m;
 		return undefined;
 	}
 

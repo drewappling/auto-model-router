@@ -57,6 +57,43 @@ const ollama = z.strictObject({
 	planCreditsUsd: z.number().nonnegative().optional(),
 });
 
+/** Ids that would collide with OpenRouter's own vendor namespaces or the built-in upstreams. */
+export const RESERVED_UPSTREAM_IDS: readonly string[] = ["openrouter", "ollama", "openai", "anthropic", "google", "meta-llama", "mistralai", "x-ai", "deepseek", "qwen", "amazon", "microsoft", "cohere", "perplexity", "nvidia", "moonshotai", "z-ai", "minimax"];
+
+const upstreamModel = z.strictObject({
+	id: z.string().min(1),
+	name: z.string().optional(),
+	input: z.number().nonnegative(),
+	output: z.number().nonnegative(),
+	cachedInput: z.number().nonnegative().optional(),
+	cacheWrite: z.number().nonnegative().optional(),
+	contextLength: z.number().int().positive().optional(),
+	maxCompletionTokens: z.number().int().positive().optional(),
+	supportsTools: z.boolean().optional(),
+	supportsReasoning: z.boolean().optional(),
+	supportsToolChoice: z.boolean().optional(),
+	vision: z.boolean().optional(),
+	quality: z.strictObject({ intelligence: z.number().optional(), coding: z.number().optional(), agentic: z.number().optional() }).optional(),
+	twin: z.string().optional(),
+});
+
+const upstream = z.strictObject({
+	id: z
+		.string()
+		.regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "lowercase letters, digits and dashes")
+		.refine((id) => !RESERVED_UPSTREAM_IDS.includes(id), { message: "this id is a vendor namespace on OpenRouter or a built-in upstream; use e.g. openai-direct, azure-eu, anthropic-direct, vllm" }),
+	kind: z.enum(["openai", "azure", "anthropic"]),
+	enabled: z.boolean().optional(),
+	baseUrl: z.string().min(1),
+	apiKey: z.string().optional(),
+	apiVersion: z.string().optional(),
+	headers: z.record(z.string(), z.string()).optional(),
+	timeoutMs: z.number().positive().optional(),
+	rateLimitCooldownMs: z.number().nonnegative().optional(),
+	quotaCooldownMs: z.number().nonnegative().optional(),
+	models: z.array(upstreamModel),
+});
+
 const benchmarks = z.strictObject({
 	enabled: z.boolean().optional(),
 	artificialAnalysisApiKey: z.string().optional(),
@@ -268,6 +305,7 @@ export const configInputSchema = z.strictObject({
 		})
 		.optional(),
 	ollama: ollama.optional(),
+	upstreams: z.array(upstream).optional(),
 	filters: filters.optional(),
 	classifier: classifier.optional(),
 	escalation: escalation.optional(),

@@ -14,6 +14,7 @@
  */
 
 import type { RouterConfig } from "./types.ts";
+import { completeUpstreams } from "./upstreams.ts";
 import type { DeepPartial } from "./load.ts";
 
 type Rec = Record<string, unknown>;
@@ -57,7 +58,10 @@ export function assignInPlace(target: Rec, source: Rec, prefix = "", opts: { pru
 
 /** `assignInPlace` over a typed config. Returns the dotted paths that changed. */
 export function applyConfigPatch(live: RouterConfig, patch: DeepPartial<RouterConfig>): string[] {
-	return assignInPlace(live as unknown as Rec, patch as Rec);
+	const changed = assignInPlace(live as unknown as Rec, patch as Rec);
+	// A patched upstream list arrives sparse (what the author set); clients read complete records.
+	if (changed.some((c) => c === "upstreams" || c.startsWith("upstreams."))) completeUpstreams(live);
+	return changed;
 }
 
 /** True when any changed path falls inside `block` (`"ollama"` matches `ollama.apiKey`). */

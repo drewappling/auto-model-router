@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "./defaults.ts";
 import { configInputSchema } from "./schema.ts";
 import { resolveOllamaKey, resolveOpenRouterKey, type ResolvedCredential } from "./omp-credentials.ts";
 import type { RouterConfig } from "./types.ts";
+import { completeUpstreams } from "./upstreams.ts";
 
 const LOG_LEVELS: readonly RouterConfig["logLevel"][] = ["silent", "error", "warn", "info", "debug"];
 
@@ -161,6 +162,8 @@ export function loadConfig(opts?: { path?: string; overrides?: DeepPartial<Route
 	const ollamaCredential = resolveOllamaKey(cfg.ollama.apiKey);
 	cfg.ollama.apiKey = ollamaCredential.apiKey;
 	ollamaKeyProvenance.set(cfg, ollamaCredential);
+	// Named upstream entries: fill the optional fields so every client reads a complete record.
+	completeUpstreams(cfg);
 
 	return cfg;
 }
