@@ -235,7 +235,7 @@ bun tools/install.ts --no-toast --no-configure   # only the required embed exten
 The installer adds:
 
 - `router-embed.ts` — **required**; runs the router in-process.
-- `router-toast.ts` — optional; chosen-model toasts.
+- `router-toast.ts` — optional; per-turn toasts naming the model and why it was chosen.
 - `router-configure.ts` — optional; the `/router` command (configure, usage reports, status).
 - `router-digest.ts` — optional; condenses large tool results with a cheap model before an expensive one reads them (needs `digest.enabled`).
 
@@ -814,6 +814,7 @@ disk and back up the previous file to a timestamped `.bak`.
 | `AUTO_MODEL_ROUTER_URL` | Toast/base URL override (the toast reads the shared port file first). | — |
 | `AUTO_MODEL_ROUTER_API_KEY` | Client bearer for the toast poll when `server.apiKey` is set. | — |
 | `OMP_HARNESS_ID` | Per-harness toast scoping. | — |
+| `AUTO_MODEL_ROUTER_TOAST` | `compact` for the one-line toast; anything else keeps the decision trail. | verbose |
 
 ---
 
@@ -1469,11 +1470,27 @@ come from a small omp extension that polls the router's in-process ledger:
 // omp-extension/router-toast.ts  (shipped in this repo)
 ```
 
-It raises a TUI toast (`ctx.ui.notify`) like
-`openrouter · meta/muse-glimmer-30b [trivial] · $0.00001` or
-`ollama · glm-5.3-flash [moderate] · $0.00070` whenever a new model is chosen —
-provider first, so a mixed catalog is legible at a glance. Install it by adding
-the file's absolute path to omp's `extensions:` list.
+It raises a TUI toast (`ctx.ui.notify`) whenever a model is chosen, explaining
+the decision rather than just naming it — provider first, so a mixed catalog is
+legible at a glance:
+
+```
+openrouter · openai/gpt-5.2 [hard] · $0.01820
+why: failover: z-ai/glm-5.3-flash empty_completion (hit the length cap having…
+     escalated from moderate
+48.2k prompt · 12.8k compacted · 11 tools · attempt 2 · 2.1s to first token
+```
+
+The **why** lines come from the router's own decision trail, picked by how much
+they change what you would do: a failover or a policy pin explains a surprising
+model outright, a hold or a tier rescue explains why the obvious cheaper pick was
+skipped, and when nothing surprising happened the ranking rationale itself is
+shown. The last line is what the model was actually handed. An unreported cost
+falls back to the forecast (`~$…`).
+
+`AUTO_MODEL_ROUTER_TOAST=compact` restores the old one-liner
+(`openrouter · meta/muse-glimmer-30b [trivial] · $0.00001`). Install the
+extension by adding the file's absolute path to omp's `extensions:` list.
 
 Because the embedded router binds a random port, the toast resolves the router
 base URL on every poll in this order: the embedded router's port file

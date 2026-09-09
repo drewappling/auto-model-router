@@ -88,6 +88,20 @@ export interface ToastDecision {
 	 * default. Lets the toast scope to a single interactive session.
 	 */
 	ompSessionId?: string;
+	/** The router's own decision trail, already written for people. */
+	reasons?: string[];
+	/** Classifier inputs; only a few are worth surfacing. */
+	features?: { promptTokens?: number; toolCount?: number; turnDepth?: number; isToolResultContinuation?: boolean } | null;
+	/** Attempt index within the turn; >0 means this served after an escalation. */
+	attempt?: number;
+	/** Prompt tokens compaction removed before dispatch. */
+	promptTokensSaved?: number;
+	/** What the router expected this to cost, before the upstream reported. */
+	predictedUsd?: number;
+	latencyMs?: number;
+	ttftMs?: number | null;
+	task?: string | null;
+	classificationSource?: string;
 }
 
 export interface ToastMessage {
@@ -110,10 +124,89 @@ export function providerOf(slug: string): { provider: string; model: string } {
 	return { provider: "openrouter", model: slug };
 }
 
-export function toToastText(d: ToastDecision): string {
+/**
+ * Which parts of the decision trail earn a line in a toast.
+ *
+ * The router writes many reasons per turn; a toast has room for two. These
+ * patterns are ordered by how much they change what the reader would do:
+ * a failover or a policy pin explains a surprising model outright, a hold or a
+ * rescue explains why the obvious cheaper pick was skipped, and the rest is
+ * ordinary ranking that the tier already conveys.
+ */
+const REASON_PRIORITY: readonly RegExp[] = [
+	/failover|escalat/i,
+	/policy|pin(ned)?|allow|deny/i,
+	/held|sticky|hysteresis|switch margin/i,
+	/budget raised|reasons before it answers/i,
+	// The RESCUE wording only: "cheapest above the quality floor" is ordinary
+	// ranking, and matching a bare "floor" would push it above real surprises.
+	/tier rescue|relaxed|adaptive (floor|ceiling)/i,
+	/cache|warm/i,
+	/compact/i,
+	/explor/i,
+];
+
+const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** Up to `limit` reasons, most explanatory first, each trimmed for one line. */
+export function whyReasons(reasons: readonly string[] | undefined, limit = 2): string[] {
+	if (reasons === undefined || reasons.length === 0) return [];
+	const picked: string[] = [];
+	const seen = new Set<number>();
+	for (const re of REASON_PRIORITY) {
+		for (let i = 0; i < reasons.length && picked.length < limit; i++) {
+			const r = reasons[i];
+			if (r === undefined || seen.has(i) || !re.test(r)) continue;
+			seen.add(i);
+			picked.push(clip(r.replace(/\s+/g, " ").trim(), 90));
+		}
+		if (picked.length >= limit) break;
+	}
+	// Nothing matched a pattern: the first reason is the ranking rationale itself.
+	if (picked.length === 0 && reasons[0] !== undefined) picked.push(clip(reasons[0].replace(/\s+/g, " ").trim(), 90));
+	return picked;
+}
+
+const tokens = (n: number): string => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n));
+
+/** The turn's shape in a few words: what the model was actually handed. */
+export function factsOf(d: ToastDecision): string[] {
+	const out: string[] = [];
+	const f = d.features ?? undefined;
+	if (f?.promptTokens !== undefined && f.promptTokens > 0) out.push(`${tokens(f.promptTokens)} prompt`);
+	if (d.promptTokensSaved !== undefined && d.promptTokensSaved > 0) out.push(`${tokens(d.promptTokensSaved)} compacted`);
+	if (f?.toolCount !== undefined && f.toolCount > 0) out.push(`${f.toolCount} tools`);
+	if (f?.isToolResultContinuation === true) out.push("tool continuation");
+	if (d.attempt !== undefined && d.attempt > 0) out.push(`attempt ${d.attempt + 1}`);
+	if (d.task !== undefined && d.task !== null && d.task !== "" && d.task !== "coding") out.push(d.task);
+	if (d.ttftMs !== undefined && d.ttftMs !== null && d.ttftMs > 0) out.push(`${(d.ttftMs / 1000).toFixed(1)}s to first token`);
+	else if (d.latencyMs !== undefined && d.latencyMs > 0) out.push(`${(d.latencyMs / 1000).toFixed(1)}s`);
+	return out;
+}
+
+/** `$0.00042`, or the prediction when the upstream reported nothing. */
+function costOf(d: ToastDecision): string {
+	if (d.reportedUsd !== null && d.reportedUsd !== undefined) return `$${d.reportedUsd.toFixed(5)}`;
+	if (d.predictedUsd !== undefined && d.predictedUsd > 0) return `~$${d.predictedUsd.toFixed(5)}`;
+	return "";
+}
+
+/**
+ * The toast body. `verbose` (the default) adds the decision trail and the
+ * turn's shape under the headline; `compact` is the original single line, for
+ * anyone who wants the model name and nothing else.
+ */
+export function toToastText(d: ToastDecision, verbose = true): string {
 	const { provider, model } = providerOf(d.servedSlug ?? d.slug);
-	const cost = d.reportedUsd === null ? "" : ` \u00b7 $${d.reportedUsd.toFixed(5)}`;
-	return `${provider} \u00b7 ${model} [${d.tier}]${cost}`;
+	const cost = costOf(d);
+	const head = `${provider} \u00b7 ${model} [${d.tier}]${cost === "" ? "" : ` \u00b7 ${cost}`}`;
+	if (!verbose) return head;
+	const lines = [head];
+	const why = whyReasons(d.reasons);
+	for (const [i, r] of why.entries()) lines.push(`${i === 0 ? "why: " : "     "}${r}`);
+	const facts = factsOf(d);
+	if (facts.length > 0) lines.push(facts.join(" \u00b7 "));
+	return lines.join("\n");
 }
 
 /**
@@ -129,6 +222,7 @@ export function selectToasts(
 	lastSeenId: string | null,
 	harnessId = "",
 	ompSessionId = "",
+	verbose = true,
 ): ToastMessage[] {
 	if (lastSeenId === null) return [];
 	// `entries` is newest-first. Entries strictly newer than lastSeenId are the
@@ -143,7 +237,7 @@ export function selectToasts(
 		if (d.wasted) continue;
 		if (harnessId !== "" && d.harnessId !== harnessId) continue;
 		if (ompSessionId !== "" && d.ompSessionId !== ompSessionId) continue;
-		out.push({ model: d.servedSlug ?? d.slug, tier: d.tier, costUsd: d.reportedUsd, text: toToastText(d) });
+		out.push({ model: d.servedSlug ?? d.slug, tier: d.tier, costUsd: d.reportedUsd, text: toToastText(d, verbose) });
 	}
 	return out;
 }

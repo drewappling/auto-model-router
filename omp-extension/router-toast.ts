@@ -38,6 +38,9 @@ import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
 // Empty ⇒ toast every harness (single-harness default).
 const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
 const POLL_MS = 2_000;
+// The toast explains the choice by default: model, tier, cost, why it was picked
+// and what it was handed. `AUTO_MODEL_ROUTER_TOAST=compact` restores the one-liner.
+const VERBOSE = (process.env.AUTO_MODEL_ROUTER_TOAST ?? "").toLowerCase() !== "compact";
 
 export default function (pi: ExtensionAPI): void {
 	pi.setLabel("auto-model-router toast");
@@ -91,7 +94,7 @@ export default function (pi: ExtensionAPI): void {
 				const entries = body.entries;
 				if (!Array.isArray(entries) || entries.length === 0) return;
 
-				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID, sessionId)) {
+				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID, sessionId, VERBOSE)) {
 					ctx.ui.notify(t.text, "info");
 				}
 				lastSeenId = newestId(entries) ?? lastSeenId;
