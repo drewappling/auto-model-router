@@ -169,6 +169,16 @@ scope now correct the bridge degrades to **inert** for other projects. Correct a
 means the bridge only helps projects the configured token actually grants. A multi-scope token
 would fix that, at the cost of one credential reaching every project.
 
+## 6b. FIXED — the same discriminator gates injection (0.10)
+
+Recording skipped tool-less calls from 0.2.11, but injection did not: every scoped
+request received the block, so omp's title and rating calls each carried ~6k tokens of
+project context they could not use. Measured 2026-09-08 on one omp turn: seven side
+calls, 23,412 chars each, 42,417 prompt tokens of context in total. `turn.ts` now
+resolves the block only when `req.tools.length > 0`, the same test recording uses, and
+leaves the conversation's pin untouched otherwise. `context.injectWithoutTools` (default
+off) is the escape hatch for an agent that deliberately ships no tools.
+
 ## 7. Also worth doing
 
 - **Context pollution from test turns.** `context_assemble` includes recent session messages,

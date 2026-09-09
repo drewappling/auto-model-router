@@ -263,6 +263,14 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// the query-relevant memory/docs tail. 0 omits the brief.
 		briefChars: 12_000,
 		recordTurns: true,
+		// A request with no tool schemas is a harness utility call — omp asks for
+		// a session title or a complexity rating through the same provider — and
+		// it answers ABOUT the conversation, so the project block cannot help it.
+		// Recording already skips those calls (turn.ts); injection did not, and
+		// one omp turn measured seven side calls at ~6k tokens of context each,
+		// 42k prompt tokens for nothing. Off: the block goes only to turns that
+		// ship tools. On: every scoped turn gets it, as before 0.10.
+		injectWithoutTools: false,
 		maxQueue: 64,
 	},
 	compaction: {

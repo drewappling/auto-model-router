@@ -136,6 +136,12 @@ export async function runTurn(
 	// Request header wins; the configured default covers harnesses that send none.
 	const doxScope = req.agentdoxScope !== "" ? req.agentdoxScope : config.context.defaultScope;
 	const doxActive = bridge.enabled && doxScope !== "";
+	// Injection shares recording's discriminator (explained at the record call
+	// below): a tool-less harness utility call answers ABOUT the conversation
+	// and gains nothing from the project block, yet paid its full ~6k tokens on
+	// every title and rating — 42k prompt tokens across one omp turn's seven
+	// side calls. `context.injectWithoutTools` restores the old behaviour.
+	const doxInject = doxActive && (req.tools.length > 0 || config.context.injectWithoutTools);
 
 	// The trigger list is the source of truth for enabled signals, except
 	// length_stop, which rides on its own toggle (escalation.escalateOnLengthStop).
@@ -209,7 +215,7 @@ export async function runTurn(
 		// turn's prefix is already cold — a model switch or a retry — so the
 		// injected bytes stay identical while the cache is worth keeping.
 		let contextBlock: string | undefined;
-		if (doxActive) {
+		if (doxInject) {
 			const pin = await bridge.resolve({
 				scope: doxScope,
 				conversationKey: req.conversationKey,
@@ -233,6 +239,7 @@ export async function runTurn(
 		log.debug("agentdox context", {
 			active: doxActive,
 			scope: doxScope === "" ? "(none)" : doxScope,
+			utilityCall: doxActive && !doxInject,
 			injected: contextBlock !== undefined,
 			chars: contextBlock?.length ?? 0,
 		});

@@ -769,6 +769,13 @@ export interface ContextConfig {
 	briefChars: number;
 	/** Write settled turns back to agentdox sessions, tagged with the served model. */
 	recordTurns: boolean;
+	/**
+	 * Inject the block into turns that carry NO tool schemas too. Those are
+	 * harness utility calls (titles, ratings), which recording already skips;
+	 * default off, because each one paid the whole block for an answer that is
+	 * about the conversation, not part of it.
+	 */
+	injectWithoutTools: boolean;
 	/** Bound on queued write-backs; excess turns are dropped, never buffered unbounded. */
 	maxQueue: number;
 }

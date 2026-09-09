@@ -73,7 +73,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1, confirmUpgradesBelowConfidence: 0.6 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
-		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, maxQueue: 64 },
+		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, injectWithoutTools: false, maxQueue: 64 },
 		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1, digestToolResults: false, digestMaxPerTurn: 2 },
 		budget: { onExceeded: "downgrade" },
 		report: { baselines: [], dailySummary: false },
@@ -657,6 +657,81 @@ describe("agentdox write-back sees the shape of the turn", () => {
 
 		expect(errors).toHaveLength(0);
 		expect(records).toHaveLength(0);
+	});
+});
+
+describe("agentdox injection sees the shape of the turn", () => {
+	const AGENT_TOOL = { name: "read", description: "read a file", schemaBytes: 128 };
+
+	/** A bridge that always has a block, counting how often it is asked. */
+	function mkServingBridge(): { bridge: ContextBridge; resolves: number[] } {
+		const resolves: number[] = [];
+		return {
+			resolves,
+			bridge: {
+				enabled: true,
+				resolve: () => {
+					resolves.push(1);
+					return Promise.resolve({ block: "<project-context>ctx</project-context>", version: "v1", fetchedAtMs: 1 });
+				},
+				recordTurn: () => {},
+				flush: () => Promise.resolve(),
+				pruneBlocks: () => 0,
+				close: () => {},
+			},
+		};
+	}
+
+	function oneDispatch() {
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: null })]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("high"), finishChunk("stop"), usageChunk({}, 0.0001)] },
+		]);
+		const { ledger } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+		return { router, upstream, ledger, store, sink, errors };
+	}
+
+	test("a harness utility call gets no context block", async () => {
+		// Measured on one omp turn: seven tool-less side calls (title, ratings)
+		// each received the whole ~6k-token block — 42k prompt tokens for
+		// answers ABOUT the conversation. The tool array is the discriminator,
+		// exactly as for recording.
+		const { router, upstream, ledger, store, sink, errors } = oneDispatch();
+		const { bridge, resolves } = mkServingBridge();
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj", tools: [] };
+
+		await runTurn(req, sink, { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(resolves).toHaveLength(0);
+		expect(store.load(req.conversationKey).contextVersion).toBeNull();
+	});
+
+	test("an agent turn with tools is injected", async () => {
+		const { router, upstream, ledger, store, sink, errors } = oneDispatch();
+		const { bridge, resolves } = mkServingBridge();
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj", tools: [AGENT_TOOL] };
+
+		await runTurn(req, sink, { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(resolves).toHaveLength(1);
+		expect(store.load(req.conversationKey).contextVersion).toBe("v1");
+	});
+
+	test("context.injectWithoutTools restores injection into tool-less calls", async () => {
+		const { router, upstream, ledger, store, sink, errors } = oneDispatch();
+		const { bridge, resolves } = mkServingBridge();
+		const base = mkConfig({ enabled: false });
+		const config: RouterConfig = { ...base, context: { ...base.context, injectWithoutTools: true } };
+		const req: NormRequest = { ...mkReq(), agentdoxScope: "proj", tools: [] };
+
+		await runTurn(req, sink, { config, router, upstream, ledger, conversations: store, catalog, context: bridge }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(resolves).toHaveLength(1);
 	});
 });
 

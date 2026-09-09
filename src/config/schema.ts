@@ -192,6 +192,7 @@ const context = z.strictObject({
 	sessionLimit: z.number().int().nonnegative().optional(),
 	briefChars: z.number().int().nonnegative().optional(),
 	recordTurns: z.boolean().optional(),
+	injectWithoutTools: z.boolean().optional(),
 	maxQueue: z.number().int().positive().optional(),
 });
 

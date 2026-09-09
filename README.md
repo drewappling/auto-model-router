@@ -1471,6 +1471,17 @@ move while the loop runs. So the router buffers the assistant's narration across
 the loop and writes it once, together with the closing synthesis, when the
 assistant actually yields back to the user.
 
+### Utility calls get neither the block nor a transcript
+
+A harness drives more than the agent's conversation through this provider: omp
+asks for a session title and a complexity rating with `model: auto`. Those
+calls answer *about* the conversation, carry no tool schemas, and gain nothing
+from the project block, yet each one paid the whole block — measured at ~6k
+prompt tokens per call, 42k across one turn's seven side calls. So the tool
+array is the discriminator for both directions: a request with no tools is
+neither recorded nor injected. `context.injectWithoutTools: true` restores
+injection into tool-less requests for a deliberately tool-less agent.
+
 Write-backs are queued, bounded, and never awaited: agentdox is an enrichment,
 not a dependency. If it is unreachable the turn routes and dispatches normally,
 and a pinned block keeps being served.
