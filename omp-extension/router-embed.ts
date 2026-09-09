@@ -27,6 +27,7 @@ import { ompModelsPath } from "../src/cli/config-cmd.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { startServer } from "../src/server/http.ts";
 import { readRemoteRouter, remoteProviderRegistration } from "./remote-logic.ts";
+import { refreshAndRewrite, shouldRefresh } from "../src/cli/refresh.ts";
 import type { StartedServer } from "../src/server/http.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 
@@ -161,8 +162,21 @@ export default function (pi: ExtensionAPI): void {
 		// Remote mode (`auto-model-router connect`): a router elsewhere is the
 		// router. Register it as the provider with its key and bind nothing
 		// locally; the other extensions find it through remote.json.
-		const remote = readRemoteRouter(routerHome());
+		let remote = readRemoteRouter(routerHome());
 		if (remote !== null) {
+			// A short-lived key is traded a day ahead of its expiry, and every config
+			// re-written, so no session ever starts on a dead key. The remote keeps the
+			// old key valid until its own expiry, so this session's main handle (which
+			// omp resolved from models.yml before we loaded) is not cut either way.
+			if (shouldRefresh(remote)) {
+				try {
+					const fresh = await refreshAndRewrite({ remote });
+					remote = { ...remote, key: fresh.key, refreshToken: fresh.refreshToken, keyExpiresAtMs: fresh.keyExpiresAtMs, refreshExpiresAtMs: fresh.refreshExpiresAtMs };
+					writeEmbedLog(`remote credential refreshed; key valid until ${new Date(fresh.keyExpiresAtMs).toISOString()}`);
+				} catch (err) {
+					writeEmbedLog(`remote credential refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
 			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend, deriveAgentdoxScope(process.cwd())));
 			pi.setLabel(`auto-model-router remote (${remote.url.replace(/^https?:\/\//, "")})`);
 			writeEmbedLog(`remote mode url=${remote.url} user=${remote.userId} session=${sessionId}`);

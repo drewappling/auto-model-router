@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { addExtensions, codexBlock, connectRemote, setDotenv, type ConnectOptions } from "../src/cli/connect.ts";
 import { parseRemoteRouter, readRemoteRouter, remoteProviderRegistration } from "../omp-extension/remote-logic.ts";
-import { hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
+import { existingBlockScope, hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
+import { refreshAndRewrite, refreshCredential, RefreshError, shouldRefresh } from "../src/cli/refresh.ts";
 
 /**
  * Remote mode: remote.json puts the omp extensions on a router elsewhere,
@@ -145,5 +146,79 @@ describe("omp models.yml for a remote router", () => {
 		expect(hasForeignRouterProvider(yaml("providers:", "  auto-model-router:", "    baseUrl: http://127.0.0.1:1/v1"))).toBe(true);
 		expect(hasForeignRouterProvider(mergeModelsYml("", renderRemoteModelsYml("https://t", "k", BLEND)))).toBe(false);
 		expect(hasForeignRouterProvider(yaml("providers:", "  openai: {}"))).toBe(false);
+	});
+});
+
+describe("short-lived remote credentials", () => {
+	const NL = String.fromCharCode(10);
+	const remote = { url: "https://team.example", key: "amrt_old", userId: "u_ada", name: "Ada", joinedAtMs: 1, refreshToken: "amrr_r1", keyExpiresAtMs: 0, refreshExpiresAtMs: 0, device: "laptop" };
+
+	test("remote.json round-trips the credential fields, and a permanent key has none", () => {
+		const parsed = parseRemoteRouter(JSON.stringify(remote))!;
+		expect(parsed).toMatchObject({ refreshToken: "amrr_r1", keyExpiresAtMs: 0, refreshExpiresAtMs: 0, device: "laptop" });
+		const permanent = parseRemoteRouter(JSON.stringify({ url: "https://t", key: "k" }))!;
+		expect(permanent.refreshToken).toBeUndefined();
+		expect(shouldRefresh(permanent)).toBe(false);
+	});
+
+	test("a key is refreshed a day ahead of expiry, never without a refresh token", () => {
+		const now = 1_000_000_000_000;
+		const day = 24 * 3_600_000;
+		expect(shouldRefresh({ ...remote, keyExpiresAtMs: now + 3 * day }, now)).toBe(false);
+		expect(shouldRefresh({ ...remote, keyExpiresAtMs: now + day - 1 }, now)).toBe(true);
+		expect(shouldRefresh({ ...remote, keyExpiresAtMs: now - 1 }, now)).toBe(true); // already dead: still worth a try
+		expect(shouldRefresh({ ...remote, keyExpiresAtMs: now - 1, refreshToken: "" }, now)).toBe(false);
+	});
+
+	test("refreshCredential trades at /auth/refresh and surfaces the remote's refusal code", async () => {
+		const calls: { url: string; body: string }[] = [];
+		const ok = (async (url: string | URL | Request, init?: RequestInit) => {
+			calls.push({ url: String(url), body: String(init?.body) });
+			return Response.json({ key: "amrt_new", keyExpiresAtMs: 5, refreshToken: "amrr_r2", refreshExpiresAtMs: 9, device: "laptop" });
+		}) as unknown as typeof fetch;
+		const fresh = await refreshCredential(remote, ok);
+		expect(fresh).toEqual({ key: "amrt_new", keyExpiresAtMs: 5, refreshToken: "amrr_r2", refreshExpiresAtMs: 9, device: "laptop" });
+		expect(calls[0]).toEqual({ url: "https://team.example/auth/refresh", body: JSON.stringify({ refreshToken: "amrr_r1" }) });
+		const refused = (async () => Response.json({ error: { code: "refresh_reused", message: "already used" } }, { status: 401 })) as unknown as typeof fetch;
+		let err: RefreshError | null = null;
+		try {
+			await refreshCredential(remote, refused);
+		} catch (e) {
+			err = e as RefreshError;
+		}
+		expect(err?.code).toBe("refresh_reused");
+		expect(err?.message).toBe("already used");
+		await expect(refreshCredential({ ...remote, refreshToken: "" }, ok)).rejects.toBeInstanceOf(RefreshError);
+	});
+
+	test("refreshAndRewrite re-writes remote.json and the managed models.yml block, keeping its scope and join time", async () => {
+		const home = mkdtempSync(join(tmpdir(), "amr-refresh-"));
+		const agent = join(home, ".omp", "agent");
+		mkdirSync(agent, { recursive: true });
+		writeFileSync(join(agent, "config.yml"), "extensions: []" + NL);
+		const routerHome = join(home, ".auto-model-router");
+		const env = { HOME: home, PI_CODING_AGENT_DIR: agent, AUTO_MODEL_ROUTER_HOME: routerHome, HERMES_HOME: join(home, "no-hermes") };
+		try {
+			// First: a connect with a scope and a credential.
+			const { connectRemote } = await import("../src/cli/connect.ts");
+			connectRemote({ url: "https://team.example", key: "amrt_old", userId: "u_ada", name: "Ada", refreshToken: "amrr_r1", keyExpiresAtMs: 1, refreshExpiresAtMs: 2, device: "laptop", agentdoxScope: "omp-router", profile: false, dryRun: false, only: ["omp"], env, home, packageDir: process.cwd(), platform: "linux", pathHas: () => false });
+			const before = JSON.parse(readFileSync(join(routerHome, "remote.json"), "utf8")) as Record<string, unknown>;
+			expect(before).toMatchObject({ key: "amrt_old", refreshToken: "amrr_r1", keyExpiresAtMs: 1, device: "laptop" });
+			const models0 = readFileSync(join(agent, "models.yml"), "utf8");
+			expect(models0).toContain("apiKey: amrt_old");
+			expect(existingBlockScope(models0)).toBe("omp-router");
+			// Then a refresh, which knows nothing about the scope.
+			const fetchImpl = (async () => Response.json({ key: "amrt_new", keyExpiresAtMs: 50, refreshToken: "amrr_r2", refreshExpiresAtMs: 90 })) as unknown as typeof fetch;
+			const fresh = await refreshAndRewrite({ remote: parseRemoteRouter(readFileSync(join(routerHome, "remote.json"), "utf8"))!, fetchImpl, home, packageDir: process.cwd(), env, platform: "linux", pathHas: () => false });
+			expect(fresh.key).toBe("amrt_new");
+			const after = JSON.parse(readFileSync(join(routerHome, "remote.json"), "utf8")) as Record<string, unknown>;
+			expect(after).toMatchObject({ key: "amrt_new", refreshToken: "amrr_r2", keyExpiresAtMs: 50, refreshExpiresAtMs: 90, device: "laptop", joinedAtMs: before.joinedAtMs });
+			const models1 = readFileSync(join(agent, "models.yml"), "utf8");
+			expect(models1).toContain("apiKey: amrt_new");
+			expect(models1).not.toContain("amrt_old");
+			expect(existingBlockScope(models1)).toBe("omp-router"); // kept, not lost
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

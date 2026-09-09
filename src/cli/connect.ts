@@ -44,8 +44,13 @@ export interface ConnectOptions {
 	packageDir: string;
 	/** Cost figures omp shows for the remote's virtual models, USD per million tokens. */
 	blend?: { inputPerMtok: number; outputPerMtok: number };
-	/** Adds `X-Agentdox-Scope` to omp's models.yml entry. Machine-wide: only for a single-project machine. */
+	/** Adds `X-Agentdox-Scope` to omp's models.yml entry. Machine-wide: only for a single-project machine. Undefined keeps what the managed block already has. */
 	agentdoxScope?: string;
+	/** Short-lived credential fields from a remote that issues them; absent for a permanent key. */
+	refreshToken?: string;
+	keyExpiresAtMs?: number;
+	refreshExpiresAtMs?: number;
+	device?: string;
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -190,6 +195,16 @@ export function mergeModelsYml(before: string, blockText: string): string {
 	return `${body.replace(/\s*$/, "")}${eol}providers:${eol}${block}${eol}`;
 }
 
+/** The `X-Agentdox-Scope` the managed block carries, or "" when none. */
+export function existingBlockScope(text: string): string {
+	const begin = text.indexOf(MODELS_YML_BEGIN);
+	if (begin < 0) return "";
+	const end = text.indexOf(MODELS_YML_END, begin);
+	const block = text.slice(begin, end < 0 ? text.length : end);
+	const m = /X-Agentdox-Scope:\s*(\S+)/.exec(block);
+	return m?.[1] ?? "";
+}
+
 /** True when the file already defines our provider outside a block we manage. */
 export function hasForeignRouterProvider(text: string): boolean {
 	if (text.includes(MODELS_YML_BEGIN)) return false;
@@ -207,7 +222,25 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	// 1. remote.json: what puts the omp extensions into remote mode.
 	const rh = routerHomeOf(o);
 	report.remoteFile = remoteFilePath(rh);
-	write(report.remoteFile, `${JSON.stringify({ url: o.url, key: o.key, userId: o.userId, name: o.name, joinedAtMs: Date.now() }, null, 2)}\n`);
+	const previous = existsSync(report.remoteFile) ? (JSON.parse(readFileSync(report.remoteFile, "utf8")) as Record<string, unknown>) : {};
+	write(
+		report.remoteFile,
+		`${JSON.stringify(
+			{
+				url: o.url,
+				key: o.key,
+				userId: o.userId,
+				name: o.name,
+				joinedAtMs: typeof previous.joinedAtMs === "number" ? previous.joinedAtMs : Date.now(),
+				...(o.refreshToken !== undefined && o.refreshToken !== "" ? { refreshToken: o.refreshToken } : {}),
+				...(o.keyExpiresAtMs !== undefined ? { keyExpiresAtMs: o.keyExpiresAtMs } : {}),
+				...(o.refreshExpiresAtMs !== undefined ? { refreshExpiresAtMs: o.refreshExpiresAtMs } : {}),
+				...(o.device !== undefined && o.device !== "" ? { device: o.device } : {}),
+			},
+			null,
+			2,
+		)}\n`,
+	);
 
 	// 2. omp
 	const agentDir = ompAgentDir(o);
@@ -225,7 +258,9 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 			report.notes.push(`${modelsPath} already defines an auto-model-router provider by hand; left alone — remove it to let connect manage the remote entry`);
 			report.configured.push(`omp (${cfgPath}; extensions only)`);
 		} else {
-			const modelsAfter = mergeModelsYml(modelsBefore, renderRemoteModelsYml(o.url, o.key, o.blend ?? { inputPerMtok: 1.1, outputPerMtok: 4.4 }, o.agentdoxScope ?? ""));
+			// A refresh re-writes the block without knowing the scope: keep the one already there.
+			const scope = o.agentdoxScope ?? existingBlockScope(modelsBefore);
+			const modelsAfter = mergeModelsYml(modelsBefore, renderRemoteModelsYml(o.url, o.key, o.blend ?? { inputPerMtok: 1.1, outputPerMtok: 4.4 }, scope));
 			if (modelsAfter !== modelsBefore) {
 				// Never overwrite another provider's work without a way back.
 				if (modelsBefore !== "" && !o.dryRun) writeFileSync(`${modelsPath}.${new Date().toISOString().replaceAll(":", "-")}.bak`, modelsBefore, "utf8");
@@ -292,6 +327,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		}
 	} else report.notes.push("add the environment lines to your shell profile, or re-run with --profile");
 	report.notes.push("omp's models.yml now carries the member key; treat that file as a secret");
+	if (o.refreshToken !== undefined && o.refreshToken !== "") report.notes.push("the key is short-lived: omp refreshes it at session start; `auto-model-router refresh` does it by hand, and `auto-model-router token` prints a current key for a harness key-helper");
 	return report;
 }
 
@@ -316,8 +352,31 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	const home = process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir();
 	// A single-project machine can label every request; a machine with several
 	// repos should leave it off and let the extensions send the workspace's own.
-	const agentdoxScope = flagString(args, "scope") ?? "";
-	const report = connectRemote({ url, key, userId, name, profile: args.flags.has("profile"), dryRun: args.flags.has("dry-run"), only, env: process.env, home, packageDir, platform: process.platform, pathHas, agentdoxScope });
+	const scopeFlag = flagString(args, "scope");
+	// A remote that issues short-lived keys hands these over beside the key.
+	const refreshToken = flagString(args, "refresh-token") ?? "";
+	const keyExpires = Number.parseInt(flagString(args, "key-expires") ?? "", 10);
+	const refreshExpires = Number.parseInt(flagString(args, "refresh-expires") ?? "", 10);
+	const device = flagString(args, "device") ?? "";
+	const report = connectRemote({
+		url,
+		key,
+		userId,
+		name,
+		profile: args.flags.has("profile"),
+		dryRun: args.flags.has("dry-run"),
+		only,
+		env: process.env,
+		home,
+		packageDir,
+		platform: process.platform,
+		pathHas,
+		...(scopeFlag === undefined ? {} : { agentdoxScope: scopeFlag }),
+		...(refreshToken === "" ? {} : { refreshToken }),
+		...(Number.isFinite(keyExpires) ? { keyExpiresAtMs: keyExpires } : {}),
+		...(Number.isFinite(refreshExpires) ? { refreshExpiresAtMs: refreshExpires } : {}),
+		...(device === "" ? {} : { device }),
+	});
 	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);
 	for (const s of report.skipped) console.log(`  skipped    ${s}`);

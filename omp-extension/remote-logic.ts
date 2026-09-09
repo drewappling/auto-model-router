@@ -22,6 +22,12 @@ export interface RemoteRouter {
 	userId: string;
 	name: string;
 	joinedAtMs: number;
+	/** Present when the remote issues short-lived keys: trades for the next key (see src/cli/refresh.ts). */
+	refreshToken?: string;
+	keyExpiresAtMs?: number;
+	refreshExpiresAtMs?: number;
+	/** What the remote calls this machine. */
+	device?: string;
 }
 
 export function remoteFilePath(routerHome: string): string {
@@ -33,7 +39,17 @@ export function parseRemoteRouter(text: string): RemoteRouter | null {
 	try {
 		const raw = JSON.parse(text) as Record<string, unknown>;
 		if (typeof raw.url !== "string" || typeof raw.key !== "string" || raw.url === "" || raw.key === "") return null;
-		return { url: raw.url.replace(/\/+$/, ""), key: raw.key, userId: typeof raw.userId === "string" ? raw.userId : "", name: typeof raw.name === "string" ? raw.name : "", joinedAtMs: typeof raw.joinedAtMs === "number" ? raw.joinedAtMs : 0 };
+		return {
+			url: raw.url.replace(/\/+$/, ""),
+			key: raw.key,
+			userId: typeof raw.userId === "string" ? raw.userId : "",
+			name: typeof raw.name === "string" ? raw.name : "",
+			joinedAtMs: typeof raw.joinedAtMs === "number" ? raw.joinedAtMs : 0,
+			...(typeof raw.refreshToken === "string" && raw.refreshToken !== "" ? { refreshToken: raw.refreshToken } : {}),
+			...(typeof raw.keyExpiresAtMs === "number" ? { keyExpiresAtMs: raw.keyExpiresAtMs } : {}),
+			...(typeof raw.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: raw.refreshExpiresAtMs } : {}),
+			...(typeof raw.device === "string" && raw.device !== "" ? { device: raw.device } : {}),
+		};
 	} catch {
 		return null;
 	}

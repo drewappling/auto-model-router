@@ -1306,6 +1306,17 @@ whatever else is authenticated. A local router deliberately gets no such entry �
 is ephemeral, so a persisted one names a dead socket next launch — but a remote's URL and
 key are stable. **The file then holds the member key: treat it as a secret.**
 
+**Short-lived keys.** A remote that issues them (the team edition does) hands `connect` a
+refresh token beside the key (`--refresh-token`, `--key-expires`, `--refresh-expires`,
+`--device`), all kept in `remote.json`. The omp extension trades the refresh token for a
+new key a day before expiry, at session start, and re-writes every config `connect`
+wrote; `auto-model-router refresh` does the same by hand (`--force` to do it early), and
+`auto-model-router token` prints a key that is good right now, refreshing first if needed —
+the shape a harness key-helper wants (Claude Code's `apiKeyHelper`). The remote keeps the
+old key valid until its own expiry, so a session still holding it is never cut. A refresh
+token presented twice means the credential was copied: the remote revokes that device, and
+the machine onboards again.
+
 In remote mode omp sends `X-Agentdox-Scope` derived from the workspace folder, so one
 remote router serves every repo on the machine with that repo's shared context. The remote
 decides what to do with it: a team edition that pins a scope on the member's group
