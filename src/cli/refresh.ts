@@ -16,7 +16,8 @@
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readRemoteRouter, type RemoteRouter } from "../../omp-extension/remote-logic.ts";
+import { hasRefresh, readRemoteRouter, refreshAccountOf, type RemoteRouter } from "../../omp-extension/remote-logic.ts";
+import { loadRefreshToken, type StoreDeps } from "./credential-store.ts";
 import { routerHome } from "../../omp-extension/router-url.ts";
 import type { CliArgs } from "./args.ts";
 import { connectRemote } from "./connect.ts";
@@ -34,7 +35,7 @@ export interface RefreshedCredential {
 
 /** True when the credential can and should be traded now: it has a refresh token and its key is near or past expiry. */
 export function shouldRefresh(remote: RemoteRouter, nowMs = Date.now()): boolean {
-	if (remote.refreshToken === undefined || remote.refreshToken === "") return false;
+	if (!hasRefresh(remote)) return false;
 	if (remote.keyExpiresAtMs === undefined) return false;
 	return remote.keyExpiresAtMs - nowMs <= REFRESH_AHEAD_MS;
 }
@@ -49,13 +50,21 @@ export class RefreshError extends Error {
 	}
 }
 
+/** The refresh token: inline from an older remote.json, else from the OS store remote.json names. */
+export function resolveRefreshToken(remote: RemoteRouter, routerHome: string, storeDeps: StoreDeps = {}): string | null {
+	if (remote.refreshToken !== undefined && remote.refreshToken !== "") return remote.refreshToken;
+	if (remote.refreshTokenStore === undefined) return null;
+	return loadRefreshToken(routerHome, remote.refreshAccount ?? refreshAccountOf(remote.url, remote.userId), remote.refreshTokenStore, storeDeps);
+}
+
 /** Trades the refresh token at the remote for the next credential. */
-export async function refreshCredential(remote: RemoteRouter, fetchImpl: typeof fetch = fetch): Promise<RefreshedCredential> {
-	if (remote.refreshToken === undefined || remote.refreshToken === "") throw new RefreshError("no_refresh_token", "this machine holds no refresh token; onboard it again with a setup token");
+export async function refreshCredential(remote: RemoteRouter, fetchImpl: typeof fetch = fetch, routerHomeDir: string = routerHome(), storeDeps: StoreDeps = {}): Promise<RefreshedCredential> {
+	const token = resolveRefreshToken(remote, routerHomeDir, storeDeps);
+	if (token === null || token === "") throw new RefreshError("no_refresh_token", "this machine holds no refresh token (or its credential store no longer has it); onboard it again with a setup token");
 	const res = await fetchImpl(`${remote.url}/auth/refresh`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ refreshToken: remote.refreshToken }),
+		body: JSON.stringify({ refreshToken: token }),
 		signal: AbortSignal.timeout(15_000),
 	});
 	const body = (await res.json().catch(() => null)) as { key?: unknown; keyExpiresAtMs?: unknown; refreshToken?: unknown; refreshExpiresAtMs?: unknown; device?: unknown; error?: { code?: string; message?: string } } | null;
@@ -76,8 +85,9 @@ export async function refreshCredential(remote: RemoteRouter, fetchImpl: typeof 
  * harness configs `connect` manages. Returns the fresh credential. `home` and
  * `packageDir` are injectable for tests.
  */
-export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?: typeof fetch; home?: string; packageDir?: string; env?: Record<string, string | undefined>; platform?: string; pathHas?: (bin: string) => boolean }): Promise<RefreshedCredential> {
-	const fresh = await refreshCredential(opts.remote, opts.fetchImpl ?? fetch);
+export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?: typeof fetch; home?: string; packageDir?: string; env?: Record<string, string | undefined>; platform?: string; pathHas?: (bin: string) => boolean; routerHome?: string; storeDeps?: StoreDeps }): Promise<RefreshedCredential> {
+	const rh = opts.routerHome ?? routerHome();
+	const fresh = await refreshCredential(opts.remote, opts.fetchImpl ?? fetch, rh, opts.storeDeps ?? {});
 	const home = opts.home ?? (process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : homedir());
 	const packageDir = opts.packageDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 	connectRemote({
@@ -97,6 +107,9 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 		packageDir,
 		platform: opts.platform ?? process.platform,
 		pathHas: opts.pathHas ?? ((bin) => Bun.which(bin) !== null),
+		// The store that already holds it keeps it; a machine never silently changes store.
+		...(opts.remote.refreshTokenStore !== undefined ? { store: opts.remote.refreshTokenStore } : {}),
+		...(opts.storeDeps !== undefined ? { storeDeps: opts.storeDeps } : {}),
 		// undefined keeps whatever scope the managed models.yml block already carries.
 	});
 	return fresh;

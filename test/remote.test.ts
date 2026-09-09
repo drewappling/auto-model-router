@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { addExtensions, codexBlock, connectRemote, setDotenv, type ConnectOptions } from "../src/cli/connect.ts";
 import { parseRemoteRouter, readRemoteRouter, remoteProviderRegistration } from "../omp-extension/remote-logic.ts";
 import { existingBlockScope, hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
-import { refreshAndRewrite, refreshCredential, RefreshError, shouldRefresh } from "../src/cli/refresh.ts";
+import { refreshAndRewrite, refreshCredential, RefreshError, resolveRefreshToken, shouldRefresh } from "../src/cli/refresh.ts";
+import { loadRefreshToken, pickStore, removeRefreshToken, saveRefreshToken } from "../src/cli/credential-store.ts";
+import { hasRefresh, refreshAccountOf } from "../omp-extension/remote-logic.ts";
 
 /**
  * Remote mode: remote.json puts the omp extensions on a router elsewhere,
@@ -78,7 +80,8 @@ describe("connect", () => {
 		expect(readFileSync(join(home, ".codex", "config.toml"), "utf8")).toContain("[model_providers.auto-model-router]");
 		expect(readFileSync(join(home, ".aider.conf.yml"), "utf8")).toContain("openai-api-base: https://team.example/v1");
 		expect(r1.configured.join("\n")).toMatch(/omp[\s\S]*Hermes[\s\S]*Codex[\s\S]*Aider[\s\S]*Claude Code/);
-		expect(r1.envLines).toEqual(["AUTO_MODEL_ROUTER_URL=https://team.example", "AUTO_MODEL_ROUTER_API_KEY=amrt_key", "ANTHROPIC_BASE_URL=https://team.example", "ANTHROPIC_API_KEY=amrt_key"]);
+		// Claude Code is configured through its settings file now, so nothing ANTHROPIC_* rides in the environment.
+		expect(r1.envLines).toEqual(["AUTO_MODEL_ROUTER_URL=https://team.example", "AUTO_MODEL_ROUTER_API_KEY=amrt_key"]);
 		// Running again changes nothing.
 		const snapshot = [ompCfg, readFileSync(join(home, ".codex", "config.toml"), "utf8"), readFileSync(join(home, ".aider.conf.yml"), "utf8")];
 		connectRemote(o);
@@ -99,7 +102,8 @@ describe("connect", () => {
 		connectRemote(o2);
 		const rc = readFileSync(join(h2, ".zshrc"), "utf8");
 		expect(rc.split("# auto-model-router remote").length).toBe(2);
-		expect(rc).toContain("export ANTHROPIC_BASE_URL=https://team.example");
+		expect(rc).toContain("export AUTO_MODEL_ROUTER_URL=https://team.example");
+		expect(rc).not.toContain("ANTHROPIC_");
 		rmSync(home, { recursive: true, force: true });
 		rmSync(h2, { recursive: true, force: true });
 	});
@@ -203,20 +207,113 @@ describe("short-lived remote credentials", () => {
 			const { connectRemote } = await import("../src/cli/connect.ts");
 			connectRemote({ url: "https://team.example", key: "amrt_old", userId: "u_ada", name: "Ada", refreshToken: "amrr_r1", keyExpiresAtMs: 1, refreshExpiresAtMs: 2, device: "laptop", agentdoxScope: "omp-router", profile: false, dryRun: false, only: ["omp"], env, home, packageDir: process.cwd(), platform: "linux", pathHas: () => false });
 			const before = JSON.parse(readFileSync(join(routerHome, "remote.json"), "utf8")) as Record<string, unknown>;
-			expect(before).toMatchObject({ key: "amrt_old", refreshToken: "amrr_r1", keyExpiresAtMs: 1, device: "laptop" });
+			// The refresh token is in the store (the file here: no platform tool on PATH); remote.json only names it.
+			expect(before).toMatchObject({ key: "amrt_old", keyExpiresAtMs: 1, device: "laptop", refreshTokenStore: "file", refreshAccount: "u_ada@team.example" });
+			expect(before.refreshToken).toBeUndefined();
+			expect(readFileSync(join(routerHome, "refresh.token"), "utf8").trim()).toBe("amrr_r1");
 			const models0 = readFileSync(join(agent, "models.yml"), "utf8");
 			expect(models0).toContain("apiKey: amrt_old");
 			expect(existingBlockScope(models0)).toBe("omp-router");
 			// Then a refresh, which knows nothing about the scope.
 			const fetchImpl = (async () => Response.json({ key: "amrt_new", keyExpiresAtMs: 50, refreshToken: "amrr_r2", refreshExpiresAtMs: 90 })) as unknown as typeof fetch;
-			const fresh = await refreshAndRewrite({ remote: parseRemoteRouter(readFileSync(join(routerHome, "remote.json"), "utf8"))!, fetchImpl, home, packageDir: process.cwd(), env, platform: "linux", pathHas: () => false });
+			const fresh = await refreshAndRewrite({ remote: parseRemoteRouter(readFileSync(join(routerHome, "remote.json"), "utf8"))!, fetchImpl, home, packageDir: process.cwd(), env, platform: "linux", pathHas: () => false, routerHome });
 			expect(fresh.key).toBe("amrt_new");
 			const after = JSON.parse(readFileSync(join(routerHome, "remote.json"), "utf8")) as Record<string, unknown>;
-			expect(after).toMatchObject({ key: "amrt_new", refreshToken: "amrr_r2", keyExpiresAtMs: 50, refreshExpiresAtMs: 90, device: "laptop", joinedAtMs: before.joinedAtMs });
+			expect(after).toMatchObject({ key: "amrt_new", keyExpiresAtMs: 50, refreshExpiresAtMs: 90, device: "laptop", joinedAtMs: before.joinedAtMs, refreshTokenStore: "file" });
+			expect(after.refreshToken).toBeUndefined();
+			expect(readFileSync(join(routerHome, "refresh.token"), "utf8").trim()).toBe("amrr_r2");
 			const models1 = readFileSync(join(agent, "models.yml"), "utf8");
 			expect(models1).toContain("apiKey: amrt_new");
 			expect(models1).not.toContain("amrt_old");
 			expect(existingBlockScope(models1)).toBe("omp-router"); // kept, not lost
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("the refresh token lives in the OS credential store", () => {
+	const NL = String.fromCharCode(10);
+	// A fake backend stands in for DPAPI / the keychain / secret-service.
+	const vault = new Map<string, string>();
+	const backend = { save: (a: string, s: string) => void vault.set(a, s), load: (a: string) => vault.get(a) ?? null, remove: (a: string) => void vault.delete(a) };
+
+	test("the store is picked from the platform and its tools; the file is the fallback everywhere", () => {
+		expect(pickStore("win32", (b) => b === "powershell")).toBe("dpapi");
+		expect(pickStore("win32", () => false)).toBe("file");
+		expect(pickStore("darwin", (b) => b === "security")).toBe("keychain");
+		expect(pickStore("linux", (b) => b === "secret-tool")).toBe("secret-service");
+		expect(pickStore("linux", () => false)).toBe("file");
+		expect(refreshAccountOf("https://team.example:8790/", "u_ada")).toBe("u_ada@team.example:8790");
+	});
+
+	test("save/load through a store, and the file fallback keeps the token owner-readable", () => {
+		const home = mkdtempSync(join(tmpdir(), "amr-store-"));
+		try {
+			expect(saveRefreshToken(home, "u@t", "amrr_x", "keychain", { backend })).toBe("keychain");
+			expect(loadRefreshToken(home, "u@t", "keychain", { backend })).toBe("amrr_x");
+			expect(existsSync(join(home, "refresh.token"))).toBe(false); // nothing on disk
+			expect(saveRefreshToken(home, "u@t", "amrr_f", "file")).toBe("file");
+			expect(loadRefreshToken(home, "u@t", "file")).toBe("amrr_f");
+			removeRefreshToken(home, "u@t", { backend });
+			expect(loadRefreshToken(home, "u@t", "keychain", { backend })).toBeNull();
+			expect(existsSync(join(home, "refresh.token"))).toBe(false);
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test("connect files the token in the store and remote.json only names it; refresh reads it back; an older inline token still works", async () => {
+		const home = mkdtempSync(join(tmpdir(), "amr-store2-"));
+		const agent = join(home, ".omp", "agent");
+		mkdirSync(agent, { recursive: true });
+		writeFileSync(join(agent, "config.yml"), "extensions: []" + NL);
+		const rh = join(home, ".auto-model-router");
+		const env = { HOME: home, PI_CODING_AGENT_DIR: agent, AUTO_MODEL_ROUTER_HOME: rh, HERMES_HOME: join(home, "no-hermes") };
+		try {
+			const { connectRemote } = await import("../src/cli/connect.ts");
+			connectRemote({ url: "https://team.example", key: "amrt_k1", userId: "u_ada", name: "Ada", refreshToken: "amrr_r1", keyExpiresAtMs: 1, refreshExpiresAtMs: 2, device: "laptop", store: "keychain", storeDeps: { backend }, profile: false, dryRun: false, only: ["omp"], env, home, packageDir: process.cwd(), platform: "darwin", pathHas: () => false });
+			const written = readFileSync(join(rh, "remote.json"), "utf8");
+			expect(written).not.toContain("amrr_r1");
+			const remote = parseRemoteRouter(written)!;
+			expect(remote).toMatchObject({ refreshTokenStore: "keychain", refreshAccount: "u_ada@team.example" });
+			expect(remote.refreshToken).toBeUndefined();
+			expect(hasRefresh(remote)).toBe(true);
+			expect(resolveRefreshToken(remote, rh, { backend })).toBe("amrr_r1");
+			// The refresh trades the stored token and files the new one in the same store.
+			const seen: string[] = [];
+			const fetchImpl = (async (_u: string | URL | Request, init?: RequestInit) => {
+				seen.push(String(init?.body));
+				return Response.json({ key: "amrt_k2", keyExpiresAtMs: 50, refreshToken: "amrr_r2", refreshExpiresAtMs: 90 });
+			}) as unknown as typeof fetch;
+			await refreshAndRewrite({ remote, fetchImpl, home, packageDir: process.cwd(), env, platform: "darwin", pathHas: () => false, routerHome: rh, storeDeps: { backend } });
+			expect(seen[0]).toBe(JSON.stringify({ refreshToken: "amrr_r1" }));
+			expect(vault.get("u_ada@team.example")).toBe("amrr_r2");
+			expect(readFileSync(join(rh, "remote.json"), "utf8")).not.toContain("amrr_r2");
+			// An older remote.json with the token inline is honoured until its next refresh.
+			const legacy = parseRemoteRouter(JSON.stringify({ url: "https://t", key: "k", refreshToken: "amrr_inline" }))!;
+			expect(resolveRefreshToken(legacy, rh)).toBe("amrr_inline");
+		} finally {
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test("connect writes Claude Code's settings: base URL in env, a key helper instead of a key, other settings kept", async () => {
+		const home = mkdtempSync(join(tmpdir(), "amr-claude-"));
+		const claude = join(home, ".claude");
+		mkdirSync(claude, { recursive: true });
+		writeFileSync(join(claude, "settings.json"), JSON.stringify({ theme: "dark", env: { ANTHROPIC_API_KEY: "sk-old", FOO: "bar" } }, null, 2) + NL);
+		const env = { HOME: home, PI_CODING_AGENT_DIR: join(home, "no-omp"), AUTO_MODEL_ROUTER_HOME: join(home, ".auto-model-router"), HERMES_HOME: join(home, "no-hermes") };
+		try {
+			const { connectRemote } = await import("../src/cli/connect.ts");
+			const r = connectRemote({ url: "https://team.example", key: "amrt_k", userId: "u_ada", name: "Ada", profile: false, dryRun: false, only: ["claude"], env, home, packageDir: "/pkg", platform: "linux", pathHas: () => false });
+			expect(r.configured.some((c) => c.startsWith("Claude Code ("))).toBe(true);
+			const s = JSON.parse(readFileSync(join(claude, "settings.json"), "utf8")) as { theme: string; env: Record<string, string>; apiKeyHelper: string };
+			expect(s.theme).toBe("dark");
+			expect(s.env).toEqual({ FOO: "bar", ANTHROPIC_BASE_URL: "https://team.example" }); // the stale key is gone
+			expect(s.apiKeyHelper).toMatch(/^bun run ".*\/pkg\/src\/index\.ts" token$/); // an absolute path, drive letter and all on Windows
+			expect(r.envLines.some((l) => l.startsWith("ANTHROPIC_API_KEY="))).toBe(false);
+			expect(readdirSync(claude).some((f) => f.startsWith("settings.json.") && f.endsWith(".bak"))).toBe(true); // the previous file was kept
 		} finally {
 			rmSync(home, { recursive: true, force: true });
 		}

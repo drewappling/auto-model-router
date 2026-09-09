@@ -22,8 +22,16 @@ export interface RemoteRouter {
 	userId: string;
 	name: string;
 	joinedAtMs: number;
-	/** Present when the remote issues short-lived keys: trades for the next key (see src/cli/refresh.ts). */
+	/**
+	 * Present only in a remote.json written before the credential store existed:
+	 * the token inline. New files name the store instead (`refreshTokenStore`) and
+	 * the token is read from it when a refresh happens (src/cli/refresh.ts).
+	 */
 	refreshToken?: string;
+	/** Which OS store holds the refresh token: dpapi (Windows), keychain (macOS), secret-service (Linux) or file. */
+	refreshTokenStore?: "dpapi" | "keychain" | "secret-service" | "file";
+	/** The account the store files it under (`<userId>@<remote host>`). */
+	refreshAccount?: string;
 	keyExpiresAtMs?: number;
 	refreshExpiresAtMs?: number;
 	/** What the remote calls this machine. */
@@ -46,6 +54,8 @@ export function parseRemoteRouter(text: string): RemoteRouter | null {
 			name: typeof raw.name === "string" ? raw.name : "",
 			joinedAtMs: typeof raw.joinedAtMs === "number" ? raw.joinedAtMs : 0,
 			...(typeof raw.refreshToken === "string" && raw.refreshToken !== "" ? { refreshToken: raw.refreshToken } : {}),
+			...(raw.refreshTokenStore === "dpapi" || raw.refreshTokenStore === "keychain" || raw.refreshTokenStore === "secret-service" || raw.refreshTokenStore === "file" ? { refreshTokenStore: raw.refreshTokenStore } : {}),
+			...(typeof raw.refreshAccount === "string" && raw.refreshAccount !== "" ? { refreshAccount: raw.refreshAccount } : {}),
 			...(typeof raw.keyExpiresAtMs === "number" ? { keyExpiresAtMs: raw.keyExpiresAtMs } : {}),
 			...(typeof raw.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: raw.refreshExpiresAtMs } : {}),
 			...(typeof raw.device === "string" && raw.device !== "" ? { device: raw.device } : {}),
@@ -53,6 +63,22 @@ export function parseRemoteRouter(text: string): RemoteRouter | null {
 	} catch {
 		return null;
 	}
+}
+
+/** True when this machine can trade for a new key: a refresh token inline, or a store that holds one. */
+export function hasRefresh(remote: RemoteRouter): boolean {
+	return (remote.refreshToken !== undefined && remote.refreshToken !== "") || remote.refreshTokenStore !== undefined;
+}
+
+/** The account a remote user's refresh token is filed under in the OS store. */
+export function refreshAccountOf(url: string, userId: string): string {
+	let host = url;
+	try {
+		host = new URL(url).host;
+	} catch {
+		/* keep the raw url */
+	}
+	return `${userId === "" ? "member" : userId}@${host}`;
 }
 
 export function readRemoteRouter(routerHome: string): RemoteRouter | null {

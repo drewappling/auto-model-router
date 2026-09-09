@@ -14,7 +14,9 @@
  *               $HERMES_HOME/plugins and .env points them at the remote
  *   Codex       ~/.codex/config.toml gains the auto-model-router provider
  *   Aider       ~/.aider.conf.yml gains the base URL, key and model
- *   Claude Code ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY (printed; --profile persists)
+ *   Claude Code ~/.claude/settings.json gains the base URL (its `env` block) and
+ *               `apiKeyHelper` running `auto-model-router token`, so no key
+ *               sits in its environment or on disk for it
  *
  * Every write is idempotent and announced. `--profile` persists the
  * environment lines (shell rc on POSIX, user environment on Windows).
@@ -26,7 +28,8 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { remoteFilePath } from "../../omp-extension/remote-logic.ts";
+import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
+import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
 import { flagString, type CliArgs } from "./args.ts";
 
 export interface ConnectOptions {
@@ -48,6 +51,9 @@ export interface ConnectOptions {
 	agentdoxScope?: string;
 	/** Short-lived credential fields from a remote that issues them; absent for a permanent key. */
 	refreshToken?: string;
+	/** Which store takes the refresh token; picked from the platform when absent. Tests inject a backend. */
+	store?: StoreKind;
+	storeDeps?: StoreDeps;
 	keyExpiresAtMs?: number;
 	refreshExpiresAtMs?: number;
 	device?: string;
@@ -223,6 +229,16 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	const rh = routerHomeOf(o);
 	report.remoteFile = remoteFilePath(rh);
 	const previous = existsSync(report.remoteFile) ? (JSON.parse(readFileSync(report.remoteFile, "utf8")) as Record<string, unknown>) : {};
+	// The refresh token is the long-lived secret: it goes to the OS credential store, and
+	// remote.json only says which one. The access key stays in the file: it is short-lived,
+	// and the extensions need it without a subprocess on every poll.
+	let refreshTokenStore: StoreKind | undefined;
+	const refreshAccount = refreshAccountOf(o.url, o.userId);
+	if (o.refreshToken !== undefined && o.refreshToken !== "" && !o.dryRun) {
+		const wanted = o.store ?? pickStore(o.platform, o.pathHas);
+		refreshTokenStore = saveRefreshToken(rh, refreshAccount, o.refreshToken, wanted, o.storeDeps ?? { pathHas: o.pathHas });
+		if (refreshTokenStore !== wanted) report.notes.push(`the ${wanted} credential store was not usable; the refresh token is in ${join(rh, "refresh.token")} (owner-readable only)`);
+	} else if (o.refreshToken !== undefined && o.refreshToken !== "") refreshTokenStore = o.store ?? pickStore(o.platform, o.pathHas);
 	write(
 		report.remoteFile,
 		`${JSON.stringify(
@@ -232,7 +248,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 				userId: o.userId,
 				name: o.name,
 				joinedAtMs: typeof previous.joinedAtMs === "number" ? previous.joinedAtMs : Date.now(),
-				...(o.refreshToken !== undefined && o.refreshToken !== "" ? { refreshToken: o.refreshToken } : {}),
+				...(refreshTokenStore !== undefined ? { refreshTokenStore, refreshAccount } : {}),
 				...(o.keyExpiresAtMs !== undefined ? { keyExpiresAtMs: o.keyExpiresAtMs } : {}),
 				...(o.refreshExpiresAtMs !== undefined ? { refreshExpiresAtMs: o.refreshExpiresAtMs } : {}),
 				...(o.device !== undefined && o.device !== "" ? { device: o.device } : {}),
@@ -300,11 +316,33 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		report.configured.push(`Aider (${aiderConf})`);
 	} else report.skipped.push("Aider (not found)");
 
-	// 6. Claude Code: environment only.
-	if (wants(o, "claude") && o.pathHas("claude")) {
-		report.envLines.push(`ANTHROPIC_BASE_URL=${o.url}`, `ANTHROPIC_API_KEY=${o.key}`);
-		report.configured.push("Claude Code (environment)");
-	} else report.skipped.push("Claude Code (not on PATH)");
+	// 6. Claude Code: its settings file carries the base URL (the `env` block) and a key
+	// helper, a command it runs for the key — so the key is never in its environment or
+	// on disk for it. Without a refresh token the helper still works (it prints the key it
+	// holds); the helper is what lets a short-lived key rotate underneath a running session.
+	const claudeDir = join(o.home, ".claude");
+	if (wants(o, "claude") && (o.pathHas("claude") || existsSync(claudeDir))) {
+		const settingsPath = join(claudeDir, "settings.json");
+		let settings: Record<string, unknown> = {};
+		const before = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : "";
+		try {
+			settings = before === "" ? {} : (JSON.parse(before) as Record<string, unknown>);
+		} catch {
+			report.notes.push(`${settingsPath} is not valid JSON; left alone — set env.ANTHROPIC_BASE_URL and apiKeyHelper by hand`);
+			settings = {};
+		}
+		const env: Record<string, unknown> = { ...((settings.env as Record<string, unknown> | undefined) ?? {}), ANTHROPIC_BASE_URL: o.url };
+		// Never leave a stale key beside the helper: the helper is the source now.
+		delete env.ANTHROPIC_API_KEY;
+		const entry = resolve(o.packageDir, "src", "index.ts").replaceAll("\\", "/");
+		const next = { ...settings, env, apiKeyHelper: `bun run "${entry}" token` };
+		const after = `${JSON.stringify(next, null, 2)}\n`;
+		if (after !== before) {
+			if (before !== "" && !o.dryRun) writeFileSync(`${settingsPath}.${new Date().toISOString().replaceAll(":", "-")}.bak`, before, "utf8");
+			write(settingsPath, after);
+		}
+		report.configured.push(`Claude Code (${settingsPath}: env.ANTHROPIC_BASE_URL + apiKeyHelper; open a new session)`);
+	} else report.skipped.push("Claude Code (not on PATH and no ~/.claude)");
 	report.envLines.unshift(`AUTO_MODEL_ROUTER_URL=${o.url}`, `AUTO_MODEL_ROUTER_API_KEY=${o.key}`);
 	report.envLines = [...new Set(report.envLines)];
 

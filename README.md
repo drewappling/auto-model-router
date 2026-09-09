@@ -1312,10 +1312,20 @@ refresh token beside the key (`--refresh-token`, `--key-expires`, `--refresh-exp
 new key a day before expiry, at session start, and re-writes every config `connect`
 wrote; `auto-model-router refresh` does the same by hand (`--force` to do it early), and
 `auto-model-router token` prints a key that is good right now, refreshing first if needed —
-the shape a harness key-helper wants (Claude Code's `apiKeyHelper`). The remote keeps the
-old key valid until its own expiry, so a session still holding it is never cut. A refresh
-token presented twice means the credential was copied: the remote revokes that device, and
-the machine onboards again.
+the shape a harness key-helper wants. The remote keeps the old key valid until its own
+expiry, so a session still holding it is never cut. A refresh token presented twice means
+the credential was copied: the remote revokes that device, and the machine onboards again.
+
+The refresh token, the long-lived secret, does not sit in a file: `connect` puts it in the
+operating system's credential store — DPAPI on Windows (ciphertext in
+`<router home>/refresh.dpapi`, decryptable only by that Windows user on that machine),
+the login keychain on macOS, the Secret Service on Linux — and `remote.json` only names
+which store holds it. `<router home>/refresh.token`, owner-readable only, is the fallback
+when no store is usable (a CI box), and the note at the end of `connect` says when that
+happened. **Claude Code** gets its settings file written instead of an environment: the
+`env` block carries `ANTHROPIC_BASE_URL`, and `apiKeyHelper` runs
+`auto-model-router token`, so no key is in its environment or on disk for it and a
+short-lived key rotates underneath a running session.
 
 In remote mode omp sends `X-Agentdox-Scope` derived from the workspace folder, so one
 remote router serves every repo on the machine with that repo's shared context. The remote
