@@ -10,7 +10,9 @@
 
 import { providerOfSlug } from "./report.ts";
 import type { Database } from "bun:sqlite";
+import { toEntry, type LedgerRow } from "./ledger.ts";
 import { harnessFilter } from "./report.ts";
+import type { LedgerEntry } from "./types.ts";
 
 /** `null` means every harness; an empty set matches nothing. */
 export type HarnessScope = readonly string[] | null;
@@ -59,6 +61,68 @@ function scope(harness: HarnessScope, column: string): { sql: string[]; bind: Re
 	if (harness.length === 0) return null;
 	const f = harnessFilter(harness.join(","));
 	return { sql: f.sql.map((s) => s.replace(/^harness_id/, column)), bind: f.bind };
+}
+
+/** A ledger entry as the decision explorer shows it: the entry itself plus the verdicts given on it. */
+export type DecisionEntry = LedgerEntry & { feedback: { verdict: "good" | "bad"; note: string; createdAtMs: number }[] };
+
+export interface DecisionFilter {
+	/** Entries at or after this instant; 0 for everything the ledger still holds. */
+	sinceMs: number;
+	/** The harness set; null for every harness, an empty list for none. */
+	harness: HarnessScope;
+	/** At most this many, newest first; 1..1000. */
+	limit?: number;
+	/** Only turns dispatched to (or served by) this slug. */
+	slug?: string;
+	/** Only turns classified at this tier. */
+	tier?: string;
+	/** Only one omp session (`/router why`). */
+	ompSessionId?: string;
+}
+
+/**
+ * Turns, newest first, over a harness set: what `GET /v1/router/decisions` serves and what a
+ * front door reads from the ledger file. Every field the decision trail needs is here — the
+ * reasons, the classifier's view, the cost forecast against the bill, the escalation signal —
+ * and the verdicts `/router good|bad` recorded against each turn ride along.
+ */
+export function decisionEntries(db: Database, filter: DecisionFilter): DecisionEntry[] {
+	const s = scope(filter.harness, "harness_id");
+	if (s === null) return [];
+	const where = ["created_at_ms >= $since", ...s.sql];
+	const bind: Record<string, string | number> = { $since: filter.sinceMs, ...s.bind };
+	if (filter.slug !== undefined && filter.slug !== "") {
+		where.push("(slug = $slug OR served_slug = $slug)");
+		bind.$slug = filter.slug;
+	}
+	if (filter.tier !== undefined && filter.tier !== "") {
+		where.push("tier = $tier");
+		bind.$tier = filter.tier;
+	}
+	if (filter.ompSessionId !== undefined && filter.ompSessionId !== "") {
+		where.push("omp_session_id = $session");
+		bind.$session = filter.ompSessionId;
+	}
+	const limit = Math.min(Math.max(filter.limit ?? 50, 1), 1_000);
+	const rows = db.query(`SELECT * FROM ledger WHERE ${where.join(" AND ")} ORDER BY created_at_ms DESC LIMIT ${limit}`).all(bind) as LedgerRow[];
+	const entries = rows.map(toEntry);
+	if (entries.length === 0) return [];
+	// Verdicts, when the feedback table exists (it does not on a ledger no one has judged).
+	const hasFeedback = (db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feedback'").get() as { name: string } | null) !== null;
+	const verdicts = new Map<string, DecisionEntry["feedback"]>();
+	if (hasFeedback) {
+		const ids = entries.map((e) => e.id);
+		const marks = ids.map((_, i) => `$f${i}`).join(", ");
+		const fb: Record<string, string> = {};
+		ids.forEach((id, i) => (fb[`$f${i}`] = id));
+		for (const r of db.query(`SELECT ledger_id, verdict, note, created_at_ms FROM feedback WHERE ledger_id IN (${marks}) ORDER BY created_at_ms ASC`).all(fb) as { ledger_id: string; verdict: string; note: string; created_at_ms: number }[]) {
+			const list = verdicts.get(r.ledger_id) ?? [];
+			list.push({ verdict: r.verdict === "good" ? "good" : "bad", note: r.note, createdAtMs: r.created_at_ms });
+			verdicts.set(r.ledger_id, list);
+		}
+	}
+	return entries.map((e) => ({ ...e, feedback: verdicts.get(e.id) ?? [] }));
 }
 
 /** Spend (reported where present, predicted otherwise) since `sinceMs`, digest calls included as the ledger counts them. */

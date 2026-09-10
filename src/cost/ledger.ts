@@ -65,7 +65,7 @@ const CACHE_RELIABILITY_MEMO_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 // Row shapes below are fixed by our own schema in util/sqlite.ts.
-interface LedgerRow {
+export interface LedgerRow {
 	id: string;
 	created_at_ms: number;
 	conversation_key: string;
@@ -240,7 +240,7 @@ function toLatency(slug: string, row: LatencyRow): ModelLatency | null {
 	return { slug, samples: row.samples, ttftMs: row.ttft_ms, tokensPerSec };
 }
 
-function toEntry(row: LedgerRow): LedgerEntry {
+export function toEntry(row: LedgerRow): LedgerEntry {
 	return {
 		id: row.id,
 		createdAtMs: row.created_at_ms,

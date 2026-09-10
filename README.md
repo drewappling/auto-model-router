@@ -710,8 +710,12 @@ escalation signal, error. Three views aggregate it, all from the same
   and model (dispatches, tokens, spend, escalations, errors) as CSV. Also
   `GET /v1/router/export?days=&harness=[&format=json]`; `GET /v1/router/spend?sinceMs=&harness=`
   gives spend over a harness set since an instant, and `GET /v1/router/feedback?days=&harness=`
-  lists verdicts by model and the recent ones with the harness that gave them. These are what
-  a front door such as the team edition reads instead of the ledger file.
+  lists verdicts by model and the recent ones with the harness that gave them, and
+  `GET /v1/router/decisions?harness=&days=|since=&slug=&tier=&limit=` is the decision trail
+  itself, newest first, each turn with its reasons, the classifier's view, forecast against
+  bill, escalation signal and verdicts (`?session=` narrows to one omp session, as `/router
+  why` does). These are what a front door such as the team edition reads instead of the
+  ledger file.
 - `GET /v1/router/report?days=7&harness=<id>` for dashboards (`harness` may be
   a comma-separated set of ids, for a group).
 - `GET /v1/router/summary?harness=<id>` — the daily summary as JSON (`auto=1`

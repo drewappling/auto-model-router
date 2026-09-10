@@ -148,6 +148,12 @@ describe("view routes", () => {
 		expect((await fetch(`http://127.0.0.1:${handle.server.port}/v1/router/spend?sinceMs=0`)).status).toBe(401);
 		expect((await get("/v1/router/spend")).status).toBe(400);
 		expect(((await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&harness=u_x`)).json()) as { usd: number }).usd).toBeCloseTo(0.25, 6);
+		// The decision trail over a harness set: a team asks with its user or group ids and sees only theirs.
+		const mine = (await (await get("/v1/router/decisions?harness=u_x&days=1")).json()) as { entries: { id: string; feedback: unknown[] }[] };
+		expect(mine.entries.map((e) => e.id)).toEqual(["r1"]);
+		expect(mine.entries[0]?.feedback).toEqual([]);
+		expect((((await (await get("/v1/router/decisions?harness=u_other&days=1")).json()) as { entries: unknown[] }).entries)).toEqual([]);
+		expect((((await (await get("/v1/router/decisions?limit=1")).json()) as { entries: { id: string }[] }).entries.map((e) => e.id))).toEqual(["r1"]); // no filter: everything, as before
 		expect(((await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&harness=u_other`)).json()) as { usd: number }).usd).toBe(0);
 		const fb = (await (await get("/v1/router/feedback?days=7")).json()) as { days: number; byModel: unknown[]; recent: unknown[] };
 		expect(fb).toEqual({ days: 7, byModel: [], recent: [] });
@@ -157,5 +163,30 @@ describe("view routes", () => {
 		const js = (await (await get("/v1/router/export?days=1&format=json&harness=u_x")).json()) as { days: number; rows: { harnessId: string }[] };
 		expect(js.days).toBe(1);
 		expect(js.rows[0]?.harnessId).toBe("u_x");
+	});
+});
+
+describe("decision entries", () => {
+	const db = seeded();
+	const since = NOW - DAY;
+
+	test("newest first over a harness set, with the verdicts given on each turn", () => {
+		const { decisionEntries } = require("../src/cost/views.ts") as typeof import("../src/cost/views.ts");
+		const ada = decisionEntries(db, { sinceMs: since, harness: ["u_ada"] });
+		expect(ada.map((e) => e.id)).toEqual(["l1", "l2"]); // same instant in the fixture; insertion order within it is stable
+		expect(ada.find((e) => e.id === "l1")?.feedback).toEqual([{ verdict: "good", note: "", createdAtMs: NOW - 1000 }]);
+		expect(ada.find((e) => e.id === "l2")?.escalationSignal).toBe("circular");
+		// Everyone, within the window: the 40-day-old row stays out; the digest row is a turn like any other.
+		expect(decisionEntries(db, { sinceMs: since, harness: null }).map((e) => e.id).sort()).toEqual(["l1", "l2", "l3", "l4"]);
+		expect(decisionEntries(db, { sinceMs: 0, harness: null }).length).toBe(5);
+		// A model, a tier, nobody, and a cap.
+		expect(decisionEntries(db, { sinceMs: since, harness: null, slug: "ollama/glm-5.3-flash" }).map((e) => e.id).sort()).toEqual(["l3", "l4"]);
+		expect(decisionEntries(db, { sinceMs: since, harness: null, tier: "hard" })).toEqual([]);
+		expect(decisionEntries(db, { sinceMs: since, harness: [] })).toEqual([]);
+		expect(decisionEntries(db, { sinceMs: since, harness: null, limit: 1 }).length).toBe(1);
+		// The error on l3 and its note ride along, so an explorer can show why a turn went wrong.
+		const bob = decisionEntries(db, { sinceMs: since, harness: ["u_bob"], slug: "ollama/glm-5.3-flash" });
+		expect(bob.find((e) => e.id === "l3")?.error).toBe("boom");
+		expect(bob.find((e) => e.id === "l3")?.feedback[0]?.note).toBe("looped");
 	});
 });

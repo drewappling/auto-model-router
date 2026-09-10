@@ -10,7 +10,7 @@ import { createDigester } from "./digest.ts";
 import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
-import { exportCsv, exportRows, feedbackView, harnessScopeParam, spendUsdSince } from "../cost/views.ts";
+import { decisionEntries, exportCsv, exportRows, feedbackView, harnessScopeParam, spendUsdSince } from "../cost/views.ts";
 import { anthropicErrorResponse, countAnthropicTokens, createMessagesWire } from "../wire/anthropic/messages.ts";
 import { buildDailySummary, createKv, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
 import type { Ledger, ModelTrust } from "../cost/types.ts";
@@ -555,13 +555,24 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					return json({ due: true, summary });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
+					// The decision trail, newest first. ?session=<omp session id> narrows to one
+					// session (/router why); ?harness=a,b to a harness set (a team's user or group),
+					// ?since=<ms> or ?days=N to a window, ?slug= and ?tier= to a model or a tier.
 					const rawLimit = url.searchParams.get("limit");
 					const parsed = rawLimit === null ? 50 : Number.parseInt(rawLimit, 10);
 					const limit = Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), 1_000) : 50;
-					// ?session=<omp session id> narrows to one session (/router why).
-					const session = url.searchParams.get("session") ?? "";
-					const entries = session === "" ? ledger.recentEntries(limit) : (ledger.entriesForSession?.(session, limit) ?? []);
-					return json({ entries: entries.map((e) => ({ ...e, feedback: feedback.forLedgerId(e.id) })) });
+					const sinceRaw = Number.parseInt(url.searchParams.get("since") ?? "", 10);
+					const daysRaw = url.searchParams.get("days");
+					const sinceMs = Number.isFinite(sinceRaw) ? sinceRaw : daysRaw === null ? 0 : Date.now() - clampDays(daysRaw, 30) * 86_400_000;
+					const entries = decisionEntries(db, {
+						sinceMs,
+						harness: harnessScopeParam(url.searchParams.get("harness")),
+						limit,
+						slug: url.searchParams.get("slug") ?? "",
+						tier: url.searchParams.get("tier") ?? "",
+						ompSessionId: url.searchParams.get("session") ?? "",
+					});
+					return json({ entries });
 				}
 				if (url.pathname === "/v1/router/override") {
 					// Per-session pin / tier overrides from omp. GET shows, POST sets or clears.

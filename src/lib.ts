@@ -22,7 +22,7 @@ export type { DeepPartial } from "./config/load.ts";
 export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotals } from "./cost/report.ts";
 export { buildDailySummary, renderDailySummary, type DailySummary } from "./cost/summary.ts";
 export { openDb } from "./util/sqlite.ts";
-export { spendUsdSince, feedbackView, exportRows, exportCsv, harnessScopeParam, type HarnessScope, type ExportRow, type FeedbackRow, type FeedbackByModel, type FeedbackView } from "./cost/views.ts";
+export { spendUsdSince, feedbackView, exportRows, exportCsv, decisionEntries, harnessScopeParam, type HarnessScope, type ExportRow, type FeedbackRow, type FeedbackByModel, type FeedbackView, type DecisionEntry, type DecisionFilter } from "./cost/views.ts";
 export { createLedger } from "./cost/ledger.ts";
 export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./cost/feedback.ts";
 export { buildExecutable, collectPackageFiles, executableFileName, hostTarget, isExecutableTarget, EXECUTABLE_TARGETS, type ExecutableTarget, type BuildExecutableResult } from "./cli/build-executable.ts";
