@@ -138,6 +138,22 @@ describe("parseMessagesRequest", () => {
 		expect(anthropicIdentityHeaders({}, new Headers({ "user-agent": "python-requests" })).get("x-omp-harness")).toBe("anthropic");
 	});
 
+	test("the agentdox scope and layer headers reach the request on the Anthropic path too", () => {
+		const plain = parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "user-agent": "claude-cli/2.1.263" }));
+		expect(plain.agentdoxScope).toBe("");
+		expect(plain.agentdoxGroup).toBe("");
+		expect(plain.agentdoxPersonal).toBe("");
+		const team = parseMessagesRequest(
+			CLAUDE_CODE_BODY,
+			new Headers({ "user-agent": "claude-cli/2.1.263", "x-omp-harness": "u_ada", "x-agentdox-scope": "proj", "x-agentdox-group": "group.g1", "x-agentdox-personal": "proj.u.u_ada" }),
+		);
+		expect(team.harnessId).toBe("u_ada");
+		expect(team.agentdoxScope).toBe("proj");
+		expect(team.agentdoxGroup).toBe("group.g1");
+		expect(team.agentdoxPersonal).toBe("proj.u.u_ada");
+		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-group": "Not A Slug" })).agentdoxGroup).toBe("");
+	});
+
 	test("a request captured from Claude Code 2.1: system inside messages, JSON user_id, adaptive thinking with effort, 23 custom tools", () => {
 		const fixture = JSON.parse(readFileSync("test/fixtures/harness/claude-code.json", "utf8")) as { headers: Record<string, string>; body: Record<string, unknown> };
 		const norm = parseMessagesRequest(fixture.body, new Headers(fixture.headers));

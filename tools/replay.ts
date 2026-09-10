@@ -197,6 +197,8 @@ function requestOf(row: Row, f: Features): NormRequest {
 		harnessId: row.harness_id,
 		ompSessionId: "",
 		agentdoxScope: "",
+		agentdoxGroup: "",
+		agentdoxPersonal: "",
 		isSubagent: false,
 		requestedModel: row.requested_model,
 		messages,

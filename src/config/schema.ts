@@ -228,6 +228,7 @@ const context = z.strictObject({
 	docsLimit: z.number().int().nonnegative().optional(),
 	sessionLimit: z.number().int().nonnegative().optional(),
 	briefChars: z.number().int().nonnegative().optional(),
+	layers: z.boolean().optional(),
 	recordTurns: z.boolean().optional(),
 	injectWithoutTools: z.boolean().optional(),
 	maxQueue: z.number().int().positive().optional(),

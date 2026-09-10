@@ -44,6 +44,7 @@ const bridge = createContextBridge({
 	docsLimit: 0,
 	sessionLimit: 6,
 	briefChars: 12_000,
+	layers: true,
 	recordTurns: true,
 	maxQueue: 64,
 });
@@ -58,6 +59,9 @@ function input(over: Partial<ContextResolveInput> = {}): ContextResolveInput {
 		modelSwitching: false,
 		retrying: false,
 		query: "cache prompt context injection",
+		group: "",
+		personal: "",
+		user: "",
 		firstFetch: true,
 		...over,
 	};
@@ -93,6 +97,7 @@ check(
 bridge.recordTurn({
 	scope,
 	conversationKey,
+	harnessId: "",
 	title: `bridge e2e ${conversationKey}`,
 	userText: "does the bridge record which model served this turn?",
 	assistantText: "yes - refs carry model: and tier:.",
@@ -135,6 +140,7 @@ function loopDispatch(assistantText: string, turnEnded: boolean): void {
 	bridge.recordTurn({
 		scope,
 		conversationKey: loopKey,
+		harnessId: "",
 		title: loopTitle,
 		userText: "why did cache read fall?",
 		assistantText,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { AgentDoxClient, AssembleLimits } from "../src/context/agentdox.ts";
+import { type AgentDoxClient, type AssembleLayers, type AssembleLimits, createAgentDoxClient } from "../src/context/agentdox.ts";
 import { createContextBridge } from "../src/context/bridge.ts";
 import { createContextStore } from "../src/context/store.ts";
 import type { ContextResolveInput, TurnRecord } from "../src/context/types.ts";
@@ -16,19 +16,24 @@ interface FakeClient extends AgentDoxClient {
 	sessionsCreated: number;
 	prompt: string;
 	lastLimits: AssembleLimits | null;
+	/** The layers of the last assemble: undefined when the bridge sent none. */
+	lastLayers: AssembleLayers | undefined;
 }
 
 function mkClient(prompt = "MEMORY: player digs in 3/4 top-down"): FakeClient {
 	const c: FakeClient = {
 		assembleCalls: 0,
 		lastLimits: null,
+		lastLayers: undefined,
 		appended: [],
 		sessionsCreated: 0,
 		prompt,
-		async assemble(_scope, _query, limits) {
+		async assemble(scope, _query, limits, layers) {
 			c.assembleCalls++;
 			c.lastLimits = limits;
-			return c.prompt;
+			c.lastLayers = layers;
+			// Like the server: a personal layer renders last, so members differ.
+			return layers !== undefined && layers.personal !== "" ? `${c.prompt}\n\n# Your thread in ${scope}\n${layers.personal}` : c.prompt;
 		},
 		async createSession() {
 			c.sessionsCreated++;
@@ -56,6 +61,7 @@ function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
 		docsLimit: 2,
 		sessionLimit: 6,
 		briefChars: 0,
+		layers: true,
 		recordTurns: true,
 		maxQueue: 64,
 		...over,
@@ -72,6 +78,9 @@ function input(over: Partial<ContextResolveInput> = {}): ContextResolveInput {
 		modelSwitching: false,
 		retrying: false,
 		query: "movement rules",
+		group: "",
+		personal: "",
+		user: "",
 		firstFetch: true,
 		...over,
 	};
@@ -258,6 +267,7 @@ describe("context bridge refresh policy", () => {
 				docsLimit: 2,
 				sessionLimit: 6,
 				briefChars: 0,
+				layers: true,
 				recordTurns: true,
 				maxQueue: 64,
 			};
@@ -282,6 +292,7 @@ describe("context bridge write-back", () => {
 			bridge.recordTurn({
 				scope: "ashlands",
 				conversationKey: "k1",
+				harnessId: "",
 				title: "movement fix",
 				userText: "fix movement",
 				assistantText: "done",
@@ -292,6 +303,7 @@ describe("context bridge write-back", () => {
 			bridge.recordTurn({
 				scope: "ashlands",
 				conversationKey: "k1",
+				harnessId: "",
 				title: "movement fix",
 				userText: "now the camera",
 				assistantText: "ok",
@@ -318,6 +330,7 @@ describe("context bridge write-back", () => {
 			bridge.recordTurn({
 				scope: "ashlands",
 				conversationKey: "k1",
+				harnessId: "",
 				title: "t",
 				userText: "u",
 				assistantText: "a",
@@ -337,6 +350,7 @@ describe("context bridge write-back", () => {
 		return {
 			scope: "ashlands",
 			conversationKey: "k1",
+			harnessId: "",
 			title: "movement fix",
 			userText: "fix movement",
 			assistantText: "",
@@ -419,6 +433,119 @@ describe("context bridge write-back", () => {
 			expect(client.appended.filter((m) => m.role === "assistant")).toHaveLength(0);
 		} finally {
 			db.close();
+		}
+	});
+});
+
+describe("context layers a team names (project memory, phase one)", () => {
+	// A router without a team has no group or personal scope and no harness id:
+	// the bridge must then send exactly what it did before, so a block on a
+	// lone install is byte-identical to 0.15. A team front door names the
+	// layers in headers and the member in the harness id.
+	test("resolve passes the group, personal and user layers to assemble; a lone router passes empties", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			await bridge.resolve(input({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" }));
+			expect(client.lastLayers).toEqual({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" });
+			await bridge.resolve(input({ conversationKey: "k2" }));
+			expect(client.lastLayers).toEqual({ group: "", personal: "", user: "" });
+		} finally {
+			db.close();
+		}
+	});
+
+	test("layers: false sends none, whatever the request names", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client, { layers: false });
+		try {
+			const pin = await bridge.resolve(input({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" }));
+			expect(pin).not.toBeNull();
+			expect(client.assembleCalls).toBe(1);
+			expect(client.lastLayers).toBeUndefined();
+		} finally {
+			db.close();
+		}
+	});
+
+	test("a personal layer pins a different block per member, and the same block for the same member", async () => {
+		// The version is a hash of the block's content, so two members' blocks
+		// never share a version even in one scope; the shared store keys on it.
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			const ada = await bridge.resolve(input({ conversationKey: "ada", personal: "ashlands.u.ada", user: "ada" }));
+			const bob = await bridge.resolve(input({ conversationKey: "bob", personal: "ashlands.u.bob", user: "bob" }));
+			const adaAgain = await bridge.resolve(input({ conversationKey: "ada-2", personal: "ashlands.u.ada", user: "ada" }));
+			const nobody = await bridge.resolve(input({ conversationKey: "solo" }));
+			expect(ada?.block).toContain("ashlands.u.ada");
+			expect(bob?.block).toContain("ashlands.u.bob");
+			expect(ada?.version).not.toBe(bob?.version);
+			expect(adaAgain?.version).toBe(ada?.version ?? "");
+			expect(nobody?.version).not.toBe(ada?.version);
+			expect(nobody?.block).not.toContain("Your thread");
+		} finally {
+			db.close();
+		}
+	});
+
+	test("the recorded turn carries user:<harnessId> on both messages only when the harness is set", async () => {
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			const rec = {
+				scope: "ashlands",
+				title: "movement fix",
+				userText: "fix movement",
+				assistantText: "done",
+				slug: "anthropic/claude-haiku-4.5",
+				tier: "simple",
+				turnEnded: true,
+			};
+			bridge.recordTurn({ ...rec, conversationKey: "member", harnessId: "u_ada" });
+			bridge.recordTurn({ ...rec, conversationKey: "solo", harnessId: "" });
+			await bridge.flush();
+
+			const member = client.appended.filter((m) => m.sessionId === "ses_1");
+			expect(member.map((m) => m.role)).toEqual(["user", "assistant"]);
+			expect(member[0]?.refs).toEqual(["user:u_ada"]);
+			expect(member[1]?.refs).toEqual(["model:anthropic/claude-haiku-4.5", "tier:simple", "user:u_ada"]);
+
+			// No harness id: the refs are exactly what 0.15 wrote.
+			const solo = client.appended.filter((m) => m.sessionId === "ses_2");
+			expect(solo[0]?.refs).toEqual([]);
+			expect(solo[1]?.refs).toEqual(["model:anthropic/claude-haiku-4.5", "tier:simple"]);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("the REST client posts the layer keys only when they are non-empty", async () => {
+		// An older agentdox ignores unknown keys, so sending them is harmless —
+		// but a lone router must post the same body as before, key for key, and
+		// a half-named layer set must not post empty strings the server would
+		// have to special-case.
+		const bodies: Record<string, unknown>[] = [];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return new Response(JSON.stringify({ prompt: "P" }), { status: 200, headers: { "content-type": "application/json" } });
+		}) as unknown as typeof fetch;
+		try {
+			const client = createAgentDoxClient({ baseUrl: "http://agentdox.test", token: "t", timeoutMs: 1000, log });
+			const limits = { memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0 };
+			await client.assemble("ashlands", "q", limits);
+			await client.assemble("ashlands", "q", limits, { group: "", personal: "", user: "" });
+			await client.assemble("ashlands", "q", limits, { group: "group.g1", personal: "", user: "u1" });
+			await client.assemble("ashlands", "q", limits, { group: "group.g1", personal: "ashlands.u.u1", user: "u1" });
+
+			const before = { scope: "ashlands", query: "q", ...limits };
+			expect(bodies[0]).toEqual(before);
+			expect(bodies[1]).toEqual(before);
+			expect(bodies[2]).toEqual({ ...before, group: "group.g1", user: "u1" });
+			expect(bodies[3]).toEqual({ ...before, group: "group.g1", personal: "ashlands.u.u1", user: "u1" });
+		} finally {
+			globalThis.fetch = realFetch;
 		}
 	});
 });

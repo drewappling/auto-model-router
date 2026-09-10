@@ -225,6 +225,11 @@ export async function runTurn(
 				retrying: attempt > 0,
 				query: relevanceQuery(req),
 				firstFetch: state.contextVersion === null,
+				// Layer names come from the front door's headers; the member is the
+				// harness id it set. All empty on a router without a team.
+				group: req.agentdoxGroup,
+				personal: req.agentdoxPersonal,
+				user: req.harnessId,
 			});
 			if (pin !== null) {
 				contextBlock = pin.block;
@@ -673,6 +678,7 @@ export async function runTurn(
 			bridge.recordTurn({
 				scope: doxScope,
 				conversationKey: req.conversationKey,
+				harnessId: req.harnessId,
 				title: sessionTitle(req),
 				userText,
 				assistantText,

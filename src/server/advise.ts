@@ -50,6 +50,8 @@ function requestOf(req: AdviseRequest): NormRequest {
 		harnessId: req.harnessId,
 		ompSessionId: req.ompSessionId,
 		agentdoxScope: "",
+		agentdoxGroup: "",
+		agentdoxPersonal: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages: [

@@ -767,6 +767,15 @@ export interface ContextConfig {
 	 * query-relevant tail always fits too.
 	 */
 	briefChars: number;
+	/**
+	 * Send the context layers a front door names on the request — the group
+	 * scope (`X-Agentdox-Group`, rendered first), the personal scope
+	 * (`X-Agentdox-Personal`, rendered last) and the member (the harness id,
+	 * which filters the project's recent tail and tags recorded turns). A
+	 * router without a team has none to send and its block is unchanged; this
+	 * is the kill switch for a team that wants single-scope blocks back.
+	 */
+	layers: boolean;
 	/** Write settled turns back to agentdox sessions, tagged with the served model. */
 	recordTurns: boolean;
 	/**

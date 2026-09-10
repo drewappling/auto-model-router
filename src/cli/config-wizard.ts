@@ -300,6 +300,7 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "context.docsLimit", label: "Doc items", kind: "number", min: 0 },
 			{ path: "context.sessionLimit", label: "Session items", kind: "number", min: 0 },
 			{ path: "context.briefChars", label: "Brief chars", kind: "number", min: 0 },
+			{ path: "context.layers", label: "Send team context layers", kind: "boolean" },
 			{ path: "context.recordTurns", label: "Record turns back", kind: "boolean" },
 			{ path: "context.injectWithoutTools", label: "Inject into tool-less calls", kind: "boolean" },
 			{ path: "context.maxQueue", label: "Write-back queue", kind: "number", min: 1 },

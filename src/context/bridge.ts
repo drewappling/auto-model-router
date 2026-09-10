@@ -40,6 +40,12 @@ export interface BridgeOptions {
 	sessionLimit: number;
 	/** Character budget for the project brief rendered first in the block; 0 omits it. */
 	briefChars: number;
+	/**
+	 * Send the group / personal / user layers a front door names (project
+	 * memory, phase one). False is the kill switch: none of the new assemble
+	 * fields go out, whatever the request headers say.
+	 */
+	layers: boolean;
 	/** Record settled turns back into agentdox sessions. */
 	recordTurns: boolean;
 	/** Bound on queued write-backs; excess is dropped rather than grown unbounded. */
@@ -83,7 +89,7 @@ function appendFragment(prior: string, next: string): string {
 }
 
 export function createContextBridge(opts: BridgeOptions): ContextBridge {
-	const { client, store, log, maxStalenessMs, maxBlockChars, memoryLimit, docsLimit, sessionLimit, briefChars, recordTurns, maxQueue } = opts;
+	const { client, store, log, maxStalenessMs, maxBlockChars, memoryLimit, docsLimit, sessionLimit, briefChars, layers, recordTurns, maxQueue } = opts;
 
 	// Serialized write-back queue. Session appends for one conversation must
 	// stay ordered, and agentdox is a local service — one worker is plenty.
@@ -124,12 +130,20 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			// Recent sessions only on a conversation's first block: after that they
 			// are this conversation's own recorded turns, duplicating the prompt
 			// and changing on every refresh (measured 1.4-1.9k chars per block).
-			const raw = await client.assemble(input.scope, input.query, {
-				memoryLimit,
-				docsLimit,
-				sessionLimit: input.firstFetch ? sessionLimit : 0,
-				briefChars,
-			});
+			// The layers around the project scope ride along only while enabled.
+			// The block's version is a hash of its content, so a personal layer
+			// pins a different block per member and never shares one across them.
+			const raw = await client.assemble(
+				input.scope,
+				input.query,
+				{
+					memoryLimit,
+					docsLimit,
+					sessionLimit: input.firstFetch ? sessionLimit : 0,
+					briefChars,
+				},
+				layers ? { group: input.group, personal: input.personal, user: input.user } : undefined,
+			);
 			if (raw === null) {
 				// agentdox unreachable or empty. Keep serving the pinned block if we
 				// have one: stale shared context beats none, and re-using it also
@@ -204,8 +218,13 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 					// Model attribution rides on refs, which agentdox already carries
 					// per message. This is what makes the transcript newly useful:
 					// every turn shows WHICH model produced it.
-					const refs = [`model:${rec.slug}`, `tier:${rec.tier}`];
-					if (rec.userText !== "") await client.append(sessionId, "user", rec.userText, []);
+					// The member rides on refs too, on BOTH messages: agentdox filters
+					// a project's recent tail to `user:<id>`, and a tail is user and
+					// assistant turns alike. A lone router has no harness id and
+					// adds nothing.
+					const who = rec.harnessId === "" ? [] : [`user:${rec.harnessId}`];
+					const refs = [`model:${rec.slug}`, `tier:${rec.tier}`, ...who];
+					if (rec.userText !== "") await client.append(sessionId, "user", rec.userText, who);
 					if (assistantText !== "") await client.append(sessionId, "assistant", assistantText, refs);
 				})
 				.catch((err: unknown) => {

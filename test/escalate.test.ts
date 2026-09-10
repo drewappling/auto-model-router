@@ -24,6 +24,8 @@ function req(messages: NormMessage[] = [], over: Partial<NormRequest> = {}): Nor
 		harnessId: "",
 		ompSessionId: "",
 		agentdoxScope: "",
+		agentdoxGroup: "",
+		agentdoxPersonal: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages,

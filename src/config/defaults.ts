@@ -265,6 +265,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// statics + all 14 decisions) inside a 24k block while leaving ~15k for
 		// the query-relevant memory/docs tail. 0 omits the brief.
 		briefChars: 12_000,
+		// Group / personal / user layers named by a team front door. On, because
+		// a router that is not behind one has no layer names to send and posts
+		// exactly what it did before; off only sends none when a team does.
+		layers: true,
 		recordTurns: true,
 		// A request with no tool schemas is a harness utility call — omp asks for
 		// a session title or a complexity rating through the same provider — and

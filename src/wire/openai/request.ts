@@ -335,6 +335,12 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	// back to its configured default scope.
 	const agentdoxScope = acceptScope(headers.get("x-agentdox-scope"));
 
+	// Layered project memory (team edition): the group-context scope rendered
+	// first and the member's personal scope rendered last. A lone router never
+	// sees these headers; empty means "not sent", so the block is unchanged.
+	const agentdoxGroup = acceptScope(headers.get("x-agentdox-group"));
+	const agentdoxPersonal = acceptScope(headers.get("x-agentdox-personal"));
+
 	// Subagent marker from the embed extension (sessions without a UI).
 	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
 
@@ -401,6 +407,8 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		harnessId,
 		ompSessionId,
 		agentdoxScope,
+		agentdoxGroup,
+		agentdoxPersonal,
 		isSubagent,
 		...(policy === undefined ? {} : { policy }),
 		requestedModel,

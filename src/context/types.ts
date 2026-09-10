@@ -47,12 +47,31 @@ export interface ContextResolveInput {
 	 * the prompt already holds.
 	 */
 	firstFetch: boolean;
+	/**
+	 * Group-context scope (rendered first) from `X-Agentdox-Group`. Empty ⇒ no
+	 * group layer is requested and nothing new is sent.
+	 */
+	group: string;
+	/** Personal scope (rendered last) from `X-Agentdox-Personal`. Empty ⇒ no personal layer. */
+	personal: string;
+	/**
+	 * The member this turn belongs to — the harness id, which a team front door
+	 * sets per user. agentdox filters the project layer's recent tail to that
+	 * member's own turns. Empty ⇒ everyone's, as before.
+	 */
+	user: string;
 }
 
 /** One settled turn, recorded to agentdox with the model that served it. */
 export interface TurnRecord {
 	scope: string;
 	conversationKey: string;
+	/**
+	 * The harness id, which a team front door sets per user. Non-empty ⇒ every
+	 * recorded message also carries a `user:<harnessId>` ref, so the member's
+	 * own turns can be told apart in a shared project session.
+	 */
+	harnessId: string;
 	/** Title used if this is the first turn and a session must be created. */
 	title: string;
 	userText: string;

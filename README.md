@@ -1519,6 +1519,25 @@ them, injecting one project's context into another's work. A single configured t
 grants only the scopes it was minted for; for any other project the bridge degrades to inert
 rather than writing somewhere wrong.
 
+### Layers a team names around the project scope
+
+A front door such as the team edition can wrap the project scope in two more
+layers, named per request in headers next to `X-Agentdox-Scope`:
+
+| Header | What agentdox renders |
+| --- | --- |
+| `X-Agentdox-Group` | the group's context — its brief and top memory — **first**, as `# Group context: <group>` |
+| `X-Agentdox-Personal` | the member's own thread in the project — the entry tagged `handoff` whole, then the rest — **last**, as `# Your thread in <scope>` |
+
+Both go through the same slug rule as the scope (absent or invalid ⇒ empty ⇒ not
+sent). The member is the harness id (`X-Omp-Harness`, which the team sets from the
+authenticated key): agentdox uses it to keep the project layer's recent tail to that
+member's own turns, and every recorded message carries a `user:<harness id>` ref
+alongside `model:` and `tier:`. A router without a team has none of these and posts
+exactly what it always did, so its block is byte-identical; an older agentdox ignores
+the keys it does not know. `context.layers: false` is the kill switch — the headers
+are still parsed but nothing new goes to agentdox.
+
 ### It does not cost you a cache miss per turn
 
 The context block sits at the front of the prompt, so re-fetching it every turn
@@ -1549,7 +1568,8 @@ block lands inside the prefix `planCacheBreakpoints` already marks.
 ### Turns are recorded back, attributed to the model that served them
 
 With `context.recordTurns` (default on), each settled turn is written to an
-agentdox session tagged `model:<slug>` and `tier:<tier>` — a transcript that
+agentdox session tagged `model:<slug>` and `tier:<tier>` (plus `user:<harness id>`
+when the request carried one) — a transcript that
 shows which model produced which turn. Those messages feed back into the next
 `context_assemble`, so the model you switch *to* inherits what the model you
 switched *from* actually did.

@@ -72,6 +72,7 @@ function buildBridge(cfg: RouterConfig, db: Database): ContextBridge {
 		docsLimit: c.docsLimit,
 		sessionLimit: c.sessionLimit,
 		briefChars: c.briefChars,
+		layers: c.layers,
 		recordTurns: c.recordTurns,
 		maxQueue: c.maxQueue,
 	});

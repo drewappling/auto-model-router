@@ -24,13 +24,29 @@ export interface AssembleLimits {
 	briefChars: number;
 }
 
+/**
+ * The layers around the project scope (project memory, phase one). Each is a
+ * name the team derives; empty means "not present" and is NOT sent, so a lone
+ * router's request body — and therefore its block — is byte-identical to
+ * before. An agentdox that predates layers ignores the keys it does not know.
+ */
+export interface AssembleLayers {
+	/** Scope whose brief and top memory render first, as group context. */
+	group: string;
+	/** Scope whose memory (handoff note first) renders last, as the member's own thread. */
+	personal: string;
+	/** The member: the project layer's recent tail is filtered to messages tagged `user:<user>`. */
+	user: string;
+}
+
 export interface AgentDoxClient {
 	/**
 	 * Assembles a context slice for `scope`, biased by `query`. Falls back to
 	 * the server's pre-assembled baseline when assembly is unavailable (older
-	 * server, or no query-relevant content).
+	 * server, or no query-relevant content). `layers` adds the group and
+	 * personal scopes around it; absent or all-empty sends nothing extra.
 	 */
-	assemble(scope: string, query: string, limits: AssembleLimits): Promise<string | null>;
+	assemble(scope: string, query: string, limits: AssembleLimits, layers?: AssembleLayers): Promise<string | null>;
 	createSession(scope: string, title: string): Promise<string | null>;
 	append(sessionId: string, role: "user" | "assistant", content: string, refs: string[]): Promise<boolean>;
 }
@@ -84,11 +100,13 @@ export function createAgentDoxClient(opts: AgentDoxClientOptions): AgentDoxClien
 	};
 
 	return {
-		async assemble(scope, query, limits) {
+		async assemble(scope, query, limits, layers) {
 			// camelCase: the REST endpoint ignores snake_case limit keys entirely,
 			// which silently reads as "unbounded". briefChars is sent even when 0:
 			// an older server ignores the unknown key, and 0 is the documented
-			// "no brief" value there.
+			// "no brief" value there. The layer keys are the opposite: only sent
+			// when non-empty, so a router without a team posts exactly what it
+			// always did.
 			const res = await request("POST", "/context/assemble", {
 				scope,
 				query,
@@ -96,6 +114,9 @@ export function createAgentDoxClient(opts: AgentDoxClientOptions): AgentDoxClien
 				docsLimit: limits.docsLimit,
 				sessionLimit: limits.sessionLimit,
 				briefChars: limits.briefChars,
+				...(layers === undefined || layers.group === "" ? {} : { group: layers.group }),
+				...(layers === undefined || layers.personal === "" ? {} : { personal: layers.personal }),
+				...(layers === undefined || layers.user === "" ? {} : { user: layers.user }),
 			});
 			if (res !== null && res.status === 200) {
 				const prompt = promptOf(res.json);

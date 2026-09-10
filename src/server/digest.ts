@@ -99,6 +99,8 @@ function syntheticRequest(req: DigestRequest, promptText: string): NormRequest {
 		harnessId: req.harnessId,
 		ompSessionId: req.ompSessionId,
 		agentdoxScope: "",
+		agentdoxGroup: "",
+		agentdoxPersonal: "",
 		isSubagent: true,
 		requestedModel: "digest",
 		messages: [

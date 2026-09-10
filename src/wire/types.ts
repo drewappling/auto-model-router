@@ -96,6 +96,19 @@ export interface NormRequest {
 	 * and if that is empty too the bridge stays inert for this request.
 	 */
 	agentdoxScope: string;
+	/**
+	 * agentdox group-context scope from the `X-Agentdox-Group` request header,
+	 * set by a front door such as the team edition: the scope whose brief and
+	 * top memory render FIRST in the block. Empty when absent or not a slug,
+	 * which sends nothing, so a lone router's block is unchanged.
+	 */
+	agentdoxGroup: string;
+	/**
+	 * agentdox personal scope from the `X-Agentdox-Personal` request header:
+	 * one member's own thread in the project (their handoff note first), which
+	 * renders LAST. Empty when absent or not a slug ⇒ no personal layer.
+	 */
+	agentdoxPersonal: string;
 	/** `X-Omp-Subagent: 1`: the caller is an omp subagent (a session without a UI). */
 	isSubagent: boolean;
 	/**

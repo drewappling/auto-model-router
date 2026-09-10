@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createDisabledBridge } from "../src/context/bridge.ts";
-import type { ContextBridge, TurnRecord } from "../src/context/types.ts";
+import type { ContextBridge, ContextResolveInput, TurnRecord } from "../src/context/types.ts";
 import type { CatalogModel, CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
 import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
@@ -74,7 +74,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		hysteresis: { holdTurns: 2, holdTurnsAfterEscalation: 4, switchMargin: 1.5, cacheWarmTtlMs: 600_000, maxDowngradePerTurn: 1, breakHoldOnMechanical: false, switchHorizonTurns: 1, confirmUpgradesBelowConfidence: 0.6 },
 		exploration: { enabled: false, rates: {}, stickyPolicy: "never", holdTurns: { enabled: false, values: [2, 3, 4] } },
 		cache: { injectBreakpoints: true, maxBreakpoints: 4, minPromptTokens: 1024, milestoneTokens: 20_000 },
-		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, recordTurns: false, injectWithoutTools: false, maxQueue: 64 },
+		context: { enabled: false, baseUrl: "", token: "", defaultScope: "", timeoutMs: 3_000, maxStalenessMs: 900_000, maxBlockChars: 24_000, memoryLimit: 8, docsLimit: 2, sessionLimit: 6, briefChars: 0, layers: true, recordTurns: false, injectWithoutTools: false, maxQueue: 64 },
 		compaction: { enabled: false, budgetTokens: 40_000, floorRatio: 1, fitToWindow: true, protectRecentTurns: 4, maxToolResultBytes: 4_096, keepHeadBytes: 512, keepTailBytes: 512, elideSupersededReads: true, collapseDuplicateResults: true, replanGrowthRatio: 1, digestToolResults: false, digestMaxPerTurn: 2 },
 		budget: { onExceeded: "downgrade" },
 		report: { baselines: [], dailySummary: false },
@@ -96,6 +96,8 @@ function mkReq(): NormRequest {
 		harnessId: "",
 		ompSessionId: "",
 		agentdoxScope: "",
+		agentdoxGroup: "",
+		agentdoxPersonal: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],
@@ -720,6 +722,41 @@ describe("agentdox injection sees the shape of the turn", () => {
 		expect(errors).toHaveLength(0);
 		expect(resolves).toHaveLength(1);
 		expect(store.load(req.conversationKey).contextVersion).toBe("v1");
+	});
+
+	test("the layer headers and the harness id reach resolve, and the harness id reaches the record", async () => {
+		// The team front door names the group and personal scopes in headers and
+		// the member in X-Omp-Harness; the turn carries all three through
+		// unchanged. A router without a team passes empties (see the other tests
+		// in this file, whose mkReq has none).
+		const { router, upstream, ledger, store, sink, errors } = oneDispatch();
+		const inputs: ContextResolveInput[] = [];
+		const records: TurnRecord[] = [];
+		const bridge: ContextBridge = {
+			enabled: true,
+			resolve: (input) => {
+				inputs.push(input);
+				return Promise.resolve(null);
+			},
+			recordTurn: (rec) => {
+				records.push(rec);
+			},
+			flush: () => Promise.resolve(),
+			pruneBlocks: () => 0,
+			close: () => {},
+		};
+		const req: NormRequest = { ...mkReq(), harnessId: "u_ada", agentdoxScope: "proj", agentdoxGroup: "group.g1", agentdoxPersonal: "proj.u.u_ada", tools: [AGENT_TOOL] };
+
+		await runTurn(req, sink, { config: mkConfig({ enabled: false }), router, upstream, ledger, conversations: store, catalog, context: bridge }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(inputs).toHaveLength(1);
+		expect(inputs[0]?.scope).toBe("proj");
+		expect(inputs[0]?.group).toBe("group.g1");
+		expect(inputs[0]?.personal).toBe("proj.u.u_ada");
+		expect(inputs[0]?.user).toBe("u_ada");
+		expect(records).toHaveLength(1);
+		expect(records[0]?.harnessId).toBe("u_ada");
 	});
 
 	test("context.injectWithoutTools restores injection into tool-less calls", async () => {
