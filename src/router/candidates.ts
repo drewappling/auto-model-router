@@ -48,10 +48,35 @@ export interface BuildCandidatesArgs {
 	excludeSlugs?: readonly string[];
 }
 
-/** Tiny glob: `*` matches any run of characters; everything else is literal. */
-function globToRe(glob: string): RegExp {
+/**
+ * Tiny glob: `*` matches any run of characters; everything else is literal.
+ * The one matcher behind `filters.allow`/`filters.deny` and a request
+ * policy's lists; the catalog view (`GET /v1/router/catalog`) judges with it
+ * too, so what a front door shows never drifts from what a turn gets.
+ */
+export function globToRe(glob: string): RegExp {
 	const escaped = glob.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? ".*" : `\\${ch}`));
 	return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * The denials that precede any user configuration, as the reason text, or
+ * null when the model may be a candidate. These slugs can never serve an
+ * interactive turn:
+ *  - "~vendor/model-latest": floating aliases whose identity changes
+ *    underneath us, poisoning ledger trust statistics.
+ *  - ":batch": asynchronous batch endpoints, unusable for streaming.
+ *  - "stealth/": cloaked models with no stable identity.
+ *  - "openrouter/": their meta-routers do our job at unknown cost.
+ *  - a negative price: OpenRouter's unknown/dynamic sentinel (-1), never a discount.
+ */
+export function builtInDenial(model: CatalogModel): string | null {
+	const slug = model.slug;
+	if (slug.startsWith("~") || slug.endsWith(":batch") || slug.startsWith("stealth/") || model.author === "openrouter") {
+		return "built-in deny: floating alias, batch endpoint, stealth, or meta-router";
+	}
+	if (model.price.prompt < 0 || model.price.completion < 0) return "dynamic pricing sentinel";
+	return null;
 }
 
 /**
@@ -182,20 +207,10 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
-		// Hard-coded denials, before any user configuration. These slugs can
-		// never serve an interactive turn:
-		//  - "~vendor/model-latest": floating aliases whose identity changes
-		//    underneath us, poisoning ledger trust statistics.
-		//  - ":batch": asynchronous batch endpoints, unusable for streaming.
-		//  - "stealth/": cloaked models with no stable identity.
-		//  - "openrouter/": their meta-routers do our job at unknown cost.
-		if (slug.startsWith("~") || slug.endsWith(":batch") || slug.startsWith("stealth/") || model.author === "openrouter") {
-			rejected.push({ slug, reason: "denylisted", detail: "built-in deny: floating alias, batch endpoint, stealth, or meta-router" });
-			continue;
-		}
-		// A negative price is OpenRouter's unknown/dynamic sentinel (-1), never a discount.
-		if (model.price.prompt < 0 || model.price.completion < 0) {
-			rejected.push({ slug, reason: "denylisted", detail: "dynamic pricing sentinel" });
+		// Hard-coded denials, before any user configuration.
+		const builtIn = builtInDenial(model);
+		if (builtIn !== null) {
+			rejected.push({ slug, reason: "denylisted", detail: builtIn });
 			continue;
 		}
 		if (allowRes.length > 0 && !allowRes.some((re) => re.test(slug))) {

@@ -6,6 +6,10 @@ import { createBridgeFromConfig } from "../context/index.ts";
 import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
 import { createSessionOverrides } from "./overrides.ts";
+import { catalogView } from "./catalog-view.ts";
+import { buildUpstreamModels } from "../catalog/static-catalog.ts";
+import { applyRequestPolicy, resolveProfile } from "../router/index.ts";
+import { parsePolicyHeader } from "../wire/openai/request.ts";
 import { createDigester } from "./digest.ts";
 import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
@@ -483,6 +487,40 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/stats") {
 					return json(computeStats(ledger));
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/catalog") {
+					// The catalog as data, judged under `?policy=` (the X-Omp-Policy
+					// JSON) when one is given: a front door's governance view. Never
+					// blocks on a fetch; before the first one it is empty.
+					const rawPolicy = url.searchParams.get("policy");
+					let verdict: { filters: RouterConfig["filters"]; pin?: string } | undefined;
+					if (rawPolicy !== null) {
+						// The header parser forgives a malformed value (a turn must not
+						// fail on it); a view asked about one must say so instead.
+						let parsed: unknown;
+						try {
+							parsed = JSON.parse(rawPolicy);
+						} catch {
+							parsed = undefined;
+						}
+						if (parsed === undefined || parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+							return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "policy must be a JSON object (the X-Omp-Policy shape)" });
+						}
+						const policed = applyRequestPolicy(resolveProfile(cfg, "auto"), cfg, parsePolicyHeader(rawPolicy), undefined);
+						verdict = { filters: policed.cfg.filters, ...(policed.forceSlug === undefined ? {} : { pin: policed.forceSlug }) };
+					}
+					const snap = catalog.peekAll?.() ?? catalog.peek();
+					// A disabled named upstream's models are not built for routing; list them too, so "why not" has an answer.
+					const disabled = snap === null ? [] : cfg.upstreams.filter((u) => !u.enabled).flatMap((u) => buildUpstreamModels(u, snap.models));
+					const unserved = (provider: string): string | null => {
+						if (provider === "openrouter") return cfg.openrouter.apiKey === "" ? "upstream openrouter has no API key" : null;
+						if (provider === "ollama") return !cfg.ollama.enabled ? "upstream ollama is disabled" : ollama.available() ? null : "upstream ollama is in cooldown";
+						const entry = cfg.upstreams.find((u) => u.id === provider);
+						if (entry === undefined) return `upstream ${provider} is not configured`;
+						if (!entry.enabled) return `upstream ${provider} is disabled`;
+						return providers.named(provider)?.available() ?? true ? null : `upstream ${provider} is in cooldown`;
+					};
+					return json(catalogView({ models: snap === null ? [] : [...snap.models, ...disabled], fetchedAtMs: snap?.fetchedAtMs ?? 0, ...(verdict === undefined ? {} : { verdict }), unserved }));
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/spend") {
 					// Spend since an instant over a harness set: what a front door's

@@ -11,7 +11,7 @@ import { createAnthropicClient } from "../upstream/anthropic.ts";
 import { createCompatClient, type NamedUpstreamClient } from "../upstream/compat.ts";
 import { createOllamaCatalog } from "../catalog/ollama-catalog.ts";
 import { createCatalog } from "../catalog/openrouter-catalog.ts";
-import type { CatalogSource } from "../catalog/types.ts";
+import type { CatalogSnapshot, CatalogSource } from "../catalog/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createMultiUpstream } from "../upstream/multi.ts";
 import { createOllamaClient, type OllamaClient } from "../upstream/ollama.ts";
@@ -24,7 +24,7 @@ import { createLogger, type Logger } from "../util/log.ts";
 
 export interface Providers {
 	upstream: UpstreamClient;
-	catalog: CatalogSource & { ollamaModels?(): unknown[]; ollamaBias?(): number };
+	catalog: CatalogSource & { ollamaModels?(): unknown[]; ollamaBias?(): number; peekAll?(): CatalogSnapshot | null };
 	/** Always present: it carries the circuit breaker. Whether it SERVES follows `cfg.ollama.enabled`. */
 	ollama: OllamaClient;
 	/** True while Ollama Cloud is enabled and out of cooldown, read live. */

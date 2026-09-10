@@ -46,7 +46,7 @@ export function createCompositeCatalog(
 	ollama: OllamaCatalogSource,
 	availability: OllamaAvailability,
 	bias: CompositeBias = { costBias: 1, biasUntilUsage: 1, usage: NO_USAGE },
-): CatalogSource & { ollamaModels(): CatalogModel[]; ollamaBias(): number } {
+): CatalogSource & { ollamaModels(): CatalogModel[]; ollamaBias(): number; peekAll(): CatalogSnapshot | null } {
 	let lastBase: CatalogSnapshot | null = null;
 	let lastOllama: readonly CatalogModel[] = [];
 	let lastAvailable = true;
@@ -118,6 +118,17 @@ export function createCompositeCatalog(
 			return combine(base, ollama.peek());
 		},
 		find,
+		/**
+		 * Every model the catalog knows, whether or not its upstream can take a
+		 * turn now: OpenRouter's without a key, Ollama's in cooldown, a named
+		 * upstream's in cooldown. `peek()` is what routes; this is what a front
+		 * door lists so it can say why a model is out. No network.
+		 */
+		peekAll(): CatalogSnapshot | null {
+			const base = openrouter.peek();
+			if (base === null) return null;
+			return { ...base, models: [...base.models, ...ollama.peek(), ...(bias.named?.models(base.models) ?? NO_NAMED)] };
+		},
 		lastShrink(): CatalogShrink | null {
 			return openrouter.lastShrink?.() ?? null;
 		},

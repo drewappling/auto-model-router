@@ -716,6 +716,16 @@ escalation signal, error. Three views aggregate it, all from the same
   bill, escalation signal and verdicts (`?session=` narrows to one omp session, as `/router
   why` does). These are what a front door such as the team edition reads instead of the
   ledger file.
+- `GET /v1/router/catalog[?policy=<X-Omp-Policy JSON>]` — the model catalog as data: every
+  model the router knows, sorted by slug, with provider (`openrouter`, `ollama`, a named
+  upstream's id), vendor, context, capabilities, prices in USD per million tokens and quality
+  scores; a model whose upstream cannot serve right now (no key, disabled, in cooldown) is
+  listed too. With `policy` every model also carries `admitted` and, when out, `reason`
+  (`not in the allow list`, `denied by <glob>`, `pinned to <slug>`, the router's own filters,
+  or the upstream's state), judged by the same matcher a turn uses, so the view never drifts
+  from what a turn gets; tiers are per turn and do not take part. A malformed policy is a
+  400; before the first fetch it answers `{ "fetchedAtMs": 0, "models": [] }` rather than
+  waiting. A team front door reads it for its model governance views.
 - `GET /v1/router/report?days=7&harness=<id>` for dashboards (`harness` may be
   a comma-separated set of ids, for a group).
 - `GET /v1/router/summary?harness=<id>` — the daily summary as JSON (`auto=1`
@@ -1287,7 +1297,8 @@ request allow list replaces the configured one, a deny list adds to it.
 widen it. `pin` forces one model the way `/router pin` does, unless a session
 override already pinned one. Every field is optional; a malformed header is
 ignored rather than failing the turn. The decision trail records what the
-policy changed (`policy: …`).
+policy changed (`policy: …`), and `GET /v1/router/catalog?policy=…` shows what a
+policy admits, model by model, without routing a turn.
 
 ## Using a remote router
 

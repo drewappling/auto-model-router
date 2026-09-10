@@ -28,4 +28,5 @@ export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./
 export { buildExecutable, collectPackageFiles, executableFileName, hostTarget, isExecutableTarget, EXECUTABLE_TARGETS, type ExecutableTarget, type BuildExecutableResult } from "./cli/build-executable.ts";
 export { parseSkillsBundle, type SkillsBundle } from "./cli/skills.ts";
 export type { RequestPolicy } from "./wire/types.ts";
+export type { CatalogView, CatalogViewModel } from "./server/catalog-view.ts";
 export type { Ledger, LedgerEntry } from "./cost/types.ts";
