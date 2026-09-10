@@ -13,8 +13,8 @@ import { RESPONSES_ONLY_PARAMS, parseResponsesRequest } from "../src/wire/openai
  * dispatch. The first block holds representative bodies for harnesses that
  * could not be run here (Cline/Roo/Kilo) or that illustrate a header set; the
  * second block parses requests actually captured with tools/capture-proxy.ts
- * (Aider, OpenCode, Codex). A harness release that changes its shape belongs
- * here as a refreshed capture.
+ * (Aider, OpenCode, Codex, and Cline before and after `connect` configured it).
+ * A harness release that changes its shape belongs here as a refreshed capture.
  */
 
 const MUT: UpstreamMutations = { slug: "x/y", fallbacks: [], sessionId: "s", cacheBreakpointMessageIndices: [], reasoning: undefined, maxTokens: undefined, stripAssistantReasoning: false };
@@ -142,6 +142,17 @@ describe("captured harness requests", () => {
 			expect(DEFAULT_CONFIG.digest.tools).toContain(canonicalTool(DEFAULT_CONFIG.digest, n));
 		}
 		expect("stream_options" in req.renderUpstreamBody(MUT)).toBe(false);
+	});
+
+	// The same CLI after `connect --harness cline`. `settings.headers` in Cline's
+	// provider store has no CLI flag, so this capture is the proof that writing the
+	// file (rather than shelling out to `cline auth`) is what earns the harness id.
+	test("cline cli 3.0 configured by connect: the same request, now carrying the harness id and scope", async () => {
+		const f = await fixture("cline-cli-connected");
+		const req = parseChatRequest(structuredClone(f.body), new Headers(f.headers));
+		expect(req.harnessId).toBe("cline");
+		expect(f.headers["x-agentdox-scope"]).toBe("omp-router");
+		expect(req.tools.map((t) => t.name)).toContain("read_files");
 	});
 
 	test("kilo cli 7.5: an OpenCode-derived request with the harness header and OpenCode tool names", async () => {

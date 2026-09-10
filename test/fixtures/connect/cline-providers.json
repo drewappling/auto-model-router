@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "lastUsedProvider": "anthropic",
+  "modes": {},
+  "providers": {
+    "anthropic": {
+      "settings": {
+        "provider": "anthropic",
+        "apiKey": "sk-ant-existing",
+        "model": "claude-sonnet-4-5"
+      },
+      "updatedAt": "2026-09-10T05:27:55.818Z",
+      "tokenSource": "manual"
+    }
+  }
+}

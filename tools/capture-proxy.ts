@@ -30,7 +30,7 @@ const out = flag("--out", "test/fixtures/harness");
 const name = flag("--name", "harness");
 mkdirSync(out, { recursive: true });
 
-const KEEP_HEADERS = ["content-type", "user-agent", "x-omp-harness", "x-omp-session", "x-omp-subagent", "x-title", "http-referer"];
+const KEEP_HEADERS = ["content-type", "user-agent", "x-omp-harness", "x-omp-session", "x-omp-subagent", "x-agentdox-scope", "x-agentdox-origin", "x-title", "http-referer"];
 let n = 0;
 
 /** Large text is not what the fixture guards; cap message text so files stay small. */

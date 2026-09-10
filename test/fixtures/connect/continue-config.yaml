@@ -1,0 +1,14 @@
+# My Continue assistant — hand-edited, comments and all.
+name: Local Assistant
+version: 0.0.1
+schema: v1
+models:
+  - name: Ollama Qwen
+    provider: ollama
+    model: qwen2.5-coder:7b
+    roles:
+      - chat
+      - edit
+context:
+  - provider: code
+  - provider: diff

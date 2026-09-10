@@ -17,6 +17,15 @@
  *   Claude Code ~/.claude/settings.json gains the base URL (its `env` block) and
  *               `apiKeyHelper` running `auto-model-router token`, so no key
  *               sits in its environment or on disk for it
+ *   OpenCode    ~/.config/opencode/opencode.json gains the provider block, and
+ *               plugin/ the native plugin
+ *   Cline       ~/.cline/data/settings/providers.json gains the
+ *               openai-compatible provider — the CLI and the extension share it
+ *   Continue    ~/.continue/config.yaml gains the three profiles as models
+ *
+ * Cursor and Windsurf keep their provider settings in application state rather
+ * than in a file, so they are PRINTED, not written; see configureExtraHarnesses
+ * for where that line is drawn and why.
  *
  * Every write is idempotent and announced. `--profile` persists the
  * environment lines (shell rc on POSIX, user environment on Windows).
@@ -34,6 +43,7 @@ import { executablePath, materializePackage, readEmbeddedPackage } from "./embed
 import { fetchSkills, installSkills, type SkillsBundle, type SkillsInstallReport, type SkillsTarget } from "./skills.ts";
 import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
 import { flagString, type CliArgs } from "./args.ts";
+import { cursorSnippet, mergeClineProviders, mergeContinueConfig, mergeOpenCodeConfig, windsurfSnippet, type ManualSnippet } from "./harnesses.ts";
 
 export interface ConnectOptions {
 	url: string;
@@ -42,7 +52,7 @@ export interface ConnectOptions {
 	name: string;
 	profile: boolean;
 	dryRun: boolean;
-	/** Restrict to these harnesses (omp, hermes, codex, aider, claude); empty ⇒ every one detected. */
+	/** Restrict to these harnesses (omp, hermes, codex, aider, claude, opencode, cline, continue, cursor, windsurf); empty ⇒ every one detected. */
 	only: string[];
 	env: Record<string, string | undefined>;
 	home: string;
@@ -84,6 +94,12 @@ export interface ConnectReport {
 	skipped: string[];
 	envLines: string[];
 	notes: string[];
+	/**
+	 * Harnesses whose provider settings live in application state rather than a
+	 * documented file: what to paste into their settings UI. Never a guess at a
+	 * file — see harnesses.ts for why the line is drawn on confidence.
+	 */
+	manual: ManualSnippet[];
 	/** What the remote's skills bundle did, when there was one. */
 	skills?: SkillsInstallReport;
 	/** Files that gained (or lost) the team-context MCP server. */
@@ -278,7 +294,7 @@ export function hasForeignRouterProvider(text: string): boolean {
 }
 
 export function connectRemote(o: ConnectOptions): ConnectReport {
-	const report: ConnectReport = { remoteFile: "", configured: [], skipped: [], envLines: [], notes: [] };
+	const report: ConnectReport = { remoteFile: "", configured: [], skipped: [], envLines: [], notes: [], manual: [] };
 	const write = (path: string, content: string): void => {
 		if (o.dryRun) return;
 		mkdirSync(dirname(path), { recursive: true });
@@ -405,6 +421,8 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		}
 		report.configured.push(`Claude Code (${settingsPath}: env.ANTHROPIC_BASE_URL + apiKeyHelper; open a new session)`);
 	} else report.skipped.push("Claude Code (not on PATH and no ~/.claude)");
+
+	configureExtraHarnesses(o, report, write);
 	report.envLines.unshift(`AUTO_MODEL_ROUTER_URL=${o.url}`, `AUTO_MODEL_ROUTER_API_KEY=${o.key}`);
 	report.envLines = [...new Set(report.envLines)];
 
@@ -462,6 +480,112 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	if (o.refreshToken !== undefined && o.refreshToken !== "") report.notes.push("the key is short-lived: omp refreshes it at session start; `auto-model-router refresh` does it by hand, and `auto-model-router token` prints a current key for a harness key-helper");
 	return report;
 }
+
+/**
+ * The harnesses added in 0.20.0, kept out of `connectRemote` only for its
+ * length: same contract, same report, same idempotence.
+ *
+ * Two shapes appear here. The automated ones own a documented config file, and
+ * `connect` merges its own keys into it (harnesses.ts holds those merges, and
+ * says why each format is trusted). The manual ones keep their provider
+ * settings in application state — a VS Code `globalState` blob, an IDE's own
+ * database — where there is no file to edit, so `connect` prints the values to
+ * paste and says so in the report rather than writing something that would look
+ * like success and do nothing.
+ *
+ * A manual harness is announced when it is INSTALLED, or when `--harness` named
+ * it outright; a user without Cursor should not be read a Cursor recipe.
+ */
+function configureExtraHarnesses(o: ConnectOptions, report: ConnectReport, write: (path: string, content: string) => void): void {
+	const scope = o.agentdoxScope ?? "";
+	const named = (h: string): boolean => o.only.includes(h);
+
+	// OpenCode: the provider block the README documents, plus the plugin that
+	// gives it session identity, the toast and the digest — the same two-part
+	// install Hermes gets, since OpenCode is the other harness with a real hook API.
+	const ocDir = openCodeDir(o);
+	if (wants(o, "opencode") && (existsSync(ocDir) || o.pathHas("opencode"))) {
+		const p = join(ocDir, "opencode.json");
+		const before = existsSync(p) ? readFileSync(p, "utf8") : "";
+		const after = mergeOpenCodeConfig(before, o.url, o.key, scope);
+		if (after === null && before.trim() !== "" && !isJsonObject(before)) {
+			report.notes.push(`${p} is not a JSON object; left alone — add the auto-model-router provider by hand`);
+		} else if (after !== null) {
+			if (before !== "" && !o.dryRun) writeFileSync(`${p}.${backupStamp()}.bak`, before, "utf8");
+			write(p, after);
+		}
+		if (!o.dryRun) cpSync(join(o.packageDir, "opencode-plugin", "auto-model-router.ts"), join(ocDir, "plugin", "auto-model-router.ts"));
+		report.configured.push(`OpenCode (${p} + ${join(ocDir, "plugin")}; model auto-model-router/auto)`);
+	} else report.skipped.push("OpenCode (not on PATH and no ~/.config/opencode)");
+
+	// Cline: one provider store for the CLI and, since its settings migration, the
+	// VS Code extension — so this single write serves both, and every editor that
+	// hosts the extension (see the Windsurf snippet below).
+	const clineDataDir = clineDir(o);
+	let clineConfigured = false;
+	if (wants(o, "cline") && (existsSync(clineDataDir) || o.pathHas("cline"))) {
+		const p = join(clineDataDir, "settings", "providers.json");
+		const before = existsSync(p) ? readFileSync(p, "utf8") : "";
+		const after = mergeClineProviders(before, o.url, o.key, new Date().toISOString(), scope);
+		if (after === null && before.trim() !== "" && !isJsonObject(before)) {
+			report.notes.push(`${p} is not a JSON object; left alone — run \`cline auth -p openai -b ${o.url}/v1 -k <key> -m auto\` instead`);
+		} else if (after !== null) {
+			if (before !== "" && !o.dryRun) writeFileSync(`${p}.${backupStamp()}.bak`, before, "utf8");
+			write(p, after);
+		}
+		clineConfigured = true;
+		report.configured.push(`Cline (${p}; \`cline -m auto\`, or the VS Code extension)`);
+	} else report.skipped.push("Cline (not on PATH and no ~/.cline)");
+
+	// Continue: one assistant file holds the models, so the three profiles go in as
+	// three entries and the user picks between them in the model dropdown.
+	const continueDir = join(o.home, ".continue");
+	if (wants(o, "continue") && (existsSync(continueDir) || o.pathHas("cn"))) {
+		const p = join(continueDir, "config.yaml");
+		const before = existsSync(p) ? readFileSync(p, "utf8") : "";
+		const after = mergeContinueConfig(before, o.url, o.key, scope);
+		if (after === null && before.trim() !== "") {
+			report.notes.push(`${p} is not an assistant file we can edit; left alone — add the models entry by hand`);
+		} else if (after !== null) {
+			if (before !== "" && !o.dryRun) writeFileSync(`${p}.${backupStamp()}.bak`, before, "utf8");
+			write(p, after);
+			// config.yaml wins over the older config.json, so say so rather than let a
+			// user wonder why the settings they had stopped applying.
+			if (before === "" && existsSync(join(continueDir, "config.json"))) report.notes.push(`${join(continueDir, "config.json")} is Continue's older format and config.yaml now takes precedence over it`);
+		}
+		report.configured.push(`Continue (${p}; pick auto-model-router in the model dropdown)`);
+	} else report.skipped.push("Continue (no ~/.continue)");
+
+	// Cursor and Windsurf keep provider settings where no file can reach them.
+	if (wants(o, "cursor") && (named("cursor") || existsSync(join(o.home, ".cursor")) || o.pathHas("cursor"))) report.manual.push(cursorSnippet(o.url, o.key));
+	else report.skipped.push("Cursor (no ~/.cursor)");
+	if (wants(o, "windsurf") && (named("windsurf") || existsSync(join(o.home, ".codeium")) || o.pathHas("windsurf"))) report.manual.push(windsurfSnippet(clineConfigured));
+	else report.skipped.push("Windsurf (no ~/.codeium)");
+}
+
+/** Cline's state directory: `--data-dir`'s default, `~/.cline/data`, or `CLINE_DATA_DIR` when the user moved it. */
+function clineDir(o: ConnectOptions): string {
+	const d = o.env.CLINE_DATA_DIR;
+	return d !== undefined && d !== "" ? expand(d, o.home) : join(o.home, ".cline", "data");
+}
+
+/** OpenCode's config home: `XDG_CONFIG_HOME`, else `~/.config` — the same on Windows, where it does not use APPDATA. */
+function openCodeDir(o: ConnectOptions): string {
+	const xdg = o.env.XDG_CONFIG_HOME;
+	return join(xdg !== undefined && xdg !== "" ? expand(xdg, o.home) : join(o.home, ".config"), "opencode");
+}
+
+/** A filename-safe timestamp for the `.bak` beside a file we are about to replace. */
+const backupStamp = (): string => new Date().toISOString().replaceAll(":", "-");
+
+const isJsonObject = (text: string): boolean => {
+	try {
+		const v = JSON.parse(text) as unknown;
+		return typeof v === "object" && v !== null && !Array.isArray(v);
+	} catch {
+		return false;
+	}
+};
 
 /** What a team's one-time setup token is traded for. */
 export interface IssuedCredential {
@@ -597,6 +721,11 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	console.log(`${args.flags.has("dry-run") ? "would write" : "wrote"} ${report.remoteFile}${name === "" ? "" : ` for ${name}`}`);
 	for (const c of report.configured) console.log(`  configured ${c}`);
 	for (const s of report.skipped) console.log(`  skipped    ${s}`);
+	// A manual harness gets the values printed rather than a file written; see configureExtraHarnesses.
+	for (const m of report.manual) {
+		console.log(`  manual     ${m.harness} — ${m.reason}`);
+		for (const l of m.lines) console.log(`               ${l}`);
+	}
 	console.log("environment:");
 	for (const l of report.envLines) console.log(`  ${process.platform === "win32" ? "$env:" : "export "}${process.platform === "win32" ? l.replace("=", '="') + '"' : l}`);
 	for (const n of report.notes) console.log(`note: ${n}`);

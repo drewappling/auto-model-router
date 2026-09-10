@@ -472,8 +472,17 @@ cline -P openai -m auto "your task"
 Verified live with cline 3.0 (captured request:
 `test/fixtures/harness/cline-cli.json`). The CLI sends native tool calls
 (`read_files`, `search_codebase`, `run_commands`, `fetch_web_content`, …),
-all in `digest.toolAliases`, and no custom headers, so its rows carry no
-harness id. No session id or hooks.
+all in `digest.toolAliases`. No session id or hooks.
+
+`auto-model-router connect` writes this itself, and writes one thing the
+`auth` command cannot: Cline's provider store
+(`~/.cline/data/settings/providers.json`) has a `settings.headers` map with no
+CLI flag behind it, so a file written by hand is what finally gives Cline a
+harness id. Verified live on cline 3.0.61 by pointing it at a recording
+server — `test/fixtures/harness/cline-cli-connected.json` is that capture, with
+`X-Omp-Harness: cline` on it. That one file also serves the **VS Code
+extension**, which reads the same store since its settings migration, so the
+extension needs no separate recipe (and neither does any editor that hosts it).
 
 ### Kilo Code CLI
 
@@ -534,10 +543,11 @@ id or hooks: the digest applies only through summarising compaction.
 
 ### Cline (VS Code)
 
-Choose the *OpenAI Compatible* provider in the extension's settings, set the
-base URL to `http://127.0.0.1:8788/v1`, any API key, and the model id `auto`
-(or `auto-cheap` / `auto-max`); add `X-Omp-Harness` under custom headers if
-offered. Not verified live here (the CLI above was); its tool names are in
+Nothing extra: the extension reads the same provider store as the CLI
+(`~/.cline/data/settings/providers.json`), so `connect` has already configured
+it — pick the *OpenAI Compatible* provider and the `auto` model. By hand, set
+the base URL to `http://127.0.0.1:8788/v1`, any API key, and the model id
+`auto` (or `auto-cheap` / `auto-max`). Its tool names are in
 `digest.toolAliases`, and the digest applies only through summarising
 compaction.
 
@@ -564,9 +574,16 @@ SSE frame, which is why the router's final summary frame is shaped as a
 chunk with no choices. Its tool names (`read`, `grep`, `glob`, `bash`,
 `webfetch`) match the router's canonical list.
 
+`auto-model-router connect` writes both halves of this: the provider block
+(other providers, MCP servers and `$schema` untouched) and the plugin below.
+The config directory is `~/.config/opencode` on **every** platform, Windows
+included — OpenCode uses the XDG layout there rather than `%APPDATA%`.
+
 **Native features (OpenCode plugin API).** Copy
 `opencode-plugin/auto-model-router.ts` to `~/.config/opencode/plugin/` (or a
-project's `.opencode/plugin/`); OpenCode loads it on start. It adds:
+project's `.opencode/plugin/`); OpenCode loads it on start (`plugins/`, the
+name current docs use, is loaded too — both were confirmed on opencode 1.18).
+It adds:
 
 - **Session identity** — `X-Omp-Session`, `X-Omp-Harness` (`opencode`, or
   `OMP_HARNESS_ID`) and `X-Omp-Subagent` for sessions with a parent, through
@@ -580,6 +597,57 @@ project's `.opencode/plugin/`); OpenCode loads it on start. It adds:
 No `/router` command (OpenCode commands are markdown files, not plugin
 hooks): use `auto-model-router report` on the terminal, or the router's
 HTTP endpoints.
+
+### Continue
+
+```yaml
+# ~/.continue/config.yaml
+name: auto-model-router
+version: 0.0.1
+schema: v1
+models:
+  - name: auto-model-router
+    provider: openai
+    model: auto
+    apiBase: http://127.0.0.1:8788/v1
+    apiKey: local
+    roles: [chat, edit, apply, summarize]
+    capabilities: [tool_use, image_input]
+    requestOptions:
+      headers:
+        X-Omp-Harness: continue
+```
+
+`connect` writes all three profiles as entries like this one, editing the YAML
+*document* rather than re-serialising it, so a hand-written config keeps its
+comments, key order and other models; entries are matched by `name`, so a later
+connect replaces them in place. Pick `auto-model-router` in the model dropdown.
+This is Continue's documented assistant schema rather than a shape captured
+here — Continue was not run against the router — and `config.yaml` takes
+precedence over the older `config.json` if you still have one.
+
+### Cursor
+
+Cursor has no provider file to write: the OpenAI override is an application
+setting in the editor's own state. `connect` prints the values instead —
+Cursor Settings → Models → OpenAI API Key, enable the base-URL override, then
+the base URL, the key and `auto` as a custom model.
+
+Two limits worth knowing before you try. Cursor proxies chat through **its own
+servers** with your key attached, so the base URL has to be reachable from the
+internet — a `127.0.0.1` router or a LAN team edition will never be called. And
+the override carries no custom header, so those turns arrive with no
+`X-Omp-Harness` id and share the unnamed budget.
+
+### Windsurf
+
+Windsurf has no custom base-URL field at all: its bring-your-own-key page takes
+first-party provider keys, and the files under `~/.codeium/<channel>` are MCP
+servers, rules and skills. So the route in is an extension. Windsurf is a VS
+Code fork, and **Cline** reads the provider store `connect` already wrote
+(`~/.cline/data/settings/providers.json`) — installing the extension is the
+whole configuration. Continue works the same way against `~/.continue/config.yaml`.
+`connect` says exactly this when it finds a Windsurf install.
 
 ### The OpenRouter key
 
@@ -1313,9 +1381,21 @@ embed extension registers the remote router as omp's provider with that key inst
 binding a local one, and the toast, `/router` hub and digest extensions talk to it. Nothing
 is classified or selected locally; the remote router is the router. The same command adds
 the extensions to omp's config, installs the Hermes plugins and points them at the remote,
-adds the Codex provider and the Aider settings, and prints (or with `--profile` persists)
-the environment lines for Claude Code. `--harness omp,hermes` restricts it; `--dry-run`
-shows the changes. Delete `remote.json` to go back to a local router. (`join` is an alias.)
+adds the Codex provider and the Aider settings, writes Claude Code's settings file, merges
+the provider into OpenCode's `opencode.json` (and copies its plugin), Cline's
+`providers.json` and Continue's `config.yaml`, and prints what to set by hand for Cursor
+and Windsurf. `--harness omp,hermes` restricts it (`omp`, `hermes`, `codex`, `aider`,
+`claude`, `opencode`, `cline`, `continue`, `cursor`, `windsurf`); `--dry-run` shows the
+changes. Delete `remote.json` to go back to a local router. (`join` is an alias.)
+
+**What gets written and what gets printed.** A harness is configured only where its file
+format is documented and, wherever the harness could be run here, seen to be read: omp,
+Hermes, Codex, Aider, Claude Code, OpenCode, Cline and Continue. Cursor and Windsurf keep
+their provider settings in application state — an editor's own database, a vendor's
+account page — so `connect` reports them as `manual` and prints the base URL, key and
+model to paste. That is deliberate: a config key invented for them would write a file that
+silently does nothing while the run reported success. Every write is idempotent, backs the
+previous file up, and touches only its own keys.
 
 `connect` also writes omp's `models.yml` (a managed block, other providers untouched, the
 previous file backed up). That entry is what makes `auto-model-router/auto` resolvable at
@@ -1474,10 +1554,12 @@ plus a harness header; the rest needs the harness's own hook API.
 | Hermes | provider plugin | yes | yes (native plugin) | yes (native plugin) | no | text | yes (native plugin) | on demand | no |
 | Codex CLI | Responses API wire | yes | yes (from body) | yes (from body) | no | no | compaction only | no | no |
 | Aider | config only | via model settings | no | no | no | no | no tools | no | no |
-| Cline CLI | config only | no | no | no | no | no | compaction only | no | no |
+| Cline (CLI + VS Code) | config only | yes | no | no | no | no | compaction only | no | no |
 | Kilo Code CLI | config only | yes | no | no | no | no | compaction only | no | no |
 | Roo Code (VS Code) | config only | yes | no | no | no | no | compaction only | no | no |
-| Cline (VS Code) | config only, unverified | if headers supported | no | no | no | no | compaction only | no | no |
+| Continue | config only | yes | no | no | no | no | compaction only | no | no |
+| Cursor | manual (no config file; needs a public URL) | no | no | no | no | no | compaction only | no | no |
+| Windsurf | via the Cline or Continue extension | as that extension | no | no | no | no | compaction only | no | no |
 | OpenCode | config + plugin | yes | yes (plugin) | yes (plugin) | yes (plugin) | no | yes (plugin) | no | no |
 | Claude Code | needs an Anthropic Messages wire module | — | — | — | — | — | — | — | — |
 

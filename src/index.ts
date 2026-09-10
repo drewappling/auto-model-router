@@ -29,6 +29,7 @@ Usage: auto-model-router <command> [options]
   report     Usage analytics: providers, models, tiers, cost, speed, cache hit rate
   export     One row per day, harness and model as CSV (--json for rows)
   connect    Point this machine at a remote router (--url with --key[, --refresh-token] or --setup-token <one-time token from a team>; --scope pins one project for the whole machine (default: each workspace's own); --profile persists the environment and, from the compiled executable, PATH; the remote's skills and its MCP endpoint are installed for Claude Code and omp)
+             --harness omp,hermes,codex,aider,claude,opencode,cline,continue,cursor,windsurf restricts it; cursor and windsurf are printed, not written
   refresh    Trade the refresh token for a new access key and re-write every harness config (--force: even when not near expiry)
   token      Print an access key that is good right now, refreshing first if needed (for a harness key-helper)
   models     Show what each complexity tier would consider, and why
