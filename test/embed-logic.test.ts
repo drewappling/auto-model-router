@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
 	buildProviderConfig,
 	deriveAgentdoxScope,
+	deriveWorkspaceOrigin,
 	EMBED_PORT_FILE,
 	EMBED_PROVIDER_ID,
 	embedPortPath,
@@ -205,5 +206,89 @@ describe("agentdox scope", () => {
 			context: { enabled: false, defaultScope: "ashlands" },
 		};
 		expect(buildProviderConfig(1234, cfg, "/x/ashlands").agentdoxScope).toBeUndefined();
+	});
+});
+
+describe("workspace origin", () => {
+	const CONFIG = ['[core]', '\trepositoryformatversion = 0', '[remote "origin"]', '\turl = https://github.com/DrewAppling/omp-router.git', '\tfetch = +refs/heads/*:refs/remotes/origin/*', '[branch "main"]', '\tremote = origin', ''].join("\n");
+	let root: string;
+	beforeAll(() => {
+		root = mkdtempSync(join(tmpdir(), "amr-origin-"));
+	});
+	afterAll(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	test("a plain repository: the remote from .git/config, also from a subdirectory", () => {
+		const repo = join(root, "repo");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		writeFileSync(join(repo, ".git", "config"), CONFIG);
+		mkdirSync(join(repo, "src", "deep"), { recursive: true });
+		expect(deriveWorkspaceOrigin(repo)).toBe("github.com/drewappling/omp-router");
+		expect(deriveWorkspaceOrigin(join(repo, "src", "deep"))).toBe("github.com/drewappling/omp-router");
+		// The scope is still the folder, untouched by any of this.
+		expect(deriveAgentdoxScope(repo)).toBe("repo");
+	});
+
+	test("a worktree: .git is a file naming the git dir, whose shared config is one hop further", () => {
+		// The main checkout holds the config; the worktree's own dir only points at it.
+		const main = join(root, "main");
+		mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
+		writeFileSync(join(main, ".git", "config"), CONFIG.replace("github.com/DrewAppling/omp-router.git", "gitlab.example.com:2222/team/api/").replace("https://", "ssh://git@"));
+		writeFileSync(join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+		const wt = join(root, "wt");
+		mkdirSync(wt, { recursive: true });
+		writeFileSync(join(wt, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
+		expect(deriveWorkspaceOrigin(wt)).toBe("gitlab.example.com/team/api");
+		// A submodule-style pointer: the named dir has its own config, relative to the .git file.
+		const sub = join(root, "sub");
+		mkdirSync(join(sub, "modules", "lib"), { recursive: true });
+		mkdirSync(join(sub, "lib"), { recursive: true });
+		writeFileSync(join(sub, "modules", "lib", "config"), CONFIG.replace("DrewAppling/omp-router", "org/lib"));
+		writeFileSync(join(sub, "lib", ".git"), "gitdir: ../modules/lib\n");
+		expect(deriveWorkspaceOrigin(join(sub, "lib"))).toBe("github.com/org/lib");
+	});
+
+	test("no remote, a local remote, no repository, or nothing at all: no fingerprint, never a throw", () => {
+		const bare = join(root, "bare");
+		mkdirSync(join(bare, ".git"), { recursive: true });
+		writeFileSync(join(bare, ".git", "config"), "[core]\n\tbare = false\n");
+		expect(deriveWorkspaceOrigin(bare)).toBe("");
+		const local = join(root, "local");
+		mkdirSync(join(local, ".git"), { recursive: true });
+		writeFileSync(join(local, ".git", "config"), '[remote "origin"]\n\turl = /srv/git/local.git\n');
+		expect(deriveWorkspaceOrigin(local)).toBe("");
+		// A `.git` file that leads nowhere is the boundary: the walk stops there.
+		const dangling = join(root, "repo", "dangling");
+		mkdirSync(dangling, { recursive: true });
+		writeFileSync(join(dangling, ".git"), "gitdir: /nowhere/at/all\n");
+		expect(deriveWorkspaceOrigin(dangling)).toBe("");
+		expect(deriveWorkspaceOrigin(join(root, "not-a-repo", "missing"))).toBe("");
+		expect(deriveWorkspaceOrigin("")).toBe("");
+		expect(
+			deriveWorkspaceOrigin("/anywhere", () => {
+				throw new Error("disk on fire");
+			}),
+		).toBe("");
+	});
+
+	test("the first url under [remote \"origin\"] wins; other remotes do not count", () => {
+		const read = () => '[remote "upstream"]\n\turl = https://github.com/other/thing.git\n[remote "origin"]\n\turl = git@github.com:me/thing.git\n\turl = https://github.com/me/second.git\n';
+		expect(deriveWorkspaceOrigin("/x/repo", read)).toBe("github.com/me/thing");
+		expect(deriveWorkspaceOrigin("/x/repo", () => '[remote "upstream"]\n\turl = https://github.com/other/thing.git\n')).toBe("");
+	});
+
+	test("buildProviderConfig carries the origin beside the scope, only where the scope goes", () => {
+		const base = {
+			server: { host: "127.0.0.1" },
+			profiles: [],
+			ledger: { fallbackBlend: { inputPerMtok: 1, outputPerMtok: 1 } },
+		};
+		const on = buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "" } }, "/x/ashlands", "github.com/me/ashlands");
+		expect(on.agentdoxScope).toBe("ashlands");
+		expect(on.agentdoxOrigin).toBe("github.com/me/ashlands");
+		expect(buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "" } }, "/x/ashlands", "").agentdoxOrigin).toBeUndefined();
+		expect(buildProviderConfig(1234, { ...base, context: { enabled: true, defaultScope: "" } }, "/x/ashlands").agentdoxOrigin).toBeUndefined();
+		expect(buildProviderConfig(1234, { ...base, context: { enabled: false, defaultScope: "" } }, "/x/ashlands", "github.com/me/ashlands").agentdoxOrigin).toBeUndefined();
 	});
 });

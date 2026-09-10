@@ -98,6 +98,7 @@ function mkReq(): NormRequest {
 		agentdoxScope: "",
 		agentdoxGroup: "",
 		agentdoxPersonal: "",
+		agentdoxOrigin: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages: [{ role: "user", text: "hi", images: 0, textBytes: 2, toolCalls: [] }],

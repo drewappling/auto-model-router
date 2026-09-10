@@ -13,7 +13,9 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+
+import { normalizeOrigin } from "../src/context/scope.ts";
 
 /**
  * The provider id registered into omp. Kept stable so a `models.yml` that
@@ -58,6 +60,13 @@ export interface EmbedConfig {
 	 * models never loses the project's memory/docs/brief.
 	 */
 	agentdoxScope?: string;
+	/**
+	 * The workspace's repository fingerprint (its git remote `origin`,
+	 * normalised) sent as `X-Agentdox-Origin`. A front door with a project
+	 * registry uses it to find the project whatever the folder is called; a
+	 * router alone ignores it.
+	 */
+	agentdoxOrigin?: string;
 }
 
 /**
@@ -77,6 +86,81 @@ export function deriveAgentdoxScope(cwd: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
+}
+
+/** The first `url` under `[remote "origin"]` in a git config, or "" when there is none. */
+function originUrlOf(config: string): string {
+	let inOrigin = false;
+	for (const line of config.split(/\r?\n/)) {
+		const t = line.trim();
+		if (t.startsWith("[")) {
+			inOrigin = /^\[remote\s+"origin"\]$/i.test(t);
+			continue;
+		}
+		if (!inOrigin) continue;
+		const m = /^url\s*=\s*(.+)$/i.exec(t);
+		if (m !== null) return m[1]!.trim().replace(/^"(.*)"$/, "$1");
+	}
+	return "";
+}
+
+/**
+ * Derives the workspace's repository fingerprint: the git remote `origin` of
+ * the repository holding `cwd`, normalised by `normalizeOrigin`.
+ *
+ * The scope (`deriveAgentdoxScope`) is the FOLDER's name, which two unrelated
+ * repositories can share and one repository cloned twice does not. The origin
+ * is what a project registry needs to tell them apart, so it travels beside
+ * the scope; the scope itself is untouched by this.
+ *
+ * Walks up from `cwd` to the filesystem root looking for `.git`. A directory
+ * holds `config` directly; a file (a worktree or a submodule) names the real
+ * git dir with `gitdir: <path>`, relative to the folder holding the file, and
+ * a worktree's own dir keeps the shared config one hop further in `commondir`.
+ * Read with the filesystem only — never git itself, which may be absent, slow,
+ * or prompt — and total: any failure, including no repository at all, is "".
+ * `readFile` is injectable so the walk can be tested on hand-built files.
+ */
+export function deriveWorkspaceOrigin(cwd: string, readFile: (path: string) => string = (p) => readFileSync(p, "utf8")): string {
+	const read = (path: string): string | null => {
+		try {
+			return readFile(path);
+		} catch {
+			return null;
+		}
+	};
+	try {
+		if (cwd.trim() === "") return "";
+		let dir = resolve(cwd);
+		for (;;) {
+			const dotGit = join(dir, ".git");
+			// A directory: the config sits inside it. (Reading a directory throws.)
+			let config = read(join(dotGit, "config"));
+			if (config === null) {
+				// A file: `gitdir: <path>`; that dir has its own config (a
+				// submodule) or points at the shared one through `commondir`.
+				const pointer = read(dotGit);
+				const m = pointer === null ? null : /^gitdir:\s*(.+?)\s*$/m.exec(pointer);
+				if (m !== null) {
+					const gitDir = resolve(dir, m[1]!);
+					config = read(join(gitDir, "config"));
+					if (config === null) {
+						const common = read(join(gitDir, "commondir"));
+						if (common !== null) config = read(join(resolve(gitDir, common.trim()), "config"));
+					}
+					// A `.git` file that leads nowhere is still the repository's
+					// boundary: nothing above it is this workspace's origin.
+					return config === null ? "" : normalizeOrigin(originUrlOf(config));
+				}
+			}
+			if (config !== null) return normalizeOrigin(originUrlOf(config));
+			const parent = dirname(dir);
+			if (parent === dir) return "";
+			dir = parent;
+		}
+	} catch {
+		return "";
+	}
 }
 
 /**
@@ -189,6 +273,8 @@ export function buildProviderConfig(
 	},
 	/** omp's workspace directory, used to derive a scope when none is configured. */
 	cwd?: string,
+	/** The workspace's repository fingerprint (`deriveWorkspaceOrigin`); "" or absent sends none. */
+	origin?: string,
 ): EmbedConfig {
 	const host = cfg.server.host === "0.0.0.0" || cfg.server.host === "::" ? "127.0.0.1" : cfg.server.host;
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
@@ -224,6 +310,10 @@ export function buildProviderConfig(
 		const derived = deriveAgentdoxScope(cwd ?? "");
 		const scope = derived !== "" ? derived : cfg.context.defaultScope;
 		if (scope !== "") out.agentdoxScope = scope;
+		// The repository beside the folder: one value for every clone of it,
+		// whatever each is called. Only a registry can use it, so it is sent
+		// only where the scope is.
+		if (origin !== undefined && origin !== "") out.agentdoxOrigin = origin;
 	}
 	return out;
 }

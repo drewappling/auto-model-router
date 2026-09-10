@@ -26,6 +26,7 @@ function req(messages: NormMessage[] = [], over: Partial<NormRequest> = {}): Nor
 		agentdoxScope: "",
 		agentdoxGroup: "",
 		agentdoxPersonal: "",
+		agentdoxOrigin: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages,

@@ -154,6 +154,12 @@ describe("parseMessagesRequest", () => {
 		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-group": "Not A Slug" })).agentdoxGroup).toBe("");
 	});
 
+	test("the origin fingerprint reaches the request on the Anthropic path too", () => {
+		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "user-agent": "claude-cli/2.1.263" })).agentdoxOrigin).toBe("");
+		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-origin": "github.com/drewappling/omp-router" })).agentdoxOrigin).toBe("github.com/drewappling/omp-router");
+		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-origin": "https://github.com/a/b" })).agentdoxOrigin).toBe("");
+	});
+
 	test("a request captured from Claude Code 2.1: system inside messages, JSON user_id, adaptive thinking with effort, 23 custom tools", () => {
 		const fixture = JSON.parse(readFileSync("test/fixtures/harness/claude-code.json", "utf8")) as { headers: Record<string, string>; body: Record<string, unknown> };
 		const norm = parseMessagesRequest(fixture.body, new Headers(fixture.headers));

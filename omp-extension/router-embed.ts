@@ -33,8 +33,8 @@ import type { RouterConfig } from "../src/config/types.ts";
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import { EMBED_DUMMY_API_KEY, EMBED_PROVIDER_ID, buildProviderConfig, deriveAgentdoxScope, embedPortPath, modelsYmlPort, probeEmbed, readEmbedPort, resolveEmbedPort, writeEmbedPort } from "./embed-logic.ts";
-import { SCOPE_ENV } from "../src/context/scope.ts";
+import { EMBED_DUMMY_API_KEY, EMBED_PROVIDER_ID, buildProviderConfig, deriveAgentdoxScope, deriveWorkspaceOrigin, embedPortPath, modelsYmlPort, probeEmbed, readEmbedPort, resolveEmbedPort, writeEmbedPort } from "./embed-logic.ts";
+import { ORIGIN_ENV, SCOPE_ENV } from "../src/context/scope.ts";
 
 // The workspace's scope for the MAIN model. omp builds that handle from
 // models.yml before this file loads, so its X-Agentdox-Scope cannot come from
@@ -43,9 +43,17 @@ import { SCOPE_ENV } from "../src/context/scope.ts";
 // and this module runs inside omp's process — so setting it here reaches
 // every turn of this session, main and side roles alike. A workspace that
 // derives no scope (no folder name) leaves whatever the shell set.
+//
+// The workspace's ORIGIN (its git remote, normalised) rides the same way under
+// ORIGIN_ENV: the folder name is the scope, the repository is the fingerprint
+// a team uses to find the project when folder names collide. Read once — the
+// remote does not change during a session — and shared with the providers
+// registered below. A workspace outside a repository sets nothing.
+const workspaceOrigin = deriveWorkspaceOrigin(process.cwd());
 {
 	const workspaceScope = deriveAgentdoxScope(process.cwd());
 	if (workspaceScope !== "") process.env[SCOPE_ENV] = workspaceScope;
+	if (workspaceOrigin !== "") process.env[ORIGIN_ENV] = workspaceOrigin;
 }
 
 /** omp's models.yml as text, or "" when it does not exist / cannot be read. */
@@ -97,7 +105,7 @@ function trackProcessExit(): void {
 function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfig, sessionId: string, subagent: boolean): void {
 	// cwd is omp's workspace, which is what the agentdox scope is derived from
 	// when none is configured explicitly.
-	const providerConfig = buildProviderConfig(port, cfg, process.cwd());
+	const providerConfig = buildProviderConfig(port, cfg, process.cwd(), workspaceOrigin);
 	const headers: Record<string, string> = {};
 	if (providerConfig.harnessId !== undefined && providerConfig.harnessId !== "") {
 		headers["X-Omp-Harness"] = providerConfig.harnessId;
@@ -111,6 +119,10 @@ function registerRouterProvider(pi: ExtensionAPI, port: number, cfg: RouterConfi
 	// Which agentdox project's shared context this workspace's turns draw on.
 	if (providerConfig.agentdoxScope !== undefined && providerConfig.agentdoxScope !== "") {
 		headers["X-Agentdox-Scope"] = providerConfig.agentdoxScope;
+	}
+	// The repository behind that folder, for a front door that keeps a registry.
+	if (providerConfig.agentdoxOrigin !== undefined && providerConfig.agentdoxOrigin !== "") {
+		headers["X-Agentdox-Origin"] = providerConfig.agentdoxOrigin;
 	}
 	pi.registerProvider(EMBED_PROVIDER_ID, {
 		baseUrl: providerConfig.baseUrl,
@@ -190,7 +202,7 @@ export default function (pi: ExtensionAPI): void {
 					writeEmbedLog(`remote credential refresh failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			}
-			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend, deriveAgentdoxScope(process.cwd())));
+			pi.registerProvider(EMBED_PROVIDER_ID, remoteProviderRegistration(remote, sessionId, !ctx.hasUI, cfg.ledger.fallbackBlend, deriveAgentdoxScope(process.cwd()), workspaceOrigin));
 			pi.setLabel(`auto-model-router remote (${remote.url.replace(/^https?:\/\//, "")})`);
 			writeEmbedLog(`remote mode url=${remote.url} user=${remote.userId} session=${sessionId}`);
 			return;

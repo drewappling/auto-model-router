@@ -1343,6 +1343,9 @@ the embed extension sets it from the workspace as it loads. If the variable is u
 sends the name itself, which the router does not accept as a scope (a scope is a
 lowercase slug) and falls back to its default. `--scope <slug>` pins one project for the
 whole machine instead; a refresh keeps a pin, and `connect --scope ""` removes it.
+`X-Agentdox-Origin` rides the same way under `AUTO_MODEL_ROUTER_ORIGIN`, set from the
+workspace's git remote; a pinned scope does not pin it, because the repository a turn
+came from is still the workspace's. See [the origin fingerprint](#the-origin-fingerprint).
 
 ### One file to install
 
@@ -1540,6 +1543,23 @@ whenever there is a harness id, team or not; it is just another ref. A router wi
 a team posts exactly what it always did, so its block is byte-identical; an older
 agentdox ignores the keys it does not know. `context.layers: false` is the kill
 switch — the headers are still parsed but nothing new goes to agentdox.
+
+### The origin fingerprint
+
+The scope is the folder's name, and folder names collide: two unrelated repositories
+checked out as `api` would share one project, and one repository cloned into `~/work/api`
+and `~/src/backend-api` would split into two. So the embed extension also sends
+`X-Agentdox-Origin`: the workspace's git remote `origin`, normalised to `<host>/<path>` —
+lowercase, no scheme, credentials, port, `.git` or trailing slash — so
+`https://github.com/DrewAppling/omp-router.git` and `git@github.com:drewappling/omp-router.git`
+are both `github.com/drewappling/omp-router`. It is read from `.git/config` (or through a
+worktree's `.git` file) with the filesystem alone, never by running git, and a workspace
+outside a repository or with a local-path remote sends none. Like the scope it reaches the
+main model through an environment variable, `AUTO_MODEL_ROUTER_ORIGIN`, that the managed
+`models.yml` entry names and the extension sets. A team edition uses it to find the
+project a workspace belongs to whatever the folder is called; a router on its own has no
+project registry and ignores it — the header is parsed and validated (a raw URL or the
+variable's name is dropped) and nothing else changes.
 
 ### It does not cost you a cache miss per turn
 

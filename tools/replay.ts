@@ -199,6 +199,7 @@ function requestOf(row: Row, f: Features): NormRequest {
 		agentdoxScope: "",
 		agentdoxGroup: "",
 		agentdoxPersonal: "",
+		agentdoxOrigin: "",
 		isSubagent: false,
 		requestedModel: row.requested_model,
 		messages,

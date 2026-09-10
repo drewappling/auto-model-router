@@ -112,7 +112,7 @@ export const REMOTE_MODELS: readonly { id: string; name: string }[] = [
  * the session and subagent tags, and the virtual models. Costs are USD per
  * million tokens, like the embedded config.
  */
-export function remoteProviderRegistration(remote: RemoteRouter, sessionId: string, subagent: boolean, blend: { inputPerMtok: number; outputPerMtok: number }, agentdoxScope = ""): {
+export function remoteProviderRegistration(remote: RemoteRouter, sessionId: string, subagent: boolean, blend: { inputPerMtok: number; outputPerMtok: number }, agentdoxScope = "", agentdoxOrigin = ""): {
 	baseUrl: string;
 	api: string;
 	apiKey: string;
@@ -126,6 +126,9 @@ export function remoteProviderRegistration(remote: RemoteRouter, sessionId: stri
 	// router, so this is sent whatever the local config says; the remote decides what to do with
 	// it (a team that pins a scope for the group overrides it, and one that pins none follows it).
 	if (agentdoxScope !== "") headers["X-Agentdox-Scope"] = agentdoxScope;
+	// The repository behind that folder: the same value from every clone, so a remote with a
+	// project registry finds the project when two folders share a name or one repo has two.
+	if (agentdoxOrigin !== "") headers["X-Agentdox-Origin"] = agentdoxOrigin;
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
 	return {
 		baseUrl: `${remote.url}/v1`,

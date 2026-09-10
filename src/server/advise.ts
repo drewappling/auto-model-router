@@ -52,6 +52,7 @@ function requestOf(req: AdviseRequest): NormRequest {
 		agentdoxScope: "",
 		agentdoxGroup: "",
 		agentdoxPersonal: "",
+		agentdoxOrigin: "",
 		isSubagent: false,
 		requestedModel: "auto",
 		messages: [

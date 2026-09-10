@@ -109,6 +109,15 @@ export interface NormRequest {
 	 * renders LAST. Empty when absent or not a slug ⇒ no personal layer.
 	 */
 	agentdoxPersonal: string;
+	/**
+	 * The workspace's repository fingerprint from the `X-Agentdox-Origin`
+	 * request header (`<host>/<path>` of its git remote `origin`, see
+	 * `src/context/scope.ts`). Validated here, in one place, for a front door
+	 * with a project registry — the team edition — which uses it to find the
+	 * project two same-named folders are really about. The router's own bridge
+	 * has no registry and never reads it. Empty when absent or not a fingerprint.
+	 */
+	agentdoxOrigin: string;
 	/** `X-Omp-Subagent: 1`: the caller is an omp subagent (a session without a UI). */
 	isSubagent: boolean;
 	/**

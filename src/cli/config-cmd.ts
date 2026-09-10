@@ -15,7 +15,7 @@
  * keys survive.
  */
 
-import { SCOPE_ENV } from "../context/scope.ts";
+import { ORIGIN_ENV, SCOPE_ENV } from "../context/scope.ts";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -65,7 +65,9 @@ export interface SpliceResult {
  * the embed extension sets from the workspace folder, so the MAIN model's turns
  * carry the repository's own scope rather than one for the whole machine. When
  * the variable is unset the router ignores the literal and falls back to its
- * own `context.defaultScope`.
+ * own `context.defaultScope`. The origin (`ORIGIN_ENV`, set by the extension
+ * from the workspace's git remote) rides the same way; a router on its own
+ * ignores it, a front door with a project registry does not.
  */
 function providerHeaders(cfg: RouterConfig): Record<string, string> {
 	const headers: Record<string, string> = {};
@@ -74,6 +76,7 @@ function providerHeaders(cfg: RouterConfig): Record<string, string> {
 	}
 	if (cfg.context.enabled) {
 		headers["X-Agentdox-Scope"] = SCOPE_ENV;
+		headers["X-Agentdox-Origin"] = ORIGIN_ENV;
 	}
 	return headers;
 }

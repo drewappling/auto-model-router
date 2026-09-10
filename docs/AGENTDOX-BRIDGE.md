@@ -32,7 +32,8 @@ unchanged re-assembly keeps the same bytes and the cache survives.
 | `src/context/store.ts` | `context_blocks` (content-addressed) + `agentdox_sessions` |
 | `src/context/index.ts` | `createBridgeFromConfig` — returns an inert bridge when unconfigured |
 | `src/server/turn.ts` | Resolve → inject → pin → record. Two `log.debug("agentdox …")` lines |
-| `src/wire/openai/request.ts` | `injectContextBlock` + `x-agentdox-scope` header parsing |
+| `src/wire/openai/request.ts` | `injectContextBlock` + the `x-agentdox-*` header parsing (the Anthropic path delegates to it) |
+| `src/context/scope.ts` | The slug and origin rules, and the env-var names the managed provider entries carry |
 | `src/util/sqlite.ts` | `USER_VERSION` 11, `MIGRATE_V11` |
 | `test/context-bridge.test.ts` | 14 tests: every refresh trigger, restart survival, degradation |
 | `tools/agentdox-e2e.ts` | Live check against a running agentdox server |
@@ -40,6 +41,22 @@ unchanged re-assembly keeps the same bytes and the cache survives.
 Injection appends to the **last system message** rather than inserting one — inserting would
 shift every `cacheBreakpointMessageIndices` entry the core computed, and appending lands the
 block inside the prefix `planCacheBreakpoints` already marks.
+
+### The request headers
+
+Every one is optional; absent or invalid ⇒ empty, and an empty value sends nothing new to
+agentdox, so a router without a front door behaves as it always did.
+
+| Header | Since | Value | Who sends it | What the router does |
+| --- | --- | --- | --- | --- |
+| `X-Agentdox-Scope` | 0.2 | a project slug (`isScopeSlug`) | the embed extension, from the workspace folder; the managed `models.yml` entry names `AUTO_MODEL_ROUTER_SCOPE` and the extension sets it | selects the project whose context is injected and whose sessions the turn is recorded into; empty ⇒ `context.defaultScope` |
+| `X-Agentdox-Group` | 0.16.0 | a slug | a front door (the team edition), per request | the group's brief and top memory render **first**; sent to `assemble` as `group` |
+| `X-Agentdox-Personal` | 0.16.0 | a slug | a front door, per request | the member's own thread renders **last**; sent as `personal`. When either layer is named the harness id goes as `user` too |
+| `X-Agentdox-Origin` | 0.17.0 | `<host>/<path>` of the git remote (`isOrigin`) | the embed extension, from `.git/config`; `models.yml` names `AUTO_MODEL_ROUTER_ORIGIN` | parsed and validated only (`NormRequest.agentdoxOrigin`); the bridge never reads it — a front door with a project registry resolves the project from it |
+
+omp resolves a header value that names an environment variable per request, and sends the
+literal name when the variable is unset. Both names are uppercase and neither rule accepts
+uppercase, so a sentinel can never become a project or a fingerprint.
 
 ## 3. Running it
 

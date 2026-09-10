@@ -101,6 +101,7 @@ function syntheticRequest(req: DigestRequest, promptText: string): NormRequest {
 		agentdoxScope: "",
 		agentdoxGroup: "",
 		agentdoxPersonal: "",
+		agentdoxOrigin: "",
 		isSubagent: true,
 		requestedModel: "digest",
 		messages: [

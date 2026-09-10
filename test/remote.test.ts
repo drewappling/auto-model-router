@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { addExtensions, codexBlock, connectRemote, setDotenv, type ConnectOptions } from "../src/cli/connect.ts";
 import { parseRemoteRouter, readRemoteRouter, remoteProviderRegistration } from "../omp-extension/remote-logic.ts";
 import { existingBlockScope, hasForeignRouterProvider, mergeModelsYml, renderRemoteModelsYml } from "../src/cli/connect.ts";
-import { SCOPE_ENV } from "../src/context/scope.ts";
+import { ORIGIN_ENV, SCOPE_ENV } from "../src/context/scope.ts";
 import { refreshAndRewrite, refreshCredential, RefreshError, resolveRefreshToken, shouldRefresh } from "../src/cli/refresh.ts";
 import { loadRefreshToken, pickStore, removeRefreshToken, saveRefreshToken } from "../src/cli/credential-store.ts";
 import { hasRefresh, refreshAccountOf } from "../omp-extension/remote-logic.ts";
@@ -31,6 +31,9 @@ describe("remote-logic", () => {
 		// the machine with the right context; the remote may still override it.
 		expect(reg.headers["X-Agentdox-Scope"]).toBeUndefined();
 		expect(remoteProviderRegistration(t, "", false, { inputPerMtok: 1, outputPerMtok: 4 }, "omp-router").headers).toEqual({ "X-Agentdox-Scope": "omp-router" });
+		// The repository fingerprint rides beside the scope, and only when there is one.
+		expect(remoteProviderRegistration(t, "", false, { inputPerMtok: 1, outputPerMtok: 4 }, "omp-router", "github.com/drewappling/omp-router").headers).toEqual({ "X-Agentdox-Scope": "omp-router", "X-Agentdox-Origin": "github.com/drewappling/omp-router" });
+		expect(remoteProviderRegistration(t, "", false, { inputPerMtok: 1, outputPerMtok: 4 }, "", "github.com/drewappling/omp-router").headers).toEqual({ "X-Agentdox-Origin": "github.com/drewappling/omp-router" });
 		const dir = mkdtempSync(join(tmpdir(), "amr-remote-"));
 		expect(readRemoteRouter(dir)).toBeNull();
 		writeFileSync(join(dir, "remote.json"), JSON.stringify({ url: "https://t", key: "k" }));
@@ -126,12 +129,16 @@ describe("omp models.yml for a remote router", () => {
 		// Machine-wide file: the header names the env var the extension sets per
 		// workspace, so the MAIN model's turns carry each repo's own scope.
 		expect(block).toContain(`X-Agentdox-Scope: ${SCOPE_ENV}`);
+		// The origin names its own variable the same way, on every block.
+		expect(block).toContain(`X-Agentdox-Origin: ${ORIGIN_ENV}`);
 		expect(existingBlockScope(mergeModelsYml("", block))).toBe("");
 		// --scope pins one slug for the whole machine.
 		const pinned = renderRemoteModelsYml("https://team.example", "k", BLEND, "omp-router");
 		expect(pinned).toContain("X-Agentdox-Scope: omp-router");
 		expect(pinned).not.toContain(SCOPE_ENV);
 		expect(existingBlockScope(mergeModelsYml("", pinned))).toBe("omp-router");
+		// A pinned scope does not pin an origin: the repository is still the workspace's.
+		expect(pinned).toContain(`X-Agentdox-Origin: ${ORIGIN_ENV}`);
 	});
 
 	test("merging keeps other providers, replaces our own block, and is idempotent", () => {

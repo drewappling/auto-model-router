@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parse as parseYaml } from "yaml";
 
 import { loadConfig } from "../src/config/load.ts";
+import { ORIGIN_ENV, SCOPE_ENV } from "../src/context/scope.ts";
 import {
 	BEGIN_GUARD,
 	END_GUARD,
@@ -67,6 +68,15 @@ describe("renderProviderBlock", () => {
 		expect(BLOCK).toContain("api: openai-completions");
 		expect(BLOCK).toContain("auth: none");
 		expect(BLOCK).toContain("/v1");
+	});
+
+	test("with the bridge on, the scope and origin headers name the variables the extension sets", () => {
+		// The file is machine-wide, so neither can be a literal: omp resolves a
+		// header value that names an env var per request (src/context/scope.ts).
+		const bridged = renderProviderBlock(loadConfig({ overrides: { context: { enabled: true, baseUrl: "http://agentdox:3003", token: "t" } } }), null);
+		expect(bridged).toContain(`X-Agentdox-Scope: ${SCOPE_ENV}`);
+		expect(bridged).toContain(`X-Agentdox-Origin: ${ORIGIN_ENV}`);
+		expect(BLOCK).not.toContain("X-Agentdox-");
 	});
 });
 

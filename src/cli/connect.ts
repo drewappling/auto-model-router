@@ -29,7 +29,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
-import { SCOPE_ENV } from "../context/scope.ts";
+import { ORIGIN_ENV, SCOPE_ENV } from "../context/scope.ts";
 import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
 import { fetchSkills, installSkills, type SkillsBundle, type SkillsInstallReport, type SkillsTarget } from "./skills.ts";
 import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
@@ -200,6 +200,10 @@ const MODELS_YML_END = "  # END auto-model-router (remote)";
  * `SCOPE_ENV`, which omp resolves from its environment per request, and the
  * embed extension sets that variable from the workspace folder as it loads.
  * `scope` pins a literal slug instead, for a single-project machine.
+ *
+ * `X-Agentdox-Origin` always names `ORIGIN_ENV`, which the extension sets from
+ * the workspace's git remote: a pinned scope says which project's context to
+ * draw on, and the origin still says which repository the turn came from.
  */
 export function renderRemoteModelsYml(url: string, key: string, blend: { inputPerMtok: number; outputPerMtok: number }, scope = ""): string {
 	const round = (v: number): number => Math.round(v * 1e4) / 1e4;
@@ -217,7 +221,7 @@ export function renderRemoteModelsYml(url: string, key: string, blend: { inputPe
 		"    api: openai-completions",
 		`    apiKey: ${key}`,
 	];
-	lines.push("    headers:", `      X-Agentdox-Scope: ${scope !== "" ? scope : SCOPE_ENV}`);
+	lines.push("    headers:", `      X-Agentdox-Scope: ${scope !== "" ? scope : SCOPE_ENV}`, `      X-Agentdox-Origin: ${ORIGIN_ENV}`);
 	lines.push("    models:");
 	for (const m of REMOTE_MODEL_ROWS) {
 		lines.push(

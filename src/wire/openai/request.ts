@@ -1,4 +1,4 @@
-import { acceptScope } from "../../context/scope.ts";
+import { acceptOrigin, acceptScope } from "../../context/scope.ts";
 import type {
 	RequestPolicy,
 	CompactionEdit,
@@ -341,6 +341,11 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	const agentdoxGroup = acceptScope(headers.get("x-agentdox-group"));
 	const agentdoxPersonal = acceptScope(headers.get("x-agentdox-personal"));
 
+	// The workspace's repository fingerprint, for a front door that keeps a
+	// project registry. Same sentinel rule as the scope: omp sends the env-var
+	// NAME when the variable is unset, and a name is never a fingerprint.
+	const agentdoxOrigin = acceptOrigin(headers.get("x-agentdox-origin"));
+
 	// Subagent marker from the embed extension (sessions without a UI).
 	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
 
@@ -409,6 +414,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		agentdoxScope,
 		agentdoxGroup,
 		agentdoxPersonal,
+		agentdoxOrigin,
 		isSubagent,
 		...(policy === undefined ? {} : { policy }),
 		requestedModel,
