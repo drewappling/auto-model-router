@@ -233,6 +233,8 @@ describe("buildUsageReport", () => {
 			cacheHitRate: 0,
 			promptTokens: 0,
 			completionTokens: 0,
+			redactions: 0,
+			redactedTurns: 0,
 			escalations: 0,
 			failovers: 0,
 			errors: 0,

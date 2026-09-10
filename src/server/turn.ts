@@ -29,6 +29,8 @@ import {
 import { UpstreamError, type Dispatch, type UpstreamClient } from "../upstream/types.ts";
 import type { SessionOverrides } from "./overrides.ts";
 import { digestCompactionEdits, type CompactionDigester } from "./compaction-digest.ts";
+import { redactUpstreamBody } from "./redact.ts";
+import { redactionRulesFor } from "../config/redaction.ts";
 import { createLogger } from "../util/log.ts";
 import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk } from "../wire/types.ts";
 
@@ -165,6 +167,10 @@ export async function runTurn(
 	let pendingDecision: Decision | null = null;
 	// Digests made this turn, by edit; a retry re-plans and must not pay twice.
 	const digestMemo = new Map<string, string>();
+	// Compiled once per turn (and memoised across turns on the rules' own text),
+	// never per attempt: a retry renders the same request again and would
+	// otherwise recompile every pattern.
+	const redactionRules = redactionRulesFor(config.redaction);
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		// Client disconnected before anything was dispatched: spend nothing.
@@ -261,6 +267,18 @@ export async function runTurn(
 			...(decision.compactionPlan.length > 0 ? { compactionPlan: decision.compactionPlan } : {}),
 		});
 
+		// Redaction, immediately after the body is rendered and before ANYTHING
+		// can dispatch it. This is the only choke point that covers every path:
+		// all three front ends normalise to this shape, and every upstream client
+		// renders its own protocol from it, so a provider added later is covered
+		// without being told. The count is recorded on the ledger row below; the
+		// matched text is never logged, at any level.
+		let redactions = 0;
+		if (redactionRules.length > 0) {
+			redactions = redactUpstreamBody(body, redactionRules, { scanTools: config.redaction.scanTools });
+			if (redactions > 0) log.debug("redacted outgoing request", { matches: redactions, rules: redactionRules.length });
+		}
+
 		// Calibrate the token estimate against the bytes that actually go out —
 		// after compaction shrank the prompt and the context block was appended
 		// — not the raw request the estimate was taken from.
@@ -333,6 +351,9 @@ export async function runTurn(
 				upstreamGenerationId: generationId,
 				error: fields.error,
 				promptTokensSaved: decision.promptTokensSaved,
+				// Evidence that the guard ran, as a count and nothing more. Absent
+				// while redaction is off, so an untouched row stays NULL.
+				...(redactionRules.length === 0 ? {} : { redactions }),
 				// The ledger prices OpenRouter slugs from its own cached payload; any
 				// other provider's model exists only in the live catalog.
 				...(priceModel === undefined ? {} : { priceModel }),

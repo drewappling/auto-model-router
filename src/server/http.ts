@@ -5,6 +5,8 @@ import { createProviders } from "./providers.ts";
 import { createBridgeFromConfig } from "../context/index.ts";
 import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
 import { createLedger } from "../cost/ledger.ts";
+import { createRetentionRunner } from "../cost/retention.ts";
+import { redactionRulesFor } from "../config/redaction.ts";
 import { createSessionOverrides } from "./overrides.ts";
 import { catalogView } from "./catalog-view.ts";
 import { buildUpstreamModels } from "../catalog/static-catalog.ts";
@@ -265,6 +267,18 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		},
 	);
 
+	// Compile the redaction rules before the listener exists: a rule that does
+	// not load is a hole in the guard, and an operator who configured redaction
+	// must not get a router that started and forwarded anyway. Programmatic
+	// overrides (an embedder's) never pass through the config schema, so this is
+	// the only place their rules are checked.
+	const redactionRules = redactionRulesFor(cfg.redaction);
+	if (redactionRules.length > 0) {
+		// Names only. The patterns describe the secrets and the matches are the
+		// secrets; neither belongs in a log line.
+		log.info("redaction enabled", { rules: redactionRules.map((r) => r.name).join(","), scanTools: cfg.redaction.scanTools });
+	}
+
 	if (context.enabled) {
 		log.info("agentdox context bridge enabled", {
 			url: cfg.context.baseUrl,
@@ -296,8 +310,24 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		log.warn("initial catalog fetch failed", { error: err instanceof Error ? err.message : String(err) });
 	});
 
-	// One housekeeping timer for both tables. `unref`'d so it never holds the
-	// process open.
+	// Ledger retention. The runner owns the once-an-hour floor, so the minute
+	// timer below, the boot run and `POST /v1/router/prune` cannot between them
+	// run a whole-ledger delete more often than that. It reads the window live,
+	// so a hot reload that lowers it applies on the next tick.
+	const retention = createRetentionRunner({ ledger, retentionDays: () => cfg.ledger.retentionDays });
+	const retain = (): void => {
+		try {
+			const result = retention.maybeRun();
+			if (result !== null && result.deleted > 0) {
+				log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
+			}
+		} catch (err) {
+			log.warn("ledger retention prune failed", { error: err instanceof Error ? err.message : String(err) });
+		}
+	};
+
+	// One housekeeping timer for all three tables. `unref`'d so it never holds
+	// the process open.
 	const pruneTimer = setInterval(() => {
 		try {
 			const dropped = conversations.prune(cfg.ledger.conversationTtlMs);
@@ -315,21 +345,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		} catch (err) {
 			log.warn("context block prune failed", { error: err instanceof Error ? err.message : String(err) });
 		}
+		retain();
 	}, 60_000);
 	pruneTimer.unref();
 
-	// Ledger retention: hourly, and once at boot so a lowered setting takes
-	// effect without waiting. Reads the live config, so it hot-reloads.
-	const retain = (): void => {
-		try {
-			const dropped = ledger.prune?.(cfg.ledger.retentionDays) ?? 0;
-			if (dropped > 0) log.info("pruned ledger rows past retention", { dropped, retentionDays: cfg.ledger.retentionDays });
-		} catch (err) {
-			log.warn("ledger retention prune failed", { error: err instanceof Error ? err.message : String(err) });
-		}
-	};
-	const retentionTimer = setInterval(retain, 3_600_000);
-	retentionTimer.unref();
+	// Once shortly after boot, so a lowered window takes effect without waiting
+	// out an hour; the runner's own floor governs everything after that.
 	setTimeout(retain, 5_000).unref();
 
 	// Periodically refetch the (key-scoped) catalog in the background so
@@ -664,6 +685,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 							query: typeof body.query === "string" ? body.query : "",
 						}),
 					);
+				}
+				if (req.method === "POST" && url.pathname === "/v1/router/prune") {
+					// A front door of the team edition holds a READ-ONLY handle on the
+					// ledger file by design, so this route is the only way it can act
+					// on its own retention policy — and the once-an-hour floor is the
+					// runner's, not the caller's, so calling it in a loop is harmless.
+					const result = retention.runNow();
+					if (result.deleted > 0) log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
+					return json({ ...result, retentionDays: cfg.ledger.retentionDays });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.

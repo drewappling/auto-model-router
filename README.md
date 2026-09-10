@@ -762,9 +762,10 @@ virtual profile it picked. Every routed response carries
 
 The ledger records every dispatch: model decided and served, tier, provider,
 tokens (including cached), reported cost, time to first token, total latency,
-escalation signal, error, and the agentdox context scope the turn carried (the
+escalation signal, error, the agentdox context scope the turn carried (the
 project it belongs to; NULL for a turn that carried none, and for every row
-written before v0.19.0). Three views aggregate it, all from the same
+written before v0.19.0) and how many strings redaction removed from the request
+(NULL when redaction was off, and for every row written before v0.21.0). Three views aggregate it, all from the same
 `buildUsageReport` in `src/cost/report.ts`:
 
 - `/router report` in omp — a fullscreen hub with the `/models` look: views
@@ -802,6 +803,8 @@ written before v0.19.0). Three views aggregate it, all from the same
   a comma-separated set of ids, for a group).
 - `GET /v1/router/summary?harness=<id>` — the daily summary as JSON (`auto=1`
   applies the once-a-day gate and returns `due: false` when nothing is due).
+- `POST /v1/router/prune` — applies `ledger.retentionDays` now and answers
+  `{ deleted, oldestKeptMs, retentionDays }`. See [Data governance](#data-governance).
 
 What it shows, for the window:
 
@@ -1160,7 +1163,28 @@ task needed, and `digest.maxOutputTokens` or `digest.model` is the lever.
 | `blendMinSamples` | `25` | Turns before the measured blend replaces the fallback. |
 | `fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend (USD/Mtok) for omp's cost display. |
 | `conversationTtlMs` | `604800000` (7 d) | Drop conversation state untouched this long. |
-| `retentionDays` | `365` | Delete ledger rows older than this, checked hourly; `0` keeps everything. The ledger grows about 2.5 MB a day under steady use. Freed pages are reused, so the file stops growing rather than shrinking. |
+| `retentionDays` | `null` | Delete ledger rows — and the feedback keyed to them — older than this many days, checked at most hourly; `null` (the default) and `0` keep everything. The ledger grows about 2.5 MB a day under steady use. See [Data governance](#data-governance). |
+
+### `redaction` — keep configured strings out of every request
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Apply the rules to every outgoing request. Off means the router never touches the prompt. |
+| `rules` | `[]` | `{ name, pattern, replacement? }` entries. `pattern` is a regular-expression source compiled once at load under a guard (see [Data governance](#data-governance)); `replacement` defaults to `[redacted:<name>]`. At most 64 rules. |
+| `scanTools` | `false` | Also scan tool-call arguments and tool results, not just message text. |
+
+```yaml
+# ~/.auto-model-router/config.yml
+redaction:
+  enabled: true
+  scanTools: true
+  rules:
+    - name: api key
+      pattern: "sk-live-[A-Za-z0-9]{16,}"
+    - name: customer id
+      pattern: "(?:acct|customer)-\\d{6}"
+      replacement: "<customer>"
+```
 
 ### Top-level
 
@@ -1371,6 +1395,92 @@ override already pinned one. Every field is optional; a malformed header is
 ignored rather than failing the turn. The decision trail records what the
 policy changed (`policy: …`), and `GET /v1/router/catalog?policy=…` shows what a
 policy admits, model by model, without routing a turn.
+
+## Data governance
+
+Two things an operator with a compliance obligation needs from a router: that
+certain strings never reach a provider, and that they can say how long a record
+of the traffic is kept. Both are off by default — the router does not touch a
+prompt or delete a row unless it is told to. Design notes:
+[`docs/data-governance.md`](docs/data-governance.md).
+
+### Redaction, before a provider sees the prompt
+
+With `redaction.enabled`, every rule is applied to the outgoing request
+**immediately after it is rendered and before anything can dispatch it**. That
+is one place, deliberately: all three front ends (chat completions, Responses,
+Anthropic Messages) normalise to the same request shape, and every upstream
+client — OpenRouter, Ollama, a named OpenAI/Anthropic/vLLM upstream — renders
+its own protocol from it. A provider added later is covered without being told.
+
+Message text is always scanned, including the system prompt and the injected
+agentdox block. With `scanTools`, tool-call arguments and tool results are too
+— which is where the bytes are (a turn's prompt is mostly file content), and
+also where the secret an agent just read from disk actually is. Tool names, ids
+and schemas are never rewritten: they are the harness's vocabulary, and editing
+one would break the call/result pairing the model needs. A match becomes
+`[redacted:<name>]`, or the rule's own `replacement`. Nothing else about the
+turn changes — same routing, same cache breakpoints, same bytes otherwise.
+
+**The pattern guard.** A rule is configuration meeting text from a user, run
+against megabytes of tool output on every turn, which is exactly the shape that
+backtracks. So a pattern is compiled ONCE at load and these are refused, with
+the reason and the rule's name, rather than trusted:
+
+| Refused | Why |
+| --- | --- |
+| A nested unbounded quantifier — `(a+)+`, `(\d{2,})*` | The classic catastrophic shape: the ways to split one input across both quantifiers grow exponentially with its length. A **bounded** outer quantifier is fine, so `(?:\d{1,3}\.){3}\d{1,3}` still loads. |
+| An alternation under an unbounded quantifier — `(?:a\|a)*` | The other one: branches that can match the same input many ways. An alternation not under one (`(?:acct\|customer)-\d{6}`) is fine. |
+| A backreference — `\1`, `\k<name>` | Takes the pattern outside the regular languages, where no bound on matching time exists at all. |
+| A pattern that matches the empty string | It would replace at every position, turning the prompt into replacement text. |
+| A pattern over 512 characters, or a set over 64 rules | A rule describes the shape of a secret. Every real one is short. |
+| A pattern that does not compile | Reported with the engine's own message. |
+
+Patterns compile with the `u` flag where possible — it rejects sloppy escapes
+at load rather than letting them mean something else, and makes matching work
+on code points — falling back to no flag for a legacy pattern that only `u`
+rejects, so an operator's working rule does not break on an upgrade. A refused
+rule is a **startup error**, not a warning: a rule the operator believes is
+removing something must never be a rule the router quietly skipped. The same
+guard is exported as `validateRedactionPattern`, so a front door can reject a
+rule while an operator is typing it, with the message the router would use.
+
+**The evidence, without the secret.** Every ledger row carries `redactions`,
+the number of strings removed from that turn's request — a count and nothing
+else, because the matched text is precisely what must not exist outside the
+client. Nothing logs a match at any level. `GET /v1/router/report` totals it as
+`redactions` with `redactedTurns` beside it, so a front door can show "N turns
+had something removed", and the rendered report prints the same line. A row
+written before v0.21.0, or a turn with redaction off, stores NULL, which is a
+different fact from `0` (the rules ran and matched nothing).
+
+### Ledger retention
+
+`ledger.retentionDays` says how long turns are kept. `null` — the default — and
+`0` keep everything; a number deletes ledger rows older than that many days,
+along with the user verdicts (`/router good|bad`) keyed to them and the Ollama
+meter samples that calibrate them. Keeping is the default because deleting is
+the direction that cannot be undone, and how long a record of what people asked
+a model lives is an operator's decision, not a default's.
+
+The prune runs on the router's own housekeeping schedule, **at most once an
+hour** however often it is asked, and once shortly after boot so a lowered
+window applies without waiting. Freed pages are handed back to the filesystem
+where the engine can (a ledger created at v0.21.0 or later is
+`auto_vacuum=INCREMENTAL`; an older file reuses them instead), and the WAL is
+folded back so the space is real on disk.
+
+```
+POST /v1/router/prune        →  { "deleted": 12043, "oldestKeptMs": 1782720000000, "retentionDays": 365 }
+```
+
+`oldestKeptMs` is the timestamp of the oldest row still in the ledger — how far
+back it now goes, which is what the question was actually about; `null` when it
+is empty. The route exists because a front door of the team edition holds a
+**read-only** handle on the ledger file by design and must never delete from it
+itself: it triggers the router's own prune and reads the counts back. It obeys
+the same hourly floor, so calling it in a loop is harmless, and it needs
+`server.apiKey` like every other route.
 
 ## Using a remote router
 

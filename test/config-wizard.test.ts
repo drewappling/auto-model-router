@@ -142,7 +142,7 @@ describe("validateField", () => {
 
 describe("WIZARD_SECTIONS coverage", () => {
 	/** Leaves that are edited as whole records/arrays rather than fields. */
-	const RECORD_PATHS = new Set(["ollama.prices", "ollama.twins", "digest.toolAliases", "profiles", "upstreams"]);
+	const RECORD_PATHS = new Set(["ollama.prices", "ollama.twins", "digest.toolAliases", "profiles", "upstreams", "redaction.rules"]);
 
 	function leaves(obj: unknown, prefix = ""): string[] {
 		if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return [prefix];

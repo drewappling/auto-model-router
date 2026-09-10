@@ -710,12 +710,58 @@ export interface LedgerConfig {
 	/** Drop conversation state untouched for longer than this, ms. */
 	conversationTtlMs: number;
 	/**
-	 * Delete ledger rows older than this many days (checked hourly). 0 keeps
-	 * everything. The ledger grows ~2.5 MB a day under steady use; trust,
-	 * reports and replay only read windows well inside a year. Freed pages
-	 * are reused, so the file stops growing rather than shrinking.
+	 * Delete ledger rows — and the feedback keyed to them — older than this
+	 * many days, checked at most hourly. `null` (the default) and 0 both keep
+	 * everything.
+	 *
+	 * The default is to keep, because how long a record of what people asked a
+	 * model is retained is a decision an operator makes, not one a default
+	 * should make for them: deleting is the irreversible direction. The ledger
+	 * grows ~2.5 MB a day under steady use, and trust, reports and replay only
+	 * read windows well inside a year, so a deployment that wants a window
+	 * loses nothing by setting one. Freed pages are reused (and released where
+	 * the engine can), so the file mostly stops growing rather than shrinking.
 	 */
-	retentionDays: number;
+	retentionDays: number | null;
+}
+
+/** One redaction rule: a name, the pattern it matches, and what replaces a match. */
+export interface RedactionRule {
+	/**
+	 * Identifies the rule in errors and in the default replacement. Echoed into
+	 * the prompt as `[redacted:<name>]`, so it must not itself be a secret.
+	 */
+	name: string;
+	/**
+	 * Regular-expression SOURCE (no delimiters, no flags), compiled once at
+	 * load under a guard that refuses the shapes with exponential worst cases —
+	 * see `validateRedactionPattern` in `src/server/redact.ts` for exactly what
+	 * is refused and why.
+	 */
+	pattern: string;
+	/** What a match becomes. Defaults to `[redacted:<name>]`. */
+	replacement?: string;
+}
+
+/**
+ * Keep strings out of every request that leaves the process.
+ *
+ * Off by default. Enabled, each rule is applied to the rendered upstream body
+ * just before dispatch — the one shape every front end normalises to and every
+ * provider client renders from — so a new upstream cannot bypass it. The
+ * ledger row records HOW MANY matches were removed and never what they were;
+ * nothing logs the matched text at any level.
+ */
+export interface RedactionConfig {
+	enabled: boolean;
+	rules: RedactionRule[];
+	/**
+	 * Also scan tool-call arguments and tool results. Off by default: tool
+	 * results are most of a turn's prompt bytes, so this is most of the cost —
+	 * and, for an operator worried about a secret in a file the agent read,
+	 * most of the point.
+	 */
+	scanTools: boolean;
 }
 
 /**
@@ -929,6 +975,7 @@ export interface RouterConfig {
 	anthropic: AnthropicConfig;
 	profiles: ProfileConfig[];
 	ledger: LedgerConfig;
+	redaction: RedactionConfig;
 	/**
 	 * Relax a tier's quality floor to a catalog-derived band when the configured
 	 * floor is met by fewer than three available models (never tightening it).

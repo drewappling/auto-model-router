@@ -95,8 +95,9 @@ export interface WatchConfigOptions {
  * Config paths captured at construction, so a file edit cannot reach the
  * running process: the socket, the upstream clients, the agentdox bridge, the
  * ledger file. Everything else, including `ollama.costBias`,
- * `ollama.biasUntilUsage`, `server.subagentProfile` and `ledger.retentionDays`,
- * is read at call time and hot-reloads. A bare block name pins the whole
+ * `ollama.biasUntilUsage`, `server.subagentProfile`, `ledger.retentionDays` and
+ * the whole `redaction` block (rules recompile when their text changes), is
+ * read at call time and hot-reloads. A bare block name pins the whole
  * block; `block.key` pins one key and lets its siblings through.
  */
 /**

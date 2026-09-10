@@ -154,11 +154,31 @@ export interface LedgerEntry {
 	 */
 	scope?: string;
 	/**
+	 * How many strings redaction removed from this turn's outgoing request
+	 * (`redaction` in the config). A COUNT and nothing else — the matched text
+	 * is precisely what must not exist outside the client, so the evidence that
+	 * the guard ran must not reintroduce it. Absent when redaction is off, and
+	 * on every row written before v19; 0 means the rules ran and matched nothing.
+	 */
+	redactions?: number;
+	/**
 	 * The catalog model that served, for the cost split. The ledger can price
 	 * OpenRouter slugs from its own cached catalog payload; a model from another
 	 * provider (Ollama) exists only in memory, so the orchestrator hands it over.
 	 */
 	priceModel?: CatalogModel;
+}
+
+/**
+ * What one retention prune did. `oldestKeptMs` is the timestamp of the oldest
+ * row still in the ledger afterwards (null when it is empty) — the honest
+ * answer to "how far back does this ledger go now", which is what an operator
+ * asked the question for, and what a front door shows instead of computing a
+ * cutoff of its own.
+ */
+export interface PruneResult {
+	deleted: number;
+	oldestKeptMs: number | null;
 }
 
 /** Rolling blended rate used to keep omp's cost display honest. */
@@ -310,8 +330,12 @@ export interface Ledger {
 	latestForSession?(ompSessionId: string): LedgerEntry | null;
 	/** Newest entries for an omp session, newest first. Optional. */
 	entriesForSession?(ompSessionId: string, limit: number): LedgerEntry[];
-	/** Deletes rows older than `retentionDays` (0 ⇒ none); returns how many. Optional. */
-	prune?(retentionDays: number, nowMs?: number): number;
+	/**
+	 * Deletes ledger rows past the retention window, and the feedback keyed to
+	 * them (`null` or 0 ⇒ nothing is deleted). Optional so fakes need not
+	 * implement it.
+	 */
+	prune?(retentionDays: number | null, nowMs?: number): PruneResult;
 	/** Marks one row wasted after the fact (a digest the agent went back on). Optional. */
 	markWasted?(id: string): void;
 }

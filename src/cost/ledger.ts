@@ -27,6 +27,7 @@ import type {
 	ModelCacheReliability,
 	ModelLatency,
 	ModelTrust,
+	PruneResult,
 	SoftFailureSpike,
 	UsageCounts,
 } from "./types.ts";
@@ -100,6 +101,7 @@ export interface LedgerRow {
 	error: string | null;
 	prompt_tokens_saved: number | null;
 	scope: string | null;
+	redactions: number | null;
 }
 
 interface TrustRow {
@@ -278,6 +280,9 @@ export function toEntry(row: LedgerRow): LedgerEntry {
 		// Optional under exactOptionalPropertyTypes: an old row (or a scopeless
 		// turn) simply has no `scope`, rather than an explicit undefined.
 		...(row.scope === null || row.scope === undefined ? {} : { scope: row.scope }),
+		// Likewise a row from before v19, or a turn with redaction off: absent,
+		// which is a different fact from 0 (the rules ran and matched nothing).
+		...(row.redactions === null || row.redactions === undefined ? {} : { redactions: row.redactions }),
 	};
 }
 
@@ -323,8 +328,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
-			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm, prompt_tokens_saved, scope
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm, prompt_tokens_saved, scope, redactions
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -380,9 +385,17 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 	const ratioStmt = db.query("SELECT est_bytes, actual_tokens, samples FROM token_calibration WHERE tokenizer = ?");
 	const recentStmt = db.query("SELECT * FROM ledger ORDER BY created_at_ms DESC LIMIT ?");
 	const pruneStmt = db.query("DELETE FROM ledger WHERE created_at_ms < ?");
+	// Feedback is a verdict ON a ledger row; keeping it past the turn it judges
+	// would leave a note about a conversation the operator asked us to forget.
+	// Matched by the row it points at AND by its own age, so verdicts orphaned
+	// by a prune that ran before v0.21.0 are swept up too.
+	const pruneFeedbackStmt = db.query(
+		"DELETE FROM feedback WHERE created_at_ms < ? OR ledger_id IN (SELECT id FROM ledger WHERE created_at_ms < ?)",
+	);
 	// Ollama meter samples (one per usage poll) only matter for the current
 	// billing cycle's calibration; they age out with the ledger rows.
 	const pruneMeterStmt = db.query("DELETE FROM ollama_meter_samples WHERE at_ms < ?");
+	const oldestStmt = db.query("SELECT MIN(created_at_ms) AS oldest FROM ledger");
 	const wasteStmt = db.query("UPDATE ledger SET wasted = 1 WHERE id = ?");
 	const providerSpendStmt = db.query(
 		"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE created_at_ms >= ? AND COALESCE(served_slug, slug) LIKE ?",
@@ -480,6 +493,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				// A turn that carried no scope stores NULL, exactly as every row
 				// written before v18 did; "" and absent are the same fact.
 				entry.scope === undefined || entry.scope === "" ? null : entry.scope,
+				// NULL when redaction was off for this turn; 0 says the rules ran.
+				entry.redactions ?? null,
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only
@@ -635,11 +650,30 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			const row = providerSpendStmt.get(sinceMs, `${slugPrefix}%`) as { total: number } | null;
 			return row?.total ?? 0;
 		},
-		prune(retentionDays: number, nowMs = Date.now()): number {
-			if (retentionDays <= 0) return 0;
+		prune(retentionDays: number | null, nowMs = Date.now()): PruneResult {
+			const oldestKeptMs = (): number | null => (oldestStmt.get() as { oldest: number | null } | null)?.oldest ?? null;
+			// null and 0 are the same instruction: keep everything. Still reports
+			// how far back the ledger goes, which is what the caller asked.
+			if (retentionDays === null || retentionDays <= 0) return { deleted: 0, oldestKeptMs: oldestKeptMs() };
 			const cutoff = nowMs - retentionDays * DAY_MS;
+			// Dependants first: the feedback statement reads the rows being deleted.
+			pruneFeedbackStmt.run(cutoff, cutoff);
 			pruneMeterStmt.run(cutoff);
-			return pruneStmt.run(cutoff).changes;
+			const deleted = pruneStmt.run(cutoff).changes;
+			// Hand the freed pages back where the engine can (a ledger created at
+			// v0.21.0 or later is auto_vacuum=INCREMENTAL; an older file reuses
+			// them instead), then fold the WAL back so the space is real on disk.
+			// Best-effort by design: a full ledger that could not shrink is a far
+			// smaller problem than a prune that throws.
+			if (deleted > 0) {
+				try {
+					db.exec("PRAGMA incremental_vacuum");
+					db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+				} catch {
+					/* freed pages stay in the file, to be reused by later rows */
+				}
+			}
+			return { deleted, oldestKeptMs: oldestKeptMs() };
 		},
 		markWasted(id: string): void {
 			wasteStmt.run(id);

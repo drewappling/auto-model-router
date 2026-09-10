@@ -36,6 +36,14 @@ export interface ReportTotals {
 	digestInputTokens: number;
 	/** Digests the agent went back on: the same tool re-run with the same primary argument afterwards (row marked wasted). */
 	digestReruns: number;
+	/**
+	 * Strings redaction removed from outgoing requests in the window, and how
+	 * many turns at least one was removed from — "N turns had something
+	 * removed", which is the sentence an operator has to be able to say. Both 0
+	 * when redaction is off, and rows written before v0.21.0 count as 0.
+	 */
+	redactions: number;
+	redactedTurns: number;
 	/** Forecast accuracy over clean kept rows with a reported cost: mean |predicted − reported| ÷ reported, and the share over-predicted. */
 	forecastSamples: number;
 	forecastMeanError: number;
@@ -253,6 +261,8 @@ export function buildUsageReport(
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${USD} ELSE 0 END), 0) AS digest_spend,
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${PT} ELSE 0 END), 0) AS digest_input,
 				SUM(CASE WHEN requested_model = 'digest' AND wasted = 1 THEN 1 ELSE 0 END) AS digest_reruns,
+				COALESCE(SUM(redactions), 0) AS redactions,
+				SUM(CASE WHEN redactions > 0 THEN 1 ELSE 0 END) AS redacted_rows,
 				SUM(CASE WHEN ${FORECASTABLE} THEN 1 ELSE 0 END) AS fc_n,
 				COALESCE(SUM(CASE WHEN ${FORECASTABLE} THEN ABS(predicted_usd - reported_usd) / reported_usd END), 0) AS fc_err,
 				SUM(CASE WHEN ${FORECASTABLE} AND predicted_usd > reported_usd THEN 1 ELSE 0 END) AS fc_over,
@@ -276,6 +286,8 @@ export function buildUsageReport(
 		digest_spend: number;
 		digest_input: number;
 		digest_reruns: number | null;
+		redactions: number;
+		redacted_rows: number | null;
 		fc_n: number | null;
 		fc_err: number;
 		fc_over: number | null;
@@ -402,6 +414,8 @@ export function buildUsageReport(
 			digestSpendUsd: t.digest_spend,
 			digestInputTokens: t.digest_input,
 			digestReruns: t.digest_reruns ?? 0,
+			redactions: t.redactions,
+			redactedTurns: t.redacted_rows ?? 0,
 			forecastSamples: t.fc_n ?? 0,
 			forecastMeanError: (t.fc_n ?? 0) > 0 ? t.fc_err / (t.fc_n ?? 1) : 0,
 			forecastOverShare: (t.fc_n ?? 0) > 0 ? (t.fc_over ?? 0) / (t.fc_n ?? 1) : 0,
@@ -476,6 +490,11 @@ export function reportView(r: UsageReport, opts: { maxModels?: number } = {}): R
 	}
 	if (t.forecastSamples > 0) {
 		summary.push(`forecast: mean error ${pct(t.forecastMeanError)} of reported cost over ${num(t.forecastSamples)} turns · ${pct(t.forecastOverShare)} over-predicted`);
+	}
+	if (t.redactedTurns > 0) {
+		// Counts only: the report is read out loud in front of people, and the
+		// whole point of the feature is that the matched strings are gone.
+		summary.push(`redaction: ${num(t.redactedTurns)} turns had something removed (${num(t.redactions)} strings)`);
 	}
 	if (t.subagentDispatches > 0) {
 		summary.push(`subagents: ${num(t.subagentDispatches)} dispatches, ${usd(t.subagentSpendUsd)} (${pct(t.spendUsd > 0 ? t.subagentSpendUsd / t.spendUsd : 0)} of spend)`);

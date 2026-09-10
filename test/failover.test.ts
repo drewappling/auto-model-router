@@ -83,6 +83,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		digest: { enabled: false, minBytes: 12_000, maxBytes: 400_000, tools: ["read"], fromTier: "moderate", tier: "simple", model: "", maxOutputTokens: 700, maxCostUsd: 0.02, timeoutMs: 25_000, toolAliases: {} },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 , retentionDays: 0,},
+		redaction: { enabled: false, rules: [], scanTools: false },
 		adaptiveTierFloors: true,
 		adaptivePriceCeilings: false,
 		logLevel: "silent",

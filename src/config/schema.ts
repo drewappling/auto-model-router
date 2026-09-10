@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_REDACTION_RULES, validateRedactionRule } from "./redaction.ts";
 
 /**
  * Input schema for `$AUTO_MODEL_ROUTER_HOME/config.yml`: a deep partial of
@@ -269,7 +270,29 @@ const ledger = z.strictObject({
 	blendMinSamples: z.number().int().nonnegative().optional(),
 	fallbackBlend: fallbackBlend.optional(),
 	conversationTtlMs: z.number().positive().optional(),
-	retentionDays: z.number().int().nonnegative().optional(),
+	// `null` and 0 both mean "keep everything"; null is the default.
+	retentionDays: z.number().int().nonnegative().nullable().optional(),
+});
+
+/**
+ * Redaction rules are compiled at load, and a pattern that cannot be run
+ * safely is rejected HERE, with the reason, rather than at the first turn:
+ * a rule an operator believes is removing something must never be a rule the
+ * router quietly skipped.
+ */
+const redactionRule = z.strictObject({
+	name: z.string().min(1),
+	pattern: z.string().min(1),
+	replacement: z.string().optional(),
+}).superRefine((rule, ctx) => {
+	const reason = validateRedactionRule(rule);
+	if (reason !== null) ctx.addIssue({ code: "custom", message: reason });
+});
+
+const redaction = z.strictObject({
+	enabled: z.boolean().optional(),
+	rules: z.array(redactionRule).max(MAX_REDACTION_RULES).optional(),
+	scanTools: z.boolean().optional(),
 });
 
 // Complete entries: arrays replace wholesale, so a partial profile would
@@ -342,6 +365,7 @@ export const configInputSchema = z.strictObject({
 		})
 		.optional(),
 	ledger: ledger.optional(),
+	redaction: redaction.optional(),
 	adaptiveTierFloors: z.boolean().optional(),
 	adaptivePriceCeilings: z.boolean().optional(),
 	logLevel: logLevel.optional(),

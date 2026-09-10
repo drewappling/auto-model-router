@@ -24,7 +24,7 @@ import { openDb } from "../src/util/sqlite.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "migrations");
 const files = readdirSync(FIXTURES).filter((f) => /^router-v\d+\.db$/.test(f)).sort((a, b) => Number(/\d+/.exec(a)![0]) - Number(/\d+/.exec(b)![0]));
-const CURRENT_VERSION = 18;
+const CURRENT_VERSION = 19;
 
 describe("schema migrations from every shipped version", () => {
 	test("fixtures exist for the versions that shipped", () => {
@@ -44,7 +44,7 @@ describe("schema migrations from every shipped version", () => {
 				expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(CURRENT_VERSION);
 				// Every column the current code writes exists after migration.
 				const ledgerCols = new Set((db.query("PRAGMA table_info(ledger)").all() as { name: string }[]).map((c) => c.name));
-				for (const c of ["harness_id", "error_kind", "omp_session_id", "features", "explored_from", "hold_arm", "prompt_tokens_saved", "scope"]) expect(ledgerCols.has(c)).toBe(true);
+				for (const c of ["harness_id", "error_kind", "omp_session_id", "features", "explored_from", "hold_arm", "prompt_tokens_saved", "scope", "redactions"]) expect(ledgerCols.has(c)).toBe(true);
 				const convCols = new Set((db.query("PRAGMA table_info(conversations)").all() as { name: string }[]).map((c) => c.name));
 				for (const c of ["context_version", "compaction_plan", "compaction_plan_tokens", "upgrade_deferred_tier"]) expect(convCols.has(c)).toBe(true);
 				// The fixture's ledger row survived the ALTERs with its values.
@@ -67,7 +67,10 @@ describe("schema migrations from every shipped version", () => {
 				expect(exportRows(db, 0, null).map((r) => r.scope)).toEqual([""]);
 				expect(spendUsdSince(db, 0, null, "acme.api")).toBe(0);
 				expect(spendUsdSince(db, 0, null)).toBeGreaterThanOrEqual(0);
-				expect(ledger.prune?.(0)).toBe(0);
+				expect(ledger.prune?.(0)?.deleted).toBe(0);
+				// v19: the fixture's row predates `redactions`, so nothing claims a
+				// redaction happened on it and the report totals it as zero.
+				expect(buildUsageReport(db, { windowDays: 3650 }).totals.redactions).toBe(0);
 			} finally {
 				db.close();
 				try {

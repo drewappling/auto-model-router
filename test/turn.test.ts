@@ -14,6 +14,8 @@ import type {
 	Tier,
 } from "../src/router/types.ts";
 import { runTurn } from "../src/server/turn.ts";
+import { parseMessagesRequest } from "../src/wire/anthropic/messages.ts";
+import { parseChatRequest } from "../src/wire/openai/request.ts";
 import { UpstreamError, type DispatchOptions, type UpstreamClient } from "../src/upstream/types.ts";
 import type {
 	FinishReason,
@@ -83,6 +85,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 		digest: { enabled: false, minBytes: 12_000, maxBytes: 400_000, tools: ["read"], fromTier: "moderate", tier: "simple", model: "", maxOutputTokens: 700, maxCostUsd: 0.02, timeoutMs: 25_000, toolAliases: {} },
 		profiles: [],
 		ledger: { path: ":memory:", blendWindowDays: 7, blendMinSamples: 20, fallbackBlend: { inputPerMtok: 1, outputPerMtok: 4 }, conversationTtlMs: 86_400_000 , retentionDays: 0,},
+		redaction: { enabled: false, rules: [], scanTools: false },
 		adaptiveTierFloors: true,
 		adaptivePriceCeilings: false,
 		logLevel: "silent",
@@ -1132,5 +1135,109 @@ describe("summarising compaction in a turn", () => {
 		await runTurn(reqWithTool(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge(), digester }, new AbortController().signal);
 		expect(calls).toBe(0);
 		expect(map.get("conv-test")!.compactionPlan![0]?.digest).toBeUndefined();
+	});
+});
+
+/**
+ * Redaction sits on the turn path itself: between the rendered upstream body
+ * and `upstream.dispatch`, which is the one place every wire in and every
+ * provider out passes through. These tests assert on the bytes the fake
+ * upstream was actually handed.
+ */
+describe("redaction on the turn path", () => {
+	const SECRET = "sk-live-4f9a2b7c1d8e3f6a0b5c";
+	const RULES = [{ name: "key", pattern: "sk-live-[a-z0-9]+" }];
+
+	function redactingConfig(over: Partial<RouterConfig["redaction"]> = {}): RouterConfig {
+		const cfg = mkConfig();
+		cfg.redaction = { enabled: true, rules: RULES, scanTools: false, ...over };
+		return cfg;
+	}
+
+	/** A real chat-completions request, so the body under test is the real render. */
+	function chatReq(messages: unknown[]): NormRequest {
+		return parseChatRequest({ model: "auto", messages }, new Headers());
+	}
+
+	async function dispatchBody(req: NormRequest, config: RouterConfig): Promise<{ body: Record<string, unknown>; entries: LedgerEntry[] }> {
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model")]);
+		const { upstream, calls } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("ok"), finishChunk("stop"), usageChunk({ promptTokens: 10, completionTokens: 2 }, 0.001)] },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+		await runTurn(req, sink, { config, router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+		expect(errors).toHaveLength(0);
+		return { body: calls[0]!.body as Record<string, unknown>, entries };
+	}
+
+	test("the secret never reaches dispatch, and the ledger row carries the count", async () => {
+		const { body, entries } = await dispatchBody(
+			chatReq([{ role: "system", content: `never share ${SECRET}` }, { role: "user", content: `deploy with ${SECRET}` }]),
+			redactingConfig(),
+		);
+		expect(JSON.stringify(body)).not.toContain(SECRET);
+		expect(JSON.stringify(body)).toContain("[redacted:key]");
+		expect(entries[0]!.redactions).toBe(2);
+	});
+
+	test("the Anthropic Messages wire is covered by the same pass", async () => {
+		const req = parseMessagesRequest(
+			{ model: "claude-opus-5", max_tokens: 64, system: `never share ${SECRET}`, messages: [{ role: "user", content: `deploy with ${SECRET}` }] },
+			new Headers(),
+		);
+		const { body, entries } = await dispatchBody(req, redactingConfig());
+		expect(JSON.stringify(body)).not.toContain(SECRET);
+		expect(entries[0]!.redactions).toBe(2);
+	});
+
+	test("tool arguments and tool results go only when scanTools is on", async () => {
+		const messages = [
+			{ role: "user", content: "read it" },
+			{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: `{"token":"${SECRET}"}` } }] },
+			{ role: "tool", tool_call_id: "c1", content: `file says ${SECRET}` },
+		];
+		const off = await dispatchBody(chatReq(messages), redactingConfig());
+		expect(JSON.stringify(off.body)).toContain(SECRET);
+		expect(off.entries[0]!.redactions).toBe(0);
+
+		const on = await dispatchBody(chatReq(messages), redactingConfig({ scanTools: true }));
+		expect(JSON.stringify(on.body)).not.toContain(SECRET);
+		expect(on.entries[0]!.redactions).toBe(2);
+	});
+
+	test("a turn with redaction on is identical in every other respect", async () => {
+		const messages = [{ role: "user", content: "nothing to hide" }];
+		const plain = await dispatchBody(chatReq(messages), mkConfig());
+		const guarded = await dispatchBody(chatReq(messages), redactingConfig());
+		expect(guarded.body).toEqual(plain.body);
+		// The count says the rules ran and matched nothing; off records nothing at all.
+		expect(guarded.entries[0]!.redactions).toBe(0);
+		expect(plain.entries[0]!.redactions).toBeUndefined();
+	});
+
+	test("no log line, at any level, carries the matched text", async () => {
+		const written: string[] = [];
+		const original = process.stderr.write.bind(process.stderr);
+		// Test double for the stderr sink the logger writes to.
+		process.stderr.write = ((chunk: string) => {
+			written.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const config = redactingConfig({ scanTools: true });
+			config.logLevel = "debug";
+			const { body } = await dispatchBody(
+				chatReq([{ role: "user", content: `deploy with ${SECRET}` }, { role: "tool", tool_call_id: "c1", content: SECRET }]),
+				config,
+			);
+			expect(JSON.stringify(body)).not.toContain(SECRET);
+		} finally {
+			process.stderr.write = original;
+		}
+		expect(written.join("")).not.toContain(SECRET);
+		// It does say the guard ran, in counts.
+		expect(written.join("")).toContain("redacted outgoing request matches=2");
 	});
 });

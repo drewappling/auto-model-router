@@ -259,11 +259,11 @@ describe("v4 migration", () => {
 		db.close();
 	});
 
-	test("schema is at user_version 18", () => {
+	test("schema is at user_version 19", () => {
 		const db = openDb(":memory:");
 		try {
 			const row = db.query("PRAGMA user_version").get() as { user_version: number };
-			expect(row.user_version).toBe(18);
+			expect(row.user_version).toBe(19);
 		} finally {
 			db.close();
 		}

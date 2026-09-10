@@ -362,7 +362,17 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "ledger.fallbackBlend.inputPerMtok", label: "Fallback blend input $/Mtok", kind: "number", min: 0 },
 			{ path: "ledger.fallbackBlend.outputPerMtok", label: "Fallback blend output $/Mtok", kind: "number", min: 0 },
 			{ path: "ledger.conversationTtlMs", label: "Conversation TTL", kind: "number", min: 1, hint: "ms" },
-			{ path: "ledger.retentionDays", label: "Ledger retention", kind: "number", min: 0, hint: "days; 0 keeps everything" },
+			{ path: "ledger.retentionDays", label: "Ledger retention", kind: "number", min: 0, optional: true, hint: "days; 0 or cleared keeps everything" },
+		],
+	},
+	{
+		title: "Redaction",
+		fields: [
+			{ path: "redaction.enabled", label: "Remove configured strings from outgoing requests", kind: "boolean" },
+			{ path: "redaction.scanTools", label: "Also scan tool arguments and tool results", kind: "boolean" },
+			// `redaction.rules` is a list of name/pattern records, edited in the
+			// config file (or by a front door) rather than one prompt at a time —
+			// the same treatment `profiles` and `upstreams` get.
 		],
 	},
 	{

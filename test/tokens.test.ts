@@ -290,13 +290,13 @@ describe("ledger.prune and markWasted", () => {
 			const now = 1_800_000_000_000;
 			const DAY = 86_400_000;
 			for (let i = 0; i < 5; i++) ledger.record(entry({ createdAtMs: now - i * 100 * DAY }));
-			expect(ledger.prune?.(0, now)).toBe(0);
+			expect(ledger.prune?.(0, now)).toEqual({ deleted: 0, oldestKeptMs: now - 400 * DAY });
 			expect(ledger.recentEntries(10)).toHaveLength(5);
 			db.run("INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, 1, 1), (?, 2, 2)", [now - 400 * DAY, now - DAY]);
-			expect(ledger.prune?.(365, now)).toBe(1); // only the 400-day-old row
+			expect(ledger.prune?.(365, now)?.deleted).toBe(1); // only the 400-day-old row
 			expect((db.query("SELECT COUNT(*) AS n FROM ollama_meter_samples").get() as { n: number }).n).toBe(1);
 			expect(ledger.recentEntries(10)).toHaveLength(4);
-			expect(ledger.prune?.(150, now)).toBe(2); // 200 and 300 days old
+			expect(ledger.prune?.(150, now)?.deleted).toBe(2); // 200 and 300 days old
 			const left = ledger.recentEntries(10);
 			expect(left).toHaveLength(2);
 			expect(left.every((e) => e.wasted === false)).toBe(true);

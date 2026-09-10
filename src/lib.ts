@@ -15,7 +15,10 @@
 export { startServer, type ReconfigureResult, type StartedServer } from "./server/http.ts";
 export { loadConfig, apiKeySource } from "./config/load.ts";
 export { DEFAULT_CONFIG } from "./config/defaults.ts";
-export type { RouterConfig, UpstreamEntry, UpstreamKind, UpstreamModelConfig } from "./config/types.ts";
+export type { RedactionConfig, RedactionRule, RouterConfig, UpstreamEntry, UpstreamKind, UpstreamModelConfig } from "./config/types.ts";
+// A front door that lets an operator type a redaction rule validates it with
+// the same guard the router refuses it with, before the rule is ever saved.
+export { validateRedactionPattern, validateRedactionRule, defaultReplacement, MAX_REDACTION_RULES } from "./config/redaction.ts";
 export { RESERVED_UPSTREAM_IDS } from "./config/schema.ts";
 export { setKnownUpstreamIds, providerOfSlug } from "./cost/report.ts";
 export type { DeepPartial } from "./config/load.ts";
@@ -29,4 +32,7 @@ export { buildExecutable, collectPackageFiles, executableFileName, hostTarget, i
 export { parseSkillsBundle, type SkillsBundle } from "./cli/skills.ts";
 export type { RequestPolicy } from "./wire/types.ts";
 export type { CatalogView, CatalogViewModel } from "./server/catalog-view.ts";
-export type { Ledger, LedgerEntry } from "./cost/types.ts";
+export type { Ledger, LedgerEntry, PruneResult } from "./cost/types.ts";
+// Retention: a front door asks through `POST /v1/router/prune` rather than
+// deleting from the ledger itself. The interval is exported so it can say when.
+export { RETENTION_INTERVAL_MS } from "./cost/retention.ts";

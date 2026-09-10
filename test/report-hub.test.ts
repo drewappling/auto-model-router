@@ -70,6 +70,8 @@ function report(over: Partial<UsageReport> = {}): UsageReport {
 			cacheHitRate: 0.8,
 			promptTokens: 20000,
 			completionTokens: 2000,
+			redactions: 0,
+			redactedTurns: 0,
 			escalations: 2,
 			failovers: 0,
 			errors: 0,

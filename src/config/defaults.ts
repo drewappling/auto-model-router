@@ -385,8 +385,14 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// so early cost reporting never underreports.
 		fallbackBlend: { inputPerMtok: 1.5, outputPerMtok: 7.5 },
 		conversationTtlMs: 7 * 24 * 60 * 60 * 1000,
-		retentionDays: 365,
+		// Keep everything until an operator says otherwise: how long a record of
+		// what people asked a model lives is their decision, and deleting is the
+		// direction that cannot be undone. `POST /v1/router/prune` and the hourly
+		// scheduler both do nothing while this is null.
+		retentionDays: null,
 	},
+	// Off, with no rules: redaction only ever removes what an operator names.
+	redaction: { enabled: false, rules: [], scanTools: false },
 	// On by default: an absolute floor that no available model meets is how the
 	// router ends up serving every turn from the cheapest tier.
 	adaptiveTierFloors: true,

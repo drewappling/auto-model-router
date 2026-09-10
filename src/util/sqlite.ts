@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 18;
+const USER_VERSION = 19;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -296,6 +296,16 @@ const MIGRATE_V18 = `
 ALTER TABLE ledger ADD COLUMN scope TEXT;
 `;
 
+// v19: ledger records how many strings redaction removed from the turn's
+// outgoing request (see `redaction` in the config). A COUNT and nothing else:
+// the whole point of redaction is that the matched text does not exist outside
+// the client, so the evidence that it ran must not reintroduce it. NULL on
+// every row written before this and on every turn with redaction off; 0 means
+// the rules ran and matched nothing.
+const MIGRATE_V19 = `
+ALTER TABLE ledger ADD COLUMN redactions INTEGER;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -320,6 +330,17 @@ export function openDb(path: string): Database {
 	// ":memory:" has no parent directory to create.
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new Database(path);
+	// Incremental auto-vacuum so retention can hand freed pages back to the
+	// filesystem (`PRAGMA incremental_vacuum` after a prune). SQLite only honours
+	// a change of vacuum mode on an empty database or across a full VACUUM, so
+	// this takes effect for NEW ledgers; an existing one keeps its mode and
+	// simply reuses freed pages instead of releasing them. Must precede the
+	// journal-mode change, and is best-effort: never fail an open over it.
+	try {
+		db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+	} catch {
+		/* an existing database in another mode; freed pages are reused instead */
+	}
 	// WAL + NORMAL: single-writer local service; favours read latency on the turn hot path.
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA synchronous = NORMAL");
@@ -338,6 +359,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
 		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
 		if (!ledgerCols.some((c) => c.name === "scope")) db.exec(MIGRATE_V18);
+		if (!ledgerCols.some((c) => c.name === "redactions")) db.exec(MIGRATE_V19);
 		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
 		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);
