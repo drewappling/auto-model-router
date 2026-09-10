@@ -318,7 +318,10 @@ export async function refreshFeedScores(cfg: RouterConfig, db: Database, opts: R
 
 	const row = db.query("SELECT payload, fetched_at_ms FROM benchmark_cache WHERE id = 1").get() as CacheRow | null;
 	const cached: FeedScore[] | null = row === null ? null : parseFeedScores(row.payload);
-	if (row !== null && cached !== null && now - row.fetched_at_ms < bm.refreshMs) return cached;
+	// A zero timestamp is `invalidateFeedCache`'s marker, not a real fetch time:
+	// the payload stays readable as a fallback but never counts as fresh again.
+	const fresh = row !== null && row.fetched_at_ms > 0 && now - row.fetched_at_ms < bm.refreshMs;
+	if (fresh && cached !== null) return cached;
 
 	const feedOpts: FetchOpts = { timeoutMs: bm.timeoutMs };
 	if (opts.fetchImpl !== undefined) feedOpts.fetchImpl = opts.fetchImpl;
@@ -345,6 +348,21 @@ export async function refreshFeedScores(cfg: RouterConfig, db: Database, opts: R
 	).run(JSON.stringify(merged), now);
 	log.debug("refreshed benchmark feeds", { artificial_analysis: aa.length, benchlm: bl.length });
 	return merged;
+}
+
+/**
+ * Mark the cached feeds stale so the next `refreshFeedScores` re-fetches instead
+ * of sitting out `benchmarks.refreshMs` (~a day). The benchmarks config changing
+ * is what calls this: an Artificial Analysis key that only takes effect tomorrow
+ * is a key the operator will believe is broken, and a key taken away has to stop
+ * filling scores just as promptly.
+ *
+ * The row is aged out, never deleted. A forced re-fetch that then fails must
+ * still find the previous scores to fall back on — best-effort is the rule here,
+ * and invalidation must not be the one path that empties the catalog.
+ */
+export function invalidateFeedCache(db: Database): void {
+	db.query("UPDATE benchmark_cache SET fetched_at_ms = 0 WHERE id = 1").run();
 }
 
 /** Validate a persisted `FeedScore[]` blob, skipping any entry that drifted. */

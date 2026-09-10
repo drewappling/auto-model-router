@@ -10,6 +10,7 @@ import { redactionRulesFor } from "../config/redaction.ts";
 import { createSessionOverrides } from "./overrides.ts";
 import { catalogView } from "./catalog-view.ts";
 import { buildUpstreamModels } from "../catalog/static-catalog.ts";
+import { invalidateFeedCache } from "../catalog/benchmark-feeds.ts";
 import { applyRequestPolicy, resolveProfile } from "../router/index.ts";
 import { parsePolicyHeader } from "../wire/openai/request.ts";
 import { createDigester } from "./digest.ts";
@@ -799,15 +800,25 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				defaultScope: cfg.context.defaultScope === "" ? "(per-request header only)" : cfg.context.defaultScope,
 			});
 		}
-		if (!touched(changed, "openrouter", "ollama")) return false;
+		const benchmarksChanged = touched(changed, "benchmarks");
+		if (!touched(changed, "openrouter", "ollama") && !benchmarksChanged) return false;
+		if (benchmarksChanged) {
+			// The feed cache keeps its own ~daily TTL, so a refresh alone would rebuild
+			// the catalog from yesterday's feeds and the new Artificial Analysis key
+			// would do nothing until it expired. Age the row out so the refresh below
+			// re-fetches; the payload stays put, so a fetch that fails leaves the
+			// scores already serving in place. Only a benchmarks change does this —
+			// every other reconfigure keeps the cadence the cache is there for.
+			invalidateFeedCache(db);
+		}
 		// A key change makes the catalog key-scoped (or not), and enabling Ollama adds
 		// its models: the snapshot is rebuilt before the next turn ranks. Started, not
 		// awaited — the caller is a settings save, not a network client, and the
 		// previous snapshot serves turns until the new one lands.
 		void catalog
 			.refresh()
-			.then((snap) => log.info("catalog refreshed after an upstream change", { models: snap.models.length, ollama: cfg.ollama.enabled }))
-			.catch((err: unknown) => log.warn("catalog refresh after an upstream change failed; the previous snapshot stands", { error: err instanceof Error ? err.message : String(err) }));
+			.then((snap) => log.info("catalog refreshed after a live config change", { models: snap.models.length, ollama: cfg.ollama.enabled, benchmarks: benchmarksChanged }))
+			.catch((err: unknown) => log.warn("catalog refresh after a live config change failed; the previous snapshot stands", { error: err instanceof Error ? err.message : String(err) }));
 		return true;
 	}
 

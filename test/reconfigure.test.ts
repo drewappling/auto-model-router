@@ -1,8 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { applyConfigPatch, assignInPlace, touched } from "../src/config/apply.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { startServer } from "../src/server/http.ts";
+import { openDb } from "../src/util/sqlite.ts";
 
 /**
  * Live reconfiguration: a running router follows a config change without a
@@ -98,6 +102,55 @@ describe("a running server reconfigures", () => {
 			expect(health3.ollama).toBeNull();
 		} finally {
 			await started.stop();
+		}
+	});
+
+	test("a benchmarks change ages the feed cache out; an unrelated change leaves it alone", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "amr-benchfeed-"));
+		const cfg: RouterConfig = {
+			...base(),
+			ledger: { ...DEFAULT_CONFIG.ledger, path: join(dir, "ledger.db") },
+			// Off so the background catalog refresh cannot re-fetch the feeds under the
+			// assertion. Invalidation does not depend on it: the point is that the row
+			// is aged out before the refresh runs, whatever the refresh then does.
+			benchmarks: { ...DEFAULT_CONFIG.benchmarks, enabled: false },
+		};
+		const started = startServer(cfg);
+		const db = openDb(cfg.ledger.path);
+		const fetchedAt = (): number | null => {
+			const row = db.query("SELECT fetched_at_ms FROM benchmark_cache WHERE id = 1").get() as { fetched_at_ms: number } | null;
+			return row === null ? null : row.fetched_at_ms;
+		};
+		try {
+			const seeded = Date.now();
+			db.query("INSERT INTO benchmark_cache (id, payload, fetched_at_ms) VALUES (1, ?, ?)").run("[]", seeded);
+
+			// The ~daily feed cadence is not every settings save's to reset.
+			const unrelated = await started.reconfigure({ filters: { latencyWeight: 0.42 } });
+			expect(unrelated.catalogRefreshing).toBe(false);
+			expect(fetchedAt()).toBe(seeded);
+
+			// A key an operator just pasted has to reach the catalog now, not tomorrow.
+			const r = await started.reconfigure({ benchmarks: { artificialAnalysisApiKey: "aa-key" } });
+			expect(r.rejected).toEqual([]);
+			expect(r.changed).toEqual(["benchmarks.artificialAnalysisApiKey"]);
+			expect(r.catalogRefreshing).toBe(true);
+			expect(fetchedAt()).toBe(0);
+			// The payload survives the invalidation, so a failed re-fetch has something
+			// to fall back on.
+			const row = db.query("SELECT payload FROM benchmark_cache WHERE id = 1").get() as { payload: string } | null;
+			expect(row?.payload).toBe("[]");
+
+			// Clearing it again is a benchmarks change too: scores from a key that is
+			// gone must stop being used just as promptly.
+			db.query("UPDATE benchmark_cache SET fetched_at_ms = ? WHERE id = 1").run(seeded);
+			const cleared = await started.reconfigure({ benchmarks: { artificialAnalysisApiKey: "" } });
+			expect(cleared.catalogRefreshing).toBe(true);
+			expect(fetchedAt()).toBe(0);
+		} finally {
+			db.close();
+			await started.stop();
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 

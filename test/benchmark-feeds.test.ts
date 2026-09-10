@@ -4,6 +4,7 @@ import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import {
 	applyFeedScores,
 	fetchBenchlmScores,
+	invalidateFeedCache,
 	normalizeModelKey,
 	parseAaModels,
 	parseBenchlmModels,
@@ -195,6 +196,40 @@ describe("refreshFeedScores", () => {
 		const second = await refreshFeedScores(cfg, db, { fetchImpl: fakeFetch, now: 2000 });
 		expect(second).toHaveLength(1);
 		expect(calls).toBe(1); // within TTL → no new fetch
+		db.close();
+	});
+
+	test("invalidateFeedCache re-fetches inside the TTL, and a failed forced fetch keeps the scores", async () => {
+		const db = openDb(":memory:");
+		let calls = 0;
+		let coding = 58;
+		const fakeFetch: FetchLike = async () => {
+			calls += 1;
+			return Response.json({
+				models: coding === 0 ? [] : [{ model: "MiniMax M3", creator: "MiniMax", evidenceStatus: "supported", categoryScores: { coding } }],
+			});
+		};
+
+		const cfg = cfgWith({ enabled: true, artificialAnalysisApiKey: "", benchlm: true, refreshMs: 1_000_000 });
+		await refreshFeedScores(cfg, db, { fetchImpl: fakeFetch, now: 1000 });
+		await refreshFeedScores(cfg, db, { fetchImpl: fakeFetch, now: 2000 });
+		expect(calls).toBe(1); // deep inside the TTL
+
+		// An Artificial Analysis key arriving cannot wait out the day still left on
+		// the cache; invalidating is what makes the next refresh actually fetch.
+		invalidateFeedCache(db);
+		coding = 71;
+		const forced = await refreshFeedScores(cfg, db, { fetchImpl: fakeFetch, now: 3000 });
+		expect(calls).toBe(2);
+		expect(forced[0]).toMatchObject({ key: "minimax-m3", coding: 71 });
+
+		// And the forced fetch is still best-effort: a feed that answers with nothing
+		// leaves the scores already serving in place rather than emptying them.
+		invalidateFeedCache(db);
+		coding = 0;
+		const after = await refreshFeedScores(cfg, db, { fetchImpl: fakeFetch, now: 4000 });
+		expect(calls).toBe(3);
+		expect(after[0]).toMatchObject({ key: "minimax-m3", coding: 71 });
 		db.close();
 	});
 

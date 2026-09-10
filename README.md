@@ -1942,6 +1942,19 @@ rather than the refresh failing.
 **Roughly 60% of the catalog is unscored anyway.** Scores are never imputed
 from price, so unscored models are only ever eligible where the floor is zero.
 
+**External feeds backfill what neither list scores** (the `benchmarks` block, on
+by default). Artificial Analysis's own v2 data API
+(`benchmarks.artificialAnalysisApiKey`, or `ARTIFICIAL_ANALYSIS_API_KEY`) and the
+keyless BenchLM leaderboard fill only the axes a model is *missing* — a score
+OpenRouter published is never overwritten, and a name matches exactly or the
+model stays honestly unscored. The feeds are cached in `benchmark_cache` on their
+own slow cadence (`benchmarks.refreshMs`, a day) so the minute-scale catalog
+refresh never hits them. Changing the `benchmarks` block itself is the exception:
+a key pasted into a front door's settings, or cleared out of them, ages that cache
+out and rebuilds the catalog immediately instead of leaving the change inert until
+tomorrow. Every fetch stays best-effort — one that fails or returns nothing leaves
+the scores already serving in place.
+
 ---
 
 ## Adaptive tier floors
