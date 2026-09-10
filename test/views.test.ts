@@ -215,4 +215,20 @@ describe("decision entries", () => {
 		expect(bob.find((e) => e.id === "l3")?.error).toBe("boom");
 		expect(bob.find((e) => e.id === "l3")?.feedback[0]?.note).toBe("looped");
 	});
+
+	test("the recorded cost split rides along; unpriced rows leave it absent", () => {
+		const { decisionEntries } = require("../src/cost/views.ts") as typeof import("../src/cost/views.ts");
+		// The fixture records before any catalog fetch, so every row stored NULL;
+		// one priced row stands in for a turn the router could price at record time.
+		db.run("UPDATE ledger SET cost_breakdown = ? WHERE id = 'l1'", [
+			JSON.stringify({ freshPrompt: 0.006, cacheRead: 0.004, cacheWrite: 0, completion: 0.002, reasoning: 0, images: 0, request: 0, total: 0.006, tierAtPromptTokens: 0 }),
+		]);
+		const entries = decisionEntries(db, { sinceMs: since, harness: null });
+		const priced = entries.find((e) => e.id === "l1");
+		expect(priced?.costBreakdown?.total).toBeCloseTo(0.006, 6);
+		expect(priced?.costBreakdown?.cacheRead).toBeCloseTo(0.004, 6);
+		// A row the ledger could not price (all of them here, NULL column) has no
+		// breakdown at all — the front door's cue to fall back to the blend.
+		expect(entries.find((e) => e.id === "l2")?.costBreakdown).toBeUndefined();
+	});
 });

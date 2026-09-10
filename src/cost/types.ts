@@ -167,6 +167,13 @@ export interface LedgerEntry {
 	 * provider (Ollama) exists only in memory, so the orchestrator hands it over.
 	 */
 	priceModel?: CatalogModel;
+	/**
+	 * The cost component split the router computed when it recorded this row,
+	 * from its own catalog prices. Absent when the row predates pricing, or
+	 * when the model could not be priced (NULL in the ledger) — a front door
+	 * shows input/output/cache costs from this rather than re-deriving them.
+	 */
+	costBreakdown?: CostBreakdown;
 }
 
 /**

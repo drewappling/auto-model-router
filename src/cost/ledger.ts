@@ -20,6 +20,7 @@ import { computeBlendedRate } from "./blended.ts";
 import { computeCost } from "./forecast.ts";
 import type {
 	BlendedRate,
+	CostBreakdown,
 	EscalationCost,
 	Ledger,
 	LedgerEntry,
@@ -283,6 +284,9 @@ export function toEntry(row: LedgerRow): LedgerEntry {
 		// Likewise a row from before v19, or a turn with redaction off: absent,
 		// which is a different fact from 0 (the rules ran and matched nothing).
 		...(row.redactions === null || row.redactions === undefined ? {} : { redactions: row.redactions }),
+		// A row recorded before pricing, or one whose model could not be priced,
+		// stores NULL; absent is the front door's cue to fall back to the blend.
+		...(row.cost_breakdown === null || row.cost_breakdown === undefined ? {} : { costBreakdown: JSON.parse(row.cost_breakdown) as CostBreakdown }),
 	};
 }
 
