@@ -5,7 +5,7 @@ description: "Use agentdox — the shared memory, docs, and context server — t
 
 # agentdox — the standard interaction protocol
 
-agentdox is a shared memory + docs + conversation store at `http://localhost:3003`. It is what
+agentdox is a shared memory + docs + conversation store at `http://localhost:8790/agentdox`. It is what
 stops you rediscovering the same project facts every session.
 
 **Follow this protocol identically every time.** Consistency is the point: the value of the
@@ -55,7 +55,7 @@ Deterministic, so the same folder always resolves to the same slug:
    repo root:
 
    ```ini
-   AGENTDOX_URL=http://localhost:3003
+   AGENTDOX_URL=http://localhost:8790/agentdox
    AGENTDOX_SCOPE=<slug>
    AGENTDOX_TOKEN=<the global PAT>
    ```
@@ -104,6 +104,16 @@ determine the scope, ask — do not guess, and do not fall back to a default.
 
 ## 1. Pick your transport — MCP or REST
 
+> **Where the store lives (since 2026-09-10).** The store is the team edition's embedded agentdox,
+> reached through the team: REST at `http://localhost:8790/agentdox/...` and MCP at
+> `http://localhost:8790/mcp`, with a **team member key** (`amrt_…`) as `AGENTDOX_TOKEN`. The team maps
+> the key to the member's grants (write on every project of their groups, read on the group's
+> context), so a 401 means the key and a 403 means the project belongs to another group — not a PAT.
+> agentdox's own `/auth` routes are not reachable through the team; projects are created on the
+> team's Groups page or appear on a workspace's first turn. The old dev container on :3003 is retired.
+> A member key updates entries (`PATCH /memory/:id`) but cannot delete them (agentdox wants admin on the
+> scope for that): to retire a fact, lower its importance or leave it to the team's retention pass.
+
 Both hit the same live store with the same RBAC. **Check which you have, then use it:**
 
 - **MCP tools present** — use them. Claude Code and Cursor mount them as `memory_add`,
@@ -129,7 +139,7 @@ inline JSON and avoids quoting pain in `curl`:
 ```ts
 const tok = /AGENTDOX_TOKEN=(.+)/.exec(await Bun.file(".env.agentdox").text())?.[1]?.trim() ?? "";
 const H = { Authorization: `Bearer ${tok}`, "content-type": "application/json" };
-await fetch("http://localhost:3003/memory", { method: "POST", headers: H,
+await fetch("http://localhost:8790/agentdox/memory", { method: "POST", headers: H,
   body: JSON.stringify({ content: "…", category: "<scope>", importance: 0.9 }) });
 ```
 

@@ -2,7 +2,7 @@
   "mcpServers": {
     "agentdox": {
       "type": "http",
-      "url": "http://localhost:3003/mcp",
+      "url": "http://localhost:8790/mcp",
       "headers": {
         "Authorization": "Bearer ${AGENTDOX_TOKEN}"
       }

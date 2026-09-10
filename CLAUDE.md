@@ -24,7 +24,7 @@ tips). Read it before using agentdox; do not improvise from this summary.
 | --- | --- |
 | Token, URL, scope | `.env.agentdox` in this repo root (gitignored — never commit) |
 | What `.mcp.json` reads | the `AGENTDOX_TOKEN` **environment variable** (Windows *User* scope; shells opened before it was set lack it) |
-| Server | `http://localhost:3003` — Docker container `agentdox-server`; endpoints in `E:/projects/agentdox/packages/server/src/index.ts` |
+| Server | `http://localhost:8790/agentdox` — the team edition's embedded agentdox (the `agentdox-server` container is retired); endpoints in `E:/projects/agentdox/packages/server/src/index.ts` |
 | Admin token (re-mint) | `E:/projects/agentdox/deploy/.env` |
 
 Two rules that cause silent mistakes: **memory calls take `category`, everything else takes
@@ -46,7 +46,7 @@ behind them are recorded there as they are made.
 Turning the bridge on for the router itself (distinct from the MCP wiring above):
 
 ```bash
-export AGENTDOX_URL=http://localhost:3003
+export AGENTDOX_URL=http://localhost:8790/agentdox
 export AGENTDOX_TOKEN=<the global PAT, same value .mcp.json uses>
 export AGENTDOX_SCOPE=omp-router
 ```
