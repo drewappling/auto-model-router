@@ -527,7 +527,9 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					// budget check needs when it cannot read the ledger file.
 					const since = Number.parseInt(url.searchParams.get("sinceMs") ?? "", 10);
 					if (!Number.isFinite(since)) return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "sinceMs required" });
-					return json({ sinceMs: since, usd: spendUsdSince(db, since, harnessScopeParam(url.searchParams.get("harness"))) });
+					// `scope` narrows to one agentdox context scope: a project's own spend.
+					const contextScope = url.searchParams.get("scope") ?? "";
+					return json({ sinceMs: since, usd: spendUsdSince(db, since, harnessScopeParam(url.searchParams.get("harness")), contextScope), ...(contextScope === "" ? {} : { scope: contextScope }) });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/feedback") {
 					const days = clampDays(url.searchParams.get("days"), 30);

@@ -545,6 +545,29 @@ describe("runTurn", () => {
 	});
 });
 
+describe("the context scope reaches the ledger", () => {
+	const run = async (req: NormRequest, config: RouterConfig) => {
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" })]);
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("hi"), finishChunk("stop"), usageChunk({ promptTokens: 10, completionTokens: 2 }, 0.0001)] }]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink } = mkSink();
+		await runTurn(req, sink, { config, router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+		return entries;
+	};
+
+	test("a turn's scope is recorded, header first and the configured default behind it", async () => {
+		// The header the team front door sets: the row can be charged to that project.
+		expect((await run({ ...mkReq(), agentdoxScope: "acme.api" }, mkConfig()))[0]!.scope).toBe("acme.api");
+		// No header: the resolved scope is the configured default, which is what the bridge would have used.
+		const base = mkConfig();
+		const withDefault: RouterConfig = { ...base, context: { ...base.context, defaultScope: "solo" } };
+		expect((await run(mkReq(), withDefault))[0]!.scope).toBe("solo");
+		// Neither: no scope at all, which the ledger stores as NULL.
+		expect((await run(mkReq(), mkConfig()))[0]!.scope).toBe("");
+	});
+});
+
 describe("exploration reaches the ledger", () => {
 	test("an explored turn records the tier it was dropped from", async () => {
 		const explored = { ...mkDecision("simple", "cheap/model"), explored: { from: "moderate" as Tier, to: "simple" as Tier } };

@@ -147,6 +147,13 @@ export interface LedgerEntry {
 	/** Prompt tokens removed by compaction before dispatch. 0 when none. NULL before v12. */
 	promptTokensSaved: number;
 	/**
+	 * The agentdox context scope this turn carried — what the bridge resolved
+	 * for it (the request's `X-Agentdox-Scope`, or `context.defaultScope`).
+	 * Absent, or empty, when the turn carried none, and stored as NULL; a front
+	 * door charges the row's spend back to that project with it. NULL before v18.
+	 */
+	scope?: string;
+	/**
 	 * The catalog model that served, for the cost split. The ledger can price
 	 * OpenRouter slugs from its own cached catalog payload; a model from another
 	 * provider (Ollama) exists only in memory, so the orchestrator hands it over.

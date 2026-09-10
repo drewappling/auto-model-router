@@ -99,6 +99,7 @@ export interface LedgerRow {
 	upstream_generation_id: string | null;
 	error: string | null;
 	prompt_tokens_saved: number | null;
+	scope: string | null;
 }
 
 interface TrustRow {
@@ -274,6 +275,9 @@ export function toEntry(row: LedgerRow): LedgerEntry {
 		upstreamGenerationId: row.upstream_generation_id,
 		error: row.error,
 		promptTokensSaved: row.prompt_tokens_saved ?? 0,
+		// Optional under exactOptionalPropertyTypes: an old row (or a scopeless
+		// turn) simply has no `scope`, rather than an explicit undefined.
+		...(row.scope === null || row.scope === undefined ? {} : { scope: row.scope }),
 	};
 }
 
@@ -319,8 +323,8 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 			id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id, slug, served_slug,
 			tier, classification_source, reasons, predicted_usd, reported_usd, usage, cost_breakdown,
 			attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted, upstream_generation_id, error,
-			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm, prompt_tokens_saved
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			error_kind, features, score, confidence, task, classifier_reasons, explored_from, hold_arm, prompt_tokens_saved, scope
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const calibrationStmt = db.query(
 		`INSERT INTO token_calibration (tokenizer, est_bytes, actual_tokens, samples) VALUES (?, ?, ?, 1)
@@ -473,6 +477,9 @@ export function createLedger(db: Database, cfg: RouterConfig): Ledger {
 				entry.exploredFrom,
 				entry.holdArm,
 				entry.promptTokensSaved,
+				// A turn that carried no scope stores NULL, exactly as every row
+				// written before v18 did; "" and absent are the same fact.
+				entry.scope === undefined || entry.scope === "" ? null : entry.scope,
 			);
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens. Only

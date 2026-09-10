@@ -304,6 +304,10 @@ export async function runTurn(
 				turn: turnNumber,
 				requestedModel: req.requestedModel,
 				harnessId: req.harnessId,
+				// The context scope this turn carried, so a front door can charge the
+				// row back to a project. The resolved one the bridge used, header or
+				// configured default; "" stores as NULL.
+				scope: doxScope,
 				ompSessionId: req.ompSessionId,
 				slug: decision.slug,
 				servedSlug,

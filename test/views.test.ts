@@ -64,9 +64,9 @@ function seeded() {
 	const db = openDb(":memory:");
 	const ledger = createLedger(db, cfg);
 	const feedback = createFeedbackStore(db);
-	ledger.record(entry({ id: "l1", harnessId: "u_ada", slug: "anthropic/claude-sonnet-5", servedSlug: "anthropic/claude-sonnet-5", predictedUsd: 0.01, reportedUsd: 0.012 }));
-	ledger.record(entry({ id: "l2", harnessId: "u_ada", slug: "anthropic/claude-sonnet-5", servedSlug: null, predictedUsd: 0.01, reportedUsd: null, escalationSignal: "circular" }));
-	ledger.record(entry({ id: "l3", harnessId: "u_bob", slug: "ollama/glm-5.3-flash", servedSlug: "ollama/glm-5.3-flash", predictedUsd: 0.001, reportedUsd: 0.001, error: "boom" }));
+	ledger.record(entry({ id: "l1", harnessId: "u_ada", scope: "acme.api", slug: "anthropic/claude-sonnet-5", servedSlug: "anthropic/claude-sonnet-5", predictedUsd: 0.01, reportedUsd: 0.012 }));
+	ledger.record(entry({ id: "l2", harnessId: "u_ada", scope: "acme.web", slug: "anthropic/claude-sonnet-5", servedSlug: null, predictedUsd: 0.01, reportedUsd: null, escalationSignal: "circular" }));
+	ledger.record(entry({ id: "l3", harnessId: "u_bob", scope: "acme.api", slug: "ollama/glm-5.3-flash", servedSlug: "ollama/glm-5.3-flash", predictedUsd: 0.001, reportedUsd: 0.001, error: "boom" }));
 	ledger.record(entry({ id: "l4", harnessId: "u_bob", requestedModel: "digest", slug: "ollama/glm-5.3-flash", servedSlug: "ollama/glm-5.3-flash", predictedUsd: 0.5, reportedUsd: 0.5 }));
 	ledger.record(entry({ id: "l5", harnessId: "u_bob", createdAtMs: NOW - 40 * DAY, slug: "ollama/glm-5.3-flash", predictedUsd: 5, reportedUsd: 5 }));
 	feedback.record({ ledgerId: "l1", ompSessionId: "s", slug: "anthropic/claude-sonnet-5", tier: "simple", verdict: "good", note: "" }, NOW - 1000);
@@ -87,6 +87,17 @@ describe("ledger views", () => {
 		expect(spendUsdSince(db, since, [])).toBe(0);
 	});
 
+	test("spend narrowed to one context scope, so a front door charges a project", () => {
+		// l1 (0.012, u_ada) and l3 (0.001, u_bob) carried acme.api; l2 (0.01 predicted) carried acme.web.
+		expect(spendUsdSince(db, since, null, "acme.api")).toBeCloseTo(0.013, 6);
+		expect(spendUsdSince(db, since, null, "acme.web")).toBeCloseTo(0.01, 6);
+		expect(spendUsdSince(db, since, ["u_ada"], "acme.api")).toBeCloseTo(0.012, 6); // harness and scope compose
+		expect(spendUsdSince(db, since, ["u_bob"], "acme.web")).toBe(0);
+		expect(spendUsdSince(db, since, null, "nope")).toBe(0);
+		expect(spendUsdSince(db, since, null, "")).toBeCloseTo(0.523, 6); // no scope given: every turn, scoped or not
+		expect(spendUsdSince(db, since, [], "acme.api")).toBe(0);
+	});
+
 	test("feedback by model with distinct judges, scoped by harness", () => {
 		const all = feedbackView(db, since, null);
 		expect(all.byModel).toEqual([
@@ -102,17 +113,22 @@ describe("ledger views", () => {
 		expect(feedbackView(db, since, []).recent).toEqual([]);
 	});
 
-	test("export rows by day, harness and served model; digest and old rows out; CSV quoting", () => {
+	test("export rows by day, harness, served model and scope; digest and old rows out; CSV quoting", () => {
 		const rows = exportRows(db, since, null);
-		expect(rows).toHaveLength(2);
-		expect(rows[0]).toMatchObject({ day: "2026-09-07", harnessId: "u_ada", slug: "anthropic/claude-sonnet-5", provider: "openrouter", dispatches: 2, promptTokens: 2000, cachedTokens: 800, completionTokens: 100, escalations: 1, errors: 0 });
-		expect(rows[0]!.spendUsd).toBeCloseTo(0.022, 6);
-		expect(rows[1]).toMatchObject({ harnessId: "u_bob", provider: "ollama", dispatches: 1, errors: 1 });
+		// u_ada's two turns are one model on one day but two projects, so they no longer share a row.
+		expect(rows).toHaveLength(3);
+		expect(rows[0]).toMatchObject({ day: "2026-09-07", harnessId: "u_ada", slug: "anthropic/claude-sonnet-5", scope: "acme.api", provider: "openrouter", dispatches: 1, promptTokens: 1000, cachedTokens: 400, completionTokens: 50, escalations: 0, errors: 0 });
+		expect(rows[0]!.spendUsd).toBeCloseTo(0.012, 6);
+		expect(rows[1]).toMatchObject({ harnessId: "u_ada", scope: "acme.web", dispatches: 1, escalations: 1 });
+		expect(rows[1]!.spendUsd).toBeCloseTo(0.01, 6);
+		expect(rows[2]).toMatchObject({ harnessId: "u_bob", scope: "acme.api", provider: "ollama", dispatches: 1, errors: 1 });
 		expect(exportRows(db, since, ["u_bob"])).toHaveLength(1);
 		expect(exportRows(db, since, [])).toEqual([]);
+		// A turn that carried no scope groups under "": what every row written before v18 does.
+		expect(exportRows(db, NOW - 60 * DAY, ["u_bob"]).map((r) => r.scope).sort()).toEqual(["", "acme.api"]);
 		const csv = exportCsv([{ ...rows[0]!, harnessId: 'ada, "L"' }]);
-		expect(csv.split("\n")[0]).toBe("day,harness,model,provider,dispatches,prompt_tokens,cached_tokens,completion_tokens,spend_usd,escalations,errors");
-		expect(csv.split("\n")[1]).toBe('2026-09-07,"ada, ""L""",anthropic/claude-sonnet-5,openrouter,2,2000,800,100,0.022000,1,0');
+		expect(csv.split("\n")[0]).toBe("day,harness,model,provider,dispatches,prompt_tokens,cached_tokens,completion_tokens,spend_usd,escalations,errors,scope");
+		expect(csv.split("\n")[1]).toBe('2026-09-07,"ada, ""L""",anthropic/claude-sonnet-5,openrouter,1,1000,400,50,0.012000,0,0,acme.api');
 		expect(harnessScopeParam(null)).toBeNull();
 		expect(harnessScopeParam(" , ")).toBeNull();
 		expect(harnessScopeParam("a, b")).toEqual(["a", "b"]);
@@ -130,7 +146,7 @@ describe("view routes", () => {
 		cfg.ledger.path = join(dir, "router.db");
 		// Seed through the ledger on the same file before the server opens it.
 		const db = openDb(cfg.ledger.path);
-		createLedger(db, cfg).record(entry({ id: "r1", createdAtMs: Date.now() - 1000, harnessId: "u_x", predictedUsd: 0.2, reportedUsd: 0.25 }));
+		createLedger(db, cfg).record(entry({ id: "r1", createdAtMs: Date.now() - 1000, harnessId: "u_x", scope: "acme.api", predictedUsd: 0.2, reportedUsd: 0.25 }));
 		db.close();
 		handle = startServer(cfg);
 	});
@@ -155,14 +171,21 @@ describe("view routes", () => {
 		expect((((await (await get("/v1/router/decisions?harness=u_other&days=1")).json()) as { entries: unknown[] }).entries)).toEqual([]);
 		expect((((await (await get("/v1/router/decisions?limit=1")).json()) as { entries: { id: string }[] }).entries.map((e) => e.id))).toEqual(["r1"]); // no filter: everything, as before
 		expect(((await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&harness=u_other`)).json()) as { usd: number }).usd).toBe(0);
+		// ?scope= charges one project: the row carried acme.api, so acme.web sees nothing.
+		const scoped = (await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&scope=acme.api`)).json()) as { usd: number; scope: string };
+		expect(scoped.usd).toBeCloseTo(0.25, 6);
+		expect(scoped.scope).toBe("acme.api");
+		expect(((await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&scope=acme.web`)).json()) as { usd: number }).usd).toBe(0);
+		expect(((await (await get(`/v1/router/spend?sinceMs=${Date.now() - DAY}&harness=u_x&scope=acme.api`)).json()) as { usd: number }).usd).toBeCloseTo(0.25, 6);
 		const fb = (await (await get("/v1/router/feedback?days=7")).json()) as { days: number; byModel: unknown[]; recent: unknown[] };
 		expect(fb).toEqual({ days: 7, byModel: [], recent: [] });
 		const csv = await get("/v1/router/export?days=1");
 		expect(csv.headers.get("content-type")).toContain("text/csv");
-		expect((await csv.text()).split("\n")[1]).toContain("u_x,vendor/model,openrouter,1,1000,400,50,0.250000,0,0");
-		const js = (await (await get("/v1/router/export?days=1&format=json&harness=u_x")).json()) as { days: number; rows: { harnessId: string }[] };
+		expect((await csv.text()).split("\n")[1]).toContain("u_x,vendor/model,openrouter,1,1000,400,50,0.250000,0,0,acme.api");
+		const js = (await (await get("/v1/router/export?days=1&format=json&harness=u_x")).json()) as { days: number; rows: { harnessId: string; scope: string }[] };
 		expect(js.days).toBe(1);
 		expect(js.rows[0]?.harnessId).toBe("u_x");
+		expect(js.rows[0]?.scope).toBe("acme.api");
 	});
 });
 
@@ -176,6 +199,9 @@ describe("decision entries", () => {
 		expect(ada.map((e) => e.id)).toEqual(["l1", "l2"]); // same instant in the fixture; insertion order within it is stable
 		expect(ada.find((e) => e.id === "l1")?.feedback).toEqual([{ verdict: "good", note: "", createdAtMs: NOW - 1000 }]);
 		expect(ada.find((e) => e.id === "l2")?.escalationSignal).toBe("circular");
+		// The context scope is a ledger column now, so it rides along on every entry.
+		expect(ada.find((e) => e.id === "l1")?.scope).toBe("acme.api");
+		expect(ada.find((e) => e.id === "l2")?.scope).toBe("acme.web");
 		// Everyone, within the window: the 40-day-old row stays out; the digest row is a turn like any other.
 		expect(decisionEntries(db, { sinceMs: since, harness: null }).map((e) => e.id).sort()).toEqual(["l1", "l2", "l3", "l4"]);
 		expect(decisionEntries(db, { sinceMs: 0, harness: null }).length).toBe(5);

@@ -44,6 +44,8 @@ export interface ExportRow {
 	day: string;
 	harnessId: string;
 	slug: string;
+	/** The agentdox context scope the turns carried; "" for rows that carried none (every row before v18). */
+	scope: string;
 	provider: string;
 	dispatches: number;
 	promptTokens: number;
@@ -125,12 +127,21 @@ export function decisionEntries(db: Database, filter: DecisionFilter): DecisionE
 	return entries.map((e) => ({ ...e, feedback: verdicts.get(e.id) ?? [] }));
 }
 
-/** Spend (reported where present, predicted otherwise) since `sinceMs`, digest calls included as the ledger counts them. */
-export function spendUsdSince(db: Database, sinceMs: number, harness: HarnessScope): number {
+/**
+ * Spend (reported where present, predicted otherwise) since `sinceMs`, digest calls included
+ * as the ledger counts them. `contextScope`, when given, narrows to the turns that carried
+ * exactly that agentdox scope — what a front door charges back to one project.
+ */
+export function spendUsdSince(db: Database, sinceMs: number, harness: HarnessScope, contextScope?: string): number {
 	const s = scope(harness, "harness_id");
 	if (s === null) return 0;
-	const where = ["created_at_ms >= $since", ...s.sql].join(" AND ");
-	const row = db.query(`SELECT COALESCE(SUM(${USD}), 0) AS usd FROM ledger WHERE ${where}`).get({ $since: sinceMs, ...s.bind }) as { usd: number };
+	const where = ["created_at_ms >= $since", ...s.sql];
+	const bind: Record<string, string | number> = { $since: sinceMs, ...s.bind };
+	if (contextScope !== undefined && contextScope !== "") {
+		where.push("scope = $scope");
+		bind.$scope = contextScope;
+	}
+	const row = db.query(`SELECT COALESCE(SUM(${USD}), 0) AS usd FROM ledger WHERE ${where.join(" AND ")}`).get(bind) as { usd: number };
 	return row.usd;
 }
 
@@ -163,14 +174,19 @@ export function feedbackView(db: Database, sinceMs: number, harness: HarnessScop
 	return { byModel, recent };
 }
 
-/** One row per UTC day, harness and served model since `sinceMs`; digest calls are excluded as in the report. */
+/**
+ * One row per UTC day, harness, served model and context scope since `sinceMs`; digest calls
+ * are excluded as in the report. The scope splits a harness's day by project, so a front door
+ * can charge each project its own share; rows from before v18 (and turns that carried no
+ * scope) group under "".
+ */
 export function exportRows(db: Database, sinceMs: number, harness: HarnessScope): ExportRow[] {
 	const s = scope(harness, "harness_id");
 	if (s === null) return [];
 	const where = ["created_at_ms >= $since", "requested_model <> 'digest'", ...s.sql].join(" AND ");
 	const rows = db
 		.query(
-			`SELECT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') AS day, harness_id, COALESCE(served_slug, slug) AS slug,
+			`SELECT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') AS day, harness_id, COALESCE(served_slug, slug) AS slug, COALESCE(scope, '') AS scope,
 				COUNT(*) AS dispatches,
 				COALESCE(SUM(json_extract(usage, '$.promptTokens')), 0) AS prompt_tokens,
 				COALESCE(SUM(json_extract(usage, '$.cachedTokens')), 0) AS cached_tokens,
@@ -178,13 +194,14 @@ export function exportRows(db: Database, sinceMs: number, harness: HarnessScope)
 				COALESCE(SUM(${USD}), 0) AS spend,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
-			 FROM ledger WHERE ${where} GROUP BY day, harness_id, slug ORDER BY day ASC, harness_id ASC, spend DESC`,
+			 FROM ledger WHERE ${where} GROUP BY day, harness_id, slug, scope ORDER BY day ASC, harness_id ASC, spend DESC`,
 		)
-		.all({ $since: sinceMs, ...s.bind }) as { day: string; harness_id: string; slug: string; dispatches: number; prompt_tokens: number; cached_tokens: number; completion_tokens: number; spend: number; escalations: number; errors: number }[];
+		.all({ $since: sinceMs, ...s.bind }) as { day: string; harness_id: string; slug: string; scope: string; dispatches: number; prompt_tokens: number; cached_tokens: number; completion_tokens: number; spend: number; escalations: number; errors: number }[];
 	return rows.map((r) => ({
 		day: r.day,
 		harnessId: r.harness_id,
 		slug: r.slug,
+		scope: r.scope,
 		provider: providerOfSlug(r.slug),
 		dispatches: r.dispatches,
 		promptTokens: r.prompt_tokens,
@@ -196,7 +213,7 @@ export function exportRows(db: Database, sinceMs: number, harness: HarnessScope)
 	}));
 }
 
-export const EXPORT_COLUMNS = ["day", "harness", "model", "provider", "dispatches", "prompt_tokens", "cached_tokens", "completion_tokens", "spend_usd", "escalations", "errors"] as const;
+export const EXPORT_COLUMNS = ["day", "harness", "model", "provider", "dispatches", "prompt_tokens", "cached_tokens", "completion_tokens", "spend_usd", "escalations", "errors", "scope"] as const;
 
 export function csvCell(v: string | number): string {
 	const s = String(v);
@@ -206,7 +223,7 @@ export function csvCell(v: string | number): string {
 /** CSV of export rows; spend to 6 decimals so sub-cent rows survive. */
 export function exportCsv(rows: readonly ExportRow[]): string {
 	const lines = [EXPORT_COLUMNS.join(",")];
-	for (const r of rows) lines.push([r.day, r.harnessId, r.slug, r.provider, r.dispatches, r.promptTokens, r.cachedTokens, r.completionTokens, r.spendUsd.toFixed(6), r.escalations, r.errors].map(csvCell).join(","));
+	for (const r of rows) lines.push([r.day, r.harnessId, r.slug, r.provider, r.dispatches, r.promptTokens, r.cachedTokens, r.completionTokens, r.spendUsd.toFixed(6), r.escalations, r.errors, r.scope].map(csvCell).join(","));
 	return `${lines.join("\n")}\n`;
 }
 

@@ -694,7 +694,9 @@ virtual profile it picked. Every routed response carries
 
 The ledger records every dispatch: model decided and served, tier, provider,
 tokens (including cached), reported cost, time to first token, total latency,
-escalation signal, error. Three views aggregate it, all from the same
+escalation signal, error, and the agentdox context scope the turn carried (the
+project it belongs to; NULL for a turn that carried none, and for every row
+written before v0.19.0). Three views aggregate it, all from the same
 `buildUsageReport` in `src/cost/report.ts`:
 
 - `/router report` in omp — a fullscreen hub with the `/models` look: views
@@ -706,10 +708,12 @@ escalation signal, error. Three views aggregate it, all from the same
   transcript. Falls back to reading the ledger directly if the router is
   unreachable.
 - `auto-model-router report --days 7 [--harness <id>] [--json]` on the terminal.
-- `auto-model-router export --days 30 [--harness a,b] [--json]`: one row per day, harness
-  and model (dispatches, tokens, spend, escalations, errors) as CSV. Also
-  `GET /v1/router/export?days=&harness=[&format=json]`; `GET /v1/router/spend?sinceMs=&harness=`
-  gives spend over a harness set since an instant, and `GET /v1/router/feedback?days=&harness=`
+- `auto-model-router export --days 30 [--harness a,b] [--json]`: one row per day, harness,
+  model and context scope (dispatches, tokens, spend, escalations, errors) as CSV — the
+  `scope` column is last, and is empty for a turn that carried none. Also
+  `GET /v1/router/export?days=&harness=[&format=json]`; `GET /v1/router/spend?sinceMs=&harness=[&scope=]`
+  gives spend over a harness set since an instant, narrowed to one context scope when `scope`
+  is given (a project's own bill), and `GET /v1/router/feedback?days=&harness=`
   lists verdicts by model and the recent ones with the harness that gave them, and
   `GET /v1/router/decisions?harness=&days=|since=&slug=&tier=&limit=` is the decision trail
   itself, newest first, each turn with its reasons, the classifier's view, forecast against
@@ -1554,6 +1558,20 @@ whenever there is a harness id, team or not; it is just another ref. A router wi
 a team posts exactly what it always did, so its block is byte-identical; an older
 agentdox ignores the keys it does not know. `context.layers: false` is the kill
 switch — the headers are still parsed but nothing new goes to agentdox.
+
+### Charging spend back to a project
+
+Every ledger row records the scope the bridge resolved for that turn — the
+request's `X-Agentdox-Scope`, or `context.defaultScope` behind it — so the money
+and the project are the same row. That is what a front door bills from: it names
+a project's scope on the turns it forwards, then reads its share back with
+`GET /v1/router/spend?sinceMs=&scope=<scope>` (composable with `harness=`, so one
+member's spend on one project is one call), or takes the whole split from
+`GET /v1/router/export`, whose rows now group by day, harness, model **and**
+scope and carry the scope as their last CSV column. `decisionEntries` (and
+`GET /v1/router/decisions`) carry it on each turn too. Rows written before
+v0.19.0, and turns that carried no scope at all, store NULL and export as `""` —
+old ledgers open and gain the column, they just have nothing to charge.
 
 ### The origin fingerprint
 

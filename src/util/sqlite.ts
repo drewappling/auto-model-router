@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 17;
+const USER_VERSION = 18;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -286,6 +286,16 @@ const MIGRATE_V17 = `
 ALTER TABLE conversations ADD COLUMN upgrade_deferred_tier TEXT;
 `;
 
+// v18: ledger records the agentdox context scope the turn carried — the scope
+// the bridge resolved for it (the request header, or the configured default).
+// A front door charges spend back to a project with it: the team edition names
+// a project's scope on every turn, so `scope` is the only column that says
+// which project a row belongs to. NULL on every row written before this, and
+// on any turn that carried no scope at all; there is nothing to backfill from.
+const MIGRATE_V18 = `
+ALTER TABLE ledger ADD COLUMN scope TEXT;
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -327,6 +337,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "explored_from")) db.exec(MIGRATE_V7);
 		if (!ledgerCols.some((c) => c.name === "hold_arm")) db.exec(MIGRATE_V8);
 		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
+		if (!ledgerCols.some((c) => c.name === "scope")) db.exec(MIGRATE_V18);
 		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
 		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);
