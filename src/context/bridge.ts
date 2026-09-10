@@ -133,6 +133,12 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			// The layers around the project scope ride along only while enabled.
 			// The block's version is a hash of its content, so a personal layer
 			// pins a different block per member and never shares one across them.
+			// `user` goes only behind a front door that named a layer: a router
+			// on its own still has a harness id (Claude Code's is derived, omp's
+			// is configured), and against a new agentdox that would filter the
+			// project's recent tail to that harness — a change the lone install
+			// never asked for.
+			const fronted = input.group !== "" || input.personal !== "";
 			const raw = await client.assemble(
 				input.scope,
 				input.query,
@@ -142,7 +148,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 					sessionLimit: input.firstFetch ? sessionLimit : 0,
 					briefChars,
 				},
-				layers ? { group: input.group, personal: input.personal, user: input.user } : undefined,
+				layers ? { group: input.group, personal: input.personal, user: fronted ? input.user : "" } : undefined,
 			);
 			if (raw === null) {
 				// agentdox unreachable or empty. Keep serving the pinned block if we

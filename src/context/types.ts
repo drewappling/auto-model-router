@@ -57,7 +57,8 @@ export interface ContextResolveInput {
 	/**
 	 * The member this turn belongs to — the harness id, which a team front door
 	 * sets per user. agentdox filters the project layer's recent tail to that
-	 * member's own turns. Empty ⇒ everyone's, as before.
+	 * member's own turns. Sent only when `group` or `personal` is also named:
+	 * a lone router has a harness id too and must not filter its own tail.
 	 */
 	user: string;
 }

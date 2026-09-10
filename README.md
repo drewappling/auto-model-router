@@ -1531,12 +1531,15 @@ layers, named per request in headers next to `X-Agentdox-Scope`:
 
 Both go through the same slug rule as the scope (absent or invalid ⇒ empty ⇒ not
 sent). The member is the harness id (`X-Omp-Harness`, which the team sets from the
-authenticated key): agentdox uses it to keep the project layer's recent tail to that
-member's own turns, and every recorded message carries a `user:<harness id>` ref
-alongside `model:` and `tier:`. A router without a team has none of these and posts
-exactly what it always did, so its block is byte-identical; an older agentdox ignores
-the keys it does not know. `context.layers: false` is the kill switch — the headers
-are still parsed but nothing new goes to agentdox.
+authenticated key): when either layer is named it is sent as `user` too, and agentdox
+keeps the project layer's recent tail to that member's own turns. It is never sent on
+its own — a router without a team still has a harness id (Claude Code's is derived,
+omp's is configured) and must not have its tail filtered to one harness. Every
+recorded message carries a `user:<harness id>` ref alongside `model:` and `tier:`
+whenever there is a harness id, team or not; it is just another ref. A router without
+a team posts exactly what it always did, so its block is byte-identical; an older
+agentdox ignores the keys it does not know. `context.layers: false` is the kill
+switch — the headers are still parsed but nothing new goes to agentdox.
 
 ### It does not cost you a cache miss per turn
 

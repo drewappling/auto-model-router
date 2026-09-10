@@ -450,6 +450,24 @@ describe("context layers a team names (project memory, phase one)", () => {
 			expect(client.lastLayers).toEqual({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" });
 			await bridge.resolve(input({ conversationKey: "k2" }));
 			expect(client.lastLayers).toEqual({ group: "", personal: "", user: "" });
+			// Either layer alone is a front door; the member goes with it.
+			await bridge.resolve(input({ conversationKey: "k3", group: "group.g1", user: "u1" }));
+			expect(client.lastLayers).toEqual({ group: "group.g1", personal: "", user: "u1" });
+		} finally {
+			db.close();
+		}
+	});
+
+	test("a router on its own sends no user, even though it has a harness id", async () => {
+		// Claude Code's wire path derives a harness id and omp sends one, so a
+		// lone router is NOT harness-less. Sending it as `user` would make a new
+		// agentdox filter the project's recent tail to that harness, dropping
+		// every pre-0.16 message and every other harness's turns.
+		const client = mkClient();
+		const { bridge, db } = mkBridge(client);
+		try {
+			await bridge.resolve(input({ user: "claude-code" }));
+			expect(client.lastLayers).toEqual({ group: "", personal: "", user: "" });
 		} finally {
 			db.close();
 		}
