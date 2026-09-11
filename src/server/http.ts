@@ -182,6 +182,19 @@ export function ollamaRunway(
 	return { dailyBurnUsd, creditsLeftUsd, days: dailyBurnUsd > 0 ? creditsLeftUsd / dailyBurnUsd : null };
 }
 
+/**
+ * Progress for a local benchmark run, as the dashboard needs it. The ETA is measured from
+ * this run's own completed passes rather than assumed — passes vary with the model's speed,
+ * and a guess from a fixed per-pass constant would be wrong by minutes on a slow upstream.
+ * Null until a pass has finished, because until then there is nothing to extrapolate from.
+ */
+function benchmarkProgress(job: { state: string; startedAtMs: number; donePasses: number; totalPasses: number; current: string }): Record<string, unknown> {
+	const elapsedMs = Date.now() - job.startedAtMs;
+	const fraction = job.totalPasses > 0 ? job.donePasses / job.totalPasses : 0;
+	const etaMs = job.state === "running" && job.donePasses > 0 ? Math.round((elapsedMs / job.donePasses) * (job.totalPasses - job.donePasses)) : null;
+	return { donePasses: job.donePasses, totalPasses: job.totalPasses, fraction, current: job.current, elapsedMs, etaMs };
+}
+
 function json(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
 		status,
@@ -252,7 +265,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	 * Background local-benchmark runs. In memory and not persisted: a run is an explicit,
 	 * attended admin action, and its lasting output is the `local_scores` row it writes.
 	 */
-	const benchmarkJobs = new Map<string, { state: "running" | "done" | "error"; slug: string; startedAtMs: number; result?: Record<string, unknown>; error?: string }>();
+	const benchmarkJobs = new Map<string, { state: "running" | "done" | "error"; slug: string; startedAtMs: number; donePasses: number; totalPasses: number; current: string; result?: Record<string, unknown>; error?: string }>();
 	const digester = createDigester({ cfg, catalog, ledger, upstream, log });
 	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale, digester };
 
@@ -779,15 +792,22 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					// lost. The caller polls instead.
 					const jobId = `bench_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 					const started = Date.now();
-					benchmarkJobs.set(jobId, { state: "running", slug, startedAtMs: started });
+					const repeats = Math.min(Math.max(1, typeof body?.repeats === "number" ? Math.floor(body.repeats) : 1), 20);
+					// A pass of one model is the unit of progress: models x repeats, known up front.
+					const totalPasses = repeats * (1 + anchors.length);
+					benchmarkJobs.set(jobId, { state: "running", slug, startedAtMs: started, donePasses: 0, totalPasses, current: slug });
 					void (async () => {
 						try {
 							const results = await runEval({
 								slugs: [slug, ...anchors],
 								complete,
 								toolComplete,
-								repeats: Math.min(Math.max(1, typeof body?.repeats === "number" ? Math.floor(body.repeats) : 1), 20),
+								repeats,
 								concurrency: Math.min(Math.max(1, asked), 8),
+								onPass: (passSlug, _pass, _of) => {
+									const job = benchmarkJobs.get(jobId);
+									if (job !== undefined) benchmarkJobs.set(jobId, { ...job, donePasses: job.donePasses + 1, current: passSlug });
+								},
 								...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
 							});
 							const target = results[0]!;
@@ -797,28 +817,28 @@ export function startServer(cfg: RouterConfig): StartedServer {
 							const fresh = toLocalFeedScores([target], cal, authorOf);
 							const shared = { slug, anchors, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, tookMs: Date.now() - started };
 							if (fresh.length === 0) {
-								benchmarkJobs.set(jobId, { state: "done", slug, startedAtMs: started, result: { ...shared, calibrated: null, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" } });
+								benchmarkJobs.set(jobId, { ...benchmarkJobs.get(jobId)!, state: "done", result: { ...shared, calibrated: null, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" } });
 								return;
 							}
 							// Merge, never replace: other models' measurements are not this run's to discard.
 							const kept = loadLocalScores(db).filter((s) => s.key !== fresh[0]!.key);
 							saveLocalScores(db, [...kept, ...fresh]);
 							log.info("benchmarked a model with the local eval suite", { slug, anchors: anchors.length, repeats: target.repeats, errors: target.errors, useLocalScores: cfg.benchmarks.useLocalScores });
-							benchmarkJobs.set(jobId, { state: "done", slug, startedAtMs: started, result: { ...shared, calibrated: fresh[0], applied: cfg.benchmarks.useLocalScores } });
+							benchmarkJobs.set(jobId, { ...benchmarkJobs.get(jobId)!, state: "done", result: { ...shared, calibrated: fresh[0], applied: cfg.benchmarks.useLocalScores } });
 						} catch (err) {
 							const message = err instanceof Error ? err.message : String(err);
 							log.warn("local benchmark run failed", { slug, error: message });
-							benchmarkJobs.set(jobId, { state: "error", slug, startedAtMs: started, error: message });
+							benchmarkJobs.set(jobId, { ...benchmarkJobs.get(jobId)!, state: "error", error: message });
 						}
 					})();
-					return json({ jobId, state: "running", slug, anchors });
+					return json({ jobId, state: "running", slug, anchors, totalPasses });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/benchmark") {
 					const jobId = url.searchParams.get("job");
-					if (jobId === null) return json({ jobs: [...benchmarkJobs.entries()].map(([id, j]) => ({ id, slug: j.slug, state: j.state, startedAtMs: j.startedAtMs })) });
+					if (jobId === null) return json({ jobs: [...benchmarkJobs.entries()].map(([id, j]) => ({ id, slug: j.slug, state: j.state, startedAtMs: j.startedAtMs, ...benchmarkProgress(j) })) });
 					const job = benchmarkJobs.get(jobId);
 					if (job === undefined) return wireErrorResponse({ status: 404, code: "invalid_request_error", message: `no benchmark job ${jobId}` });
-					return json({ id: jobId, slug: job.slug, state: job.state, startedAtMs: job.startedAtMs, ...(job.result === undefined ? {} : { result: job.result }), ...(job.error === undefined ? {} : { error: job.error }) });
+					return json({ id: jobId, slug: job.slug, state: job.state, startedAtMs: job.startedAtMs, ...benchmarkProgress(job), ...(job.result === undefined ? {} : { result: job.result }), ...(job.error === undefined ? {} : { error: job.error }) });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.

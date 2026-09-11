@@ -68,6 +68,12 @@ export interface RunEvalArgs {
 	/** Called as each model finishes, for progress logging. */
 	onProgress?: (result: EvalResult, done: number, total: number) => void;
 	/**
+	 * Called as each PASS of each model finishes. A run is `models x repeats` passes and takes
+	 * the better part of an hour at ten repeats, so per-model progress is too coarse to show
+	 * anyone: without this the only observable states are "running" and "finished".
+	 */
+	onPass?: (slug: string, pass: number, of: number) => void;
+	/**
 	 * A tool-capable completer. Absent ⇒ the agentic SCENARIOS are skipped and the axis falls
 	 * back to the text tasks, which only ever measured whether a model can format JSON.
 	 */
@@ -171,6 +177,7 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 	let errors = 0;
 	for (let i = 0; i < passes; i++) {
 		const pass = await scorePass(slug, args);
+		args.onPass?.(slug, i + 1, passes);
 		errors += pass.errors;
 		for (const axis of AXES) {
 			axes[axis].sum += pass.axes[axis].sum;
