@@ -248,6 +248,11 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const overrides = createSessionOverrides();
 	const feedback = createFeedbackStore(db);
 	const kv = createKv(db);
+	/**
+	 * Background local-benchmark runs. In memory and not persisted: a run is an explicit,
+	 * attended admin action, and its lasting output is the `local_scores` row it writes.
+	 */
+	const benchmarkJobs = new Map<string, { state: "running" | "done" | "error"; slug: string; startedAtMs: number; result?: Record<string, unknown>; error?: string }>();
 	const digester = createDigester({ cfg, catalog, ledger, upstream, log });
 	const turnDeps = { config: cfg, router, upstream, ledger, conversations, catalog, context, overrides, ollamaCostScale, digester };
 
@@ -768,28 +773,52 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					};
 					const judgeSlug = typeof body?.judge === "string" && body.judge !== "" ? body.judge : "";
 					const asked = typeof body?.concurrency === "number" ? Math.floor(body.concurrency) : 2;
-					const results = await runEval({
-						slugs: [slug, ...anchors],
-						complete,
-						toolComplete,
-						repeats: Math.min(Math.max(1, typeof body?.repeats === "number" ? Math.floor(body.repeats) : 1), 20),
-						concurrency: Math.min(Math.max(1, asked), 8),
-						...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
-					});
-					const target = results[0]!;
-					const anchorResults = results.slice(1);
-					const published = (s: string, axis: QualityAxis): number | undefined => models.find((m) => m.slug === s)?.quality[axis];
-					const cal = fitCalibration(anchorResults, published);
-					const authorOf = (s: string): string => models.find((m) => m.slug === s)?.author ?? "";
-					const fresh = toLocalFeedScores([target], cal, authorOf);
-					if (fresh.length === 0) {
-						return json({ slug, anchors, calibrated: null, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" });
-					}
-					// Merge, never replace: other models' measurements are not this run's to discard.
-					const kept = loadLocalScores(db).filter((s) => s.key !== fresh[0]!.key);
-					saveLocalScores(db, [...kept, ...fresh]);
-					log.info("benchmarked a model with the local eval suite", { slug, anchors: anchors.length, errors: target.errors, useLocalScores: cfg.benchmarks.useLocalScores });
-					return json({ slug, anchors, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, calibrated: fresh[0], errors: target.errors, applied: cfg.benchmarks.useLocalScores });
+					// The run is a BACKGROUND job, not a long request. Bun caps `idleTimeout` at 255
+					// seconds, so a suite of any size over ten repeats outlives the socket: measured,
+					// a single pass returned in 193s and two passes died at ~350s with the response
+					// lost. The caller polls instead.
+					const jobId = `bench_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+					const started = Date.now();
+					benchmarkJobs.set(jobId, { state: "running", slug, startedAtMs: started });
+					void (async () => {
+						try {
+							const results = await runEval({
+								slugs: [slug, ...anchors],
+								complete,
+								toolComplete,
+								repeats: Math.min(Math.max(1, typeof body?.repeats === "number" ? Math.floor(body.repeats) : 1), 20),
+								concurrency: Math.min(Math.max(1, asked), 8),
+								...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
+							});
+							const target = results[0]!;
+							const published = (s: string, axis: QualityAxis): number | undefined => models.find((m) => m.slug === s)?.quality[axis];
+							const cal = fitCalibration(results.slice(1), published);
+							const authorOf = (s: string): string => models.find((m) => m.slug === s)?.author ?? "";
+							const fresh = toLocalFeedScores([target], cal, authorOf);
+							const shared = { slug, anchors, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, tookMs: Date.now() - started };
+							if (fresh.length === 0) {
+								benchmarkJobs.set(jobId, { state: "done", slug, startedAtMs: started, result: { ...shared, calibrated: null, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" } });
+								return;
+							}
+							// Merge, never replace: other models' measurements are not this run's to discard.
+							const kept = loadLocalScores(db).filter((s) => s.key !== fresh[0]!.key);
+							saveLocalScores(db, [...kept, ...fresh]);
+							log.info("benchmarked a model with the local eval suite", { slug, anchors: anchors.length, repeats: target.repeats, errors: target.errors, useLocalScores: cfg.benchmarks.useLocalScores });
+							benchmarkJobs.set(jobId, { state: "done", slug, startedAtMs: started, result: { ...shared, calibrated: fresh[0], applied: cfg.benchmarks.useLocalScores } });
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							log.warn("local benchmark run failed", { slug, error: message });
+							benchmarkJobs.set(jobId, { state: "error", slug, startedAtMs: started, error: message });
+						}
+					})();
+					return json({ jobId, state: "running", slug, anchors });
+				}
+				if (req.method === "GET" && url.pathname === "/v1/router/benchmark") {
+					const jobId = url.searchParams.get("job");
+					if (jobId === null) return json({ jobs: [...benchmarkJobs.entries()].map(([id, j]) => ({ id, slug: j.slug, state: j.state, startedAtMs: j.startedAtMs })) });
+					const job = benchmarkJobs.get(jobId);
+					if (job === undefined) return wireErrorResponse({ status: 404, code: "invalid_request_error", message: `no benchmark job ${jobId}` });
+					return json({ id: jobId, slug: job.slug, state: job.state, startedAtMs: job.startedAtMs, ...(job.result === undefined ? {} : { result: job.result }), ...(job.error === undefined ? {} : { error: job.error }) });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.
