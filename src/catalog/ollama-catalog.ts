@@ -125,16 +125,22 @@ export function buildOllamaModels(args: BuildOllamaArgs): CatalogModel[] {
 	for (const l of listings) {
 		if (!l.isCloud && !cfg.includeLocal) continue;
 		const priceName = l.remoteModel ?? l.id;
-		const rate = ollamaRateFor(priceName, cfg.prices);
-		if (rate === null) {
-			skipped.push(l.id);
-			continue;
-		}
 		// A pin may name the tagged cloud name, its base, or the listed id.
 		const bare = bareCloudName(priceName);
 		const base = bare.includes(":") ? bare.slice(0, bare.indexOf(":")) : bare;
 		const pinned = cfg.twins[bare] ?? cfg.twins[base] ?? cfg.twins[l.id];
 		const twin = (pinned !== undefined ? bySlug.get(pinned) : undefined) ?? twins.get(ollamaTwinKey(priceName)) ?? null;
+		// Ollama publishes no prices, so they come from a static table — which means a model
+		// Ollama ships today is INVISIBLE until that table gains an entry, however good it is.
+		// Measured: deepseek-v4.1-flash was listed by /api/tags and dropped here, so routing
+		// never saw it. The OpenRouter twin sells the same weights per token, so it is the
+		// honest stand-in until the table catches up; a model with neither is still skipped.
+		const rate = ollamaRateFor(priceName, cfg.prices);
+		const price = rate !== null ? toPrice(rate.rate) : twin !== null ? { ...twin.price } : null;
+		if (price === null) {
+			skipped.push(`${l.id} (no price and no twin)`);
+			continue;
+		}
 		const contextLength = l.contextLength ?? twin?.contextLength ?? null;
 		if (contextLength === null) {
 			skipped.push(`${l.id} (no context length)`);
@@ -156,7 +162,7 @@ export function buildOllamaModels(args: BuildOllamaArgs): CatalogModel[] {
 			// Ollama's OpenAI-compatible endpoint documents `tool_choice` as unsupported.
 			supportsToolChoice: false,
 			inputModalities: modalities,
-			price: toPrice(rate.rate),
+			price,
 			priceTiers: [],
 			quality: twin === null ? {} : { ...twin.quality },
 			tokenizer: twin?.tokenizer ?? "Other",
@@ -167,7 +173,10 @@ export function buildOllamaModels(args: BuildOllamaArgs): CatalogModel[] {
 		if (twin?.maxCompletionTokens !== undefined) model.maxCompletionTokens = twin.maxCompletionTokens;
 		out.push(model);
 	}
-	if (skipped.length > 0) log?.debug("ollama models skipped (no price or context)", { skipped: skipped.join(", ") });
+	// A model the provider offers and the router refuses to route is operationally
+	// significant, not a debug detail: at `debug` this was invisible, and a newly published
+	// model stayed unroutable with nothing in the log to say so.
+	if (skipped.length > 0) log?.warn("ollama models listed but not routable", { skipped: skipped.join(", ") });
 	return out;
 }
 

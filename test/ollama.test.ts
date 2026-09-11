@@ -164,6 +164,22 @@ describe("buildOllamaModels", () => {
 		expect(ds.quality).toEqual({});
 	});
 
+	test("a model Ollama lists but the price table does not know is priced from its twin", () => {
+		// Ollama publishes no prices, so they come from a static table. deepseek-v4.1-flash was
+		// listed by /api/tags and dropped here for want of an entry, so routing never saw it at
+		// all — a model the provider was actively offering. The twin sells the same weights.
+		const unpriced = { id: "glm-5.3-flash:cloud", remoteModel: "not-in-the-price-table", isCloud: true, contextLength: 262_144, capabilities: ["tools"], modifiedAtMs: 0 };
+		const twinPriced = buildOllamaModels({ listings: [{ ...unpriced, remoteModel: "glm-5.3-flash" }], openrouter: OR_MODELS, cfg: OLLAMA, log });
+		const or = OR_MODELS.find((m) => m.slug === "z-ai/glm-5.3-flash")!;
+		expect(twinPriced).toHaveLength(1);
+		expect(twinPriced[0]!.price.prompt).toBeCloseTo(0.15 / 1e6, 12);
+
+		// Unknown to the table AND matching no twin: still skipped, never priced at zero.
+		const orphan = buildOllamaModels({ listings: [{ ...unpriced, id: "brand-new-thing:cloud", remoteModel: "brand-new-thing" }], openrouter: OR_MODELS, cfg: OLLAMA, log });
+		expect(orphan).toEqual([]);
+		expect(or.price.prompt).toBeGreaterThan(0);
+	});
+
 	test("a pinned twin beats the name match", () => {
 		const cfg: OllamaConfig = { ...OLLAMA, twins: { "deepseek-v4-pro": "moonshotai/kimi-k3" } };
 		const ds = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg, log }).find((m) => m.slug.startsWith("ollama/deepseek"))!;
