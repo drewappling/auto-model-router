@@ -14,6 +14,11 @@ import { invalidateFeedCache } from "../catalog/benchmark-feeds.ts";
 import { applyRequestPolicy, resolveProfile } from "../router/index.ts";
 import { parsePolicyHeader } from "../wire/openai/request.ts";
 import { createDigester } from "./digest.ts";
+import { runEval, type Completer } from "../eval/run.ts";
+import type { QualityAxis } from "../config/types.ts";
+import { fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../eval/calibrate.ts";
+import { makeJudge } from "../eval/judge.ts";
+import { loadLocalScores, saveLocalScores } from "../catalog/benchmark-feeds.ts";
 import { advise } from "./advise.ts";
 import { TIER_ORDER, type Tier } from "../router/types.ts";
 import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
@@ -695,6 +700,53 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const result = retention.runNow();
 					if (result.deleted > 0) log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
 					return json({ ...result, retentionDays: cfg.ledger.retentionDays });
+				}
+				if (req.method === "POST" && url.pathname === "/v1/router/benchmark") {
+					// Score one model with our OWN eval suite, for the models no feed covers: a
+					// third of a live catalog carries no published score on any axis, and a model
+					// with no score cannot clear any floor, so routing may never pick it.
+					//
+					// A raw mean is not comparable with a published index, so the run also evals
+					// ANCHOR models that do have published scores and fits raw → published per
+					// axis. Anchors are chosen from the catalog across its score range unless the
+					// caller names them, so one slug is all this needs.
+					//
+					// The result is written to `local_scores`, which only reaches routing when
+					// `benchmarks.useLocalScores` is on — measuring a model and trusting it are
+					// deliberately two decisions.
+					const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+					const slug = typeof body?.slug === "string" ? body.slug.trim() : "";
+					if (slug === "") return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "slug required" });
+					const snap = catalog.peekAll?.() ?? catalog.peek();
+					const models = snap?.models ?? [];
+					if (models.find((m) => m.slug === slug) === undefined) return wireErrorResponse({ status: 404, code: "invalid_request_error", message: `${slug} is not in the catalog` });
+					const named = Array.isArray(body?.anchors) ? (body.anchors as unknown[]).filter((a): a is string => typeof a === "string") : [];
+					const anchors = named.length > 0 ? [...new Set(named)] : pickAnchors(models, slug);
+					if (anchors.length < MIN_ANCHORS) return wireErrorResponse({ status: 422, code: "invalid_request_error", message: `need at least ${MIN_ANCHORS} scored, tool-capable anchor models to calibrate against` });
+					const complete: Completer = async (target, messages) => {
+						const out = await upstream.complete({ model: target, stream: false, temperature: 0, max_tokens: 1024, messages }, AbortSignal.timeout(120_000));
+						return out.text;
+					};
+					const judgeSlug = typeof body?.judge === "string" && body.judge !== "" ? body.judge : "";
+					const results = await runEval({
+						slugs: [slug, ...anchors],
+						complete,
+						...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
+					});
+					const target = results[0]!;
+					const anchorResults = results.slice(1);
+					const published = (s: string, axis: QualityAxis): number | undefined => models.find((m) => m.slug === s)?.quality[axis];
+					const cal = fitCalibration(anchorResults, published);
+					const authorOf = (s: string): string => models.find((m) => m.slug === s)?.author ?? "";
+					const fresh = toLocalFeedScores([target], cal, authorOf);
+					if (fresh.length === 0) {
+						return json({ slug, anchors, calibrated: null, raw: target.axes, errors: target.errors, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" });
+					}
+					// Merge, never replace: other models' measurements are not this run's to discard.
+					const kept = loadLocalScores(db).filter((s) => s.key !== fresh[0]!.key);
+					saveLocalScores(db, [...kept, ...fresh]);
+					log.info("benchmarked a model with the local eval suite", { slug, anchors: anchors.length, errors: target.errors, useLocalScores: cfg.benchmarks.useLocalScores });
+					return json({ slug, anchors, raw: target.axes, calibrated: fresh[0], errors: target.errors, applied: cfg.benchmarks.useLocalScores });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.

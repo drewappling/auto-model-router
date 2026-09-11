@@ -20,6 +20,25 @@ export const MIN_ANCHORS = 3;
 /** Minimum Pearson correlation between raw suite scores and AA before a fit is trusted. */
 export const MIN_R = 0.5;
 
+/**
+ * Anchor models for a run, chosen from the catalog and spread across its score range.
+ *
+ * A fit from three models that all score ~70 describes that cluster, not the scale: the
+ * slope rests on a span of noise. Sampling the extremes and the quartiles gives the least
+ * squares something to work with. Tool-capable only, since the suite calls tools, and never
+ * the target itself. Fewer than `MIN_ANCHORS` scored models available ⇒ empty, and the
+ * caller refuses rather than fitting a line through two points.
+ */
+export function pickAnchors(models: readonly { slug: string; quality: { coding?: number }; supportsTools: boolean }[], target: string): string[] {
+	const scored = models
+		.filter((m) => m.slug !== target && typeof m.quality.coding === "number" && m.supportsTools)
+		.sort((a, b) => (a.quality.coding ?? 0) - (b.quality.coding ?? 0));
+	if (scored.length < MIN_ANCHORS) return [];
+	const last = scored.length - 1;
+	const picks = [0, Math.floor(last / 4), Math.floor(last / 2), Math.floor((3 * last) / 4), last];
+	return [...new Set(picks.map((i) => scored[i]!.slug))];
+}
+
 export interface LineFit {
 	slope: number;
 	intercept: number;

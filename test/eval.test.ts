@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import { applyFeedScores, loadLocalScores, saveLocalScores, type FeedScore } from "../src/catalog/benchmark-feeds.ts";
 import { answerScore, extractJson, isRefusalOrEmpty, jsonField, tokenCoverage } from "../src/eval/grade.ts";
-import { applyFit, fitAxis, fitCalibration, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
+import { applyFit, fitAxis, fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
 import { runEval, type EvalResult } from "../src/eval/run.ts";
 import { makeJudge, parseScore } from "../src/eval/judge.ts";
 import type { EvalTask, JudgedTask } from "../src/eval/tasks.ts";
@@ -52,6 +52,24 @@ describe("calibration", () => {
 		expect(fitAxis([{ raw: 0.5, aa: 40 }, { raw: 0.5, aa: 60 }, { raw: 0.5, aa: 80 }])).toBeNull(); // no spread
 		// Negative correlation (suite ranks models opposite to AA) is refused.
 		expect(fitAxis([{ raw: 0.8, aa: 40 }, { raw: 0.5, aa: 60 }, { raw: 0.2, aa: 80 }])).toBeNull();
+	});
+
+	test("pickAnchors spreads over the score range, skips the target and the unscored", () => {
+		const m = (slug: string, coding: number | undefined, supportsTools = true) => ({ slug, quality: coding === undefined ? {} : { coding }, supportsTools });
+		const catalog = [m("a/10", 10), m("a/30", 30), m("a/50", 50), m("a/70", 70), m("a/90", 90), m("a/target", undefined), m("a/notools", 60, false)];
+		const picked = pickAnchors(catalog, "a/target");
+		// Both extremes, so the fitted line spans the scale rather than a cluster.
+		expect(picked).toContain("a/10");
+		expect(picked).toContain("a/90");
+		expect(picked.length).toBeGreaterThanOrEqual(MIN_ANCHORS);
+		// An unscored model cannot anchor anything, and one that cannot call tools would fail
+		// the suite's tool tasks for a reason unrelated to its quality.
+		expect(picked).not.toContain("a/target");
+		expect(picked).not.toContain("a/notools");
+		// Refuses rather than fitting a line through too few points.
+		expect(pickAnchors([m("a/10", 10), m("a/90", 90)], "a/target")).toEqual([]);
+		// The target is excluded even when it is itself scored (a re-measurement).
+		expect(pickAnchors(catalog, "a/50")).not.toContain("a/50");
 	});
 
 	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {
