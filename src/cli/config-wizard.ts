@@ -182,6 +182,8 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "filters.deny", label: "Deny globs", kind: "stringArray", hint: "comma-separated" },
 			{ path: "filters.includeFree", label: "Include free models", kind: "boolean" },
 			{ path: "filters.requireToolSupport", label: "Require tool support", kind: "boolean" },
+			{ path: "filters.agenticAxisForToolTurns", label: "Rank tool turns on the agentic axis", kind: "boolean", hint: "a tool loop is won on tool-driving ability, not the task's own axis" },
+			{ path: "filters.minAgenticForToolTurns", label: "Min agentic score for tool turns", kind: "number", min: 0, max: 100, hint: "its own scale, not a tier floor; 0 disables. Models with no agentic score are not filtered" },
 			{ path: "filters.minTrust", label: "Min trust", kind: "number", min: 0, max: 1 },
 			{ path: "filters.feedbackWeight", label: "Feedback weight in trust", kind: "number", min: 0, hint: "0=record only; a bad verdict = this many failures" },
 			{ path: "filters.feedbackByTask", label: "Scope verdicts to the task type", kind: "boolean" },

@@ -374,6 +374,39 @@ describe("adaptive price ceilings", () => {
 		expect(on.candidates.map((c) => c.model.slug)).toContain("a/4");
 		expect(on.rejected.some((r) => r.slug === "a/4")).toBe(false);
 	});
+
+	test("a tool turn excludes tool-incapable models on the cheap tiers and ranks on agentic above them", () => {
+		// Two Ollama-priced models: the cheap one cannot drive a tool loop (agentic 1.4, as
+		// ollama/gpt-oss:20b really scores), the dearer one can (agentic 51.2, glm-5.3-flash).
+		const mk = (slug: string, price: number, intelligence: number, agentic: number) => ({
+			slug, canonicalSlug: slug, name: slug, provider: "ollama", vendor: "ollama",
+			contextLength: 131072, maxCompletionTokens: 32000, supportsTools: true, supportsReasoning: false,
+			reasoningMandatory: false, supportsToolChoice: true, inputModalities: ["text" as const],
+			price: { prompt: price / 1e6, completion: price / 1e6 }, priceTiers: [],
+			quality: { intelligence, coding: intelligence, agentic }, tokenizer: "Other",
+			isFree: false, createdAtMs: 0, author: "ollama",
+		});
+		const weak = mk("ollama/weak", 0.07, 9, 1.4);
+		const capable = mk("ollama/capable", 0.15, 41.9, 51.2);
+		const snap = { models: [weak, capable], fetchedAtMs: Date.now(), keyScoped: false };
+		const run = (tier: "trivial" | "moderate", min: number) =>
+			buildCandidates({
+				req, features, tier, task: "chat", snapshot: snap, ledger: null,
+				cfg: { ...BASE, filters: { ...BASE.filters, minAgenticForToolTurns: min } },
+				expectedCompletionTokens: 512, warmSlug: null,
+			});
+		// `trivial` ranks with qualityExponent 0 — cheapest above the floor — so the axis
+		// decides nothing there and only the agentic floor keeps the weak model out.
+		expect(run("trivial", 0).candidates[0]!.model.slug).toBe("ollama/weak");
+		const floored = run("trivial", 25);
+		expect(floored.candidates.map((c) => c.model.slug)).toEqual(["ollama/capable"]);
+		expect(floored.rejected.some((x) => x.slug === "ollama/weak" && (x.detail ?? "").includes("agentic 1.4 < 25"))).toBe(true);
+		// Above the cheap tiers quality does carry weight, and there the turn is ranked on
+		// agentic: the capable model leads even though it costs more than twice as much.
+		const ranked = run("moderate", 0);
+		expect(ranked.candidates[0]!.model.slug).toBe("ollama/capable");
+		expect(ranked.candidates[0]!.reasons.join(" ")).toContain("ranked on agentic");
+	});
 });
 
 describe("quality normalization and capability floor (benchmark findings 4/6)", () => {

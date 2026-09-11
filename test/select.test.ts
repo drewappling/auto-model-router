@@ -389,7 +389,10 @@ describe("decision shape", () => {
 	test("carries the session id, features, and a reasoning trail", () => {
 		const d = run({ tier: "simple" });
 		expect(d.sessionId.startsWith("omp-")).toBe(true);
-		expect(d.reasons.length).toBeGreaterThan(0);
+		// `d.reasons` holds decision-level notes — a widening, a hysteresis hold — and is
+		// legitimately empty when a tier serves the turn without incident. The trail that is
+		// always present is the per-candidate one, so that is what a caller can rely on.
+		expect(d.considered[0]!.reasons.length).toBeGreaterThan(0);
 		expect(d.features.toolCount).toBe(1);
 		expect(d.considered.length).toBeGreaterThan(0);
 	});

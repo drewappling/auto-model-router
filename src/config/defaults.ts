@@ -103,6 +103,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Free models are rate-limited hard enough that retries cost more than they save.
 		includeFree: false,
 		requireToolSupport: true,
+		agenticAxisForToolTurns: true,
+		minAgenticForToolTurns: 25,
 		minTrust: 0.7,
 		// Verdicts are recorded and reported first; weigh them once there are some.
 		feedbackWeight: 0,

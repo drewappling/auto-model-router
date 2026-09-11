@@ -128,6 +128,8 @@ const filters = z.strictObject({
 	deny: z.array(z.string()).optional(),
 	includeFree: z.boolean().optional(),
 	requireToolSupport: z.boolean().optional(),
+	agenticAxisForToolTurns: z.boolean().optional(),
+	minAgenticForToolTurns: z.number().min(0).max(100).optional(),
 	minTrust: z.number().min(0).max(1).optional(),
 	feedbackWeight: z.number().nonnegative().optional(),
 	feedbackByTask: z.boolean().optional(),

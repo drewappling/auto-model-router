@@ -47,7 +47,7 @@ function mkConfig(escalation: Partial<EscalationConfig> = {}): RouterConfig {
 			data: { axis: "intelligence", minQuality: 0 },
 			chat: { axis: "intelligence", minQuality: 0 },
 		},
-		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, minTrust: 0.6, feedbackWeight: 0, feedbackByTask: false, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, reasoningCompletionFloor: 0, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
+		filters: { allow: [], deny: [], includeFree: false, requireToolSupport: true, agenticAxisForToolTurns: true, minAgenticForToolTurns: 0, minTrust: 0.6, feedbackWeight: 0, feedbackByTask: false, minTrustSamples: 5, trustScopedByHarness: false, trustWindowDays: 0, contextHeadroom: 1.2, reasoningCompletionFloor: 0, latencyWeight: 0, latencyReferenceMs: 5000, latencyReferenceTokensPerSec: 30, cacheReliabilityMinSamples: 10, latencyMinSamples: 20, escalationCostWeight: 0 },
 		classifier: {
 			ambiguityThreshold: 0,
 			model: "test/adjudicator", learnedModelPath: "",

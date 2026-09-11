@@ -169,7 +169,15 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	const minContext = Math.ceil(features.promptTokens * filters.contextHeadroom) + expectedCompletionTokens;
 	// Task selects the quality axis and capability filters; the tier still
 	// bounds cost.
-	const effectiveAxis = taskCfg.axis;
+	//
+	// A turn that carries tools is scored on `agentic`, whatever the task's own axis says.
+	// `chat` and `documentation` score on `intelligence`, which says nothing about whether a
+	// model can drive a tool loop: measured here, ollama/gpt-oss:20b (intelligence 9, agentic
+	// 1.4) won a tool-bearing trivial turn on price because every candidate sat under the
+	// tier floor and the adaptive band then relaxed it. The `agentic` score is already in the
+	// catalog for every model and was the one axis nothing routed on.
+	const toolTurn = req.tools.length > 0;
+	const effectiveAxis: QualityAxis = toolTurn && filters.agenticAxisForToolTurns ? "agentic" : taskCfg.axis;
 	// Two floors with different meanings, and only one of them may be relaxed:
 	//  - the TIER floor is an economic envelope tuned against the full catalog,
 	//    so when a guardrail narrows availability below it, relaxing to the
@@ -180,7 +188,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	const plan = cfg.adaptiveTierFloors || cfg.adaptivePriceCeilings ? tierPlanFor(snapshot, cfg) : null;
 	const adaptiveTierFloor =
 		cfg.adaptiveTierFloors && plan !== null
-			? effectiveQualityFloor(tierCfg.minQuality, tier, effectiveAxis, plan)
+			? effectiveQualityFloor(tierCfg.minQuality, tier, taskCfg.axis, plan)
 			: tierCfg.minQuality;
 	const qualityFloor = Math.max(taskFloor, adaptiveTierFloor);
 	// Input-price ceiling: catalog-derived band when adaptive, else the fixed config.
@@ -229,6 +237,20 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			rejected.push({ slug, reason: "no_tool_support" });
 			continue;
 		}
+		// A tool loop needs a model that can drive one. The cheap tiers rank with
+		// `qualityExponent: 0` — cheapest above the floor — so there the ranking axis decides
+		// nothing and only this keeps a tool-incapable model out: ollama/gpt-oss:20b (agentic
+		// 1.4) was winning tool-bearing trivial turns purely on price. Judged on the agentic
+		// scale rather than a tier floor, and never applied to a model that publishes no
+		// agentic score, since most of the catalog does not. Relaxed with the rest under
+		// tier rescue, so a narrowed catalog still gets a turn.
+		if (toolTurn && !relaxQuality && filters.minAgenticForToolTurns > 0) {
+			const agentic = model.quality.agentic;
+			if (agentic !== undefined && agentic < filters.minAgenticForToolTurns) {
+				rejected.push({ slug, reason: "below_quality_floor", detail: `agentic ${agentic} < ${filters.minAgenticForToolTurns} for a tool turn` });
+				continue;
+			}
+		}
 		if ((req.hasImages || taskCfg.requireImage === true) && !model.inputModalities.includes("image")) {
 			rejected.push({ slug, reason: "no_image_support" });
 			continue;
@@ -239,17 +261,28 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		}
 
 		const pinned = tierCfg.pin.includes(slug) || taskPins.includes(slug);
-		const quality = resolveQuality(model, effectiveAxis);
+		// Floors are judged on the TASK's axis, always. The `agentic` scores sit on a lower
+		// scale than coding and intelligence (glm-5.3-flash: coding 71.5, agentic 51.2), so
+		// reusing one numeric floor across axes empties the set — measured here, a floor of
+		// 60 on `agentic` admitted nothing, tier rescue then dropped the floor entirely and
+		// the WEAKEST model won. The axis switch below therefore reorders candidates without
+		// touching who is eligible.
+		const quality = resolveQuality(model, taskCfg.axis);
 		if (!pinned && !relaxQuality && qualityFloor > 0) {
 			if (quality === null) {
 				rejected.push({ slug, reason: "below_quality_floor", detail: "no published quality score" });
 				continue;
 			}
 			if (quality.score < qualityFloor) {
-				rejected.push({ slug, reason: "below_quality_floor", detail: `${quality.score} < floor ${qualityFloor}` });
+				rejected.push({ slug, reason: "below_quality_floor", detail: `${quality.score} < floor ${qualityFloor} on ${quality.axis}` });
 				continue;
 			}
 		}
+		// What the candidate is RANKED on: a tool-bearing turn is won or lost on tool-driving
+		// ability, and `chat`/`documentation` score on `intelligence`, which does not measure
+		// it. Ranking is relative within the admitted set, so a lower-scaled axis is safe here
+		// in a way a floor is not.
+		const rankQuality = effectiveAxis === taskCfg.axis ? quality : resolveQuality(model, effectiveAxis);
 
 		// Price ceilings at the ACTUAL prompt size: long-context overrides can
 		// push a model over the ceiling exactly when conversations get long.
@@ -352,11 +385,10 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			images,
 		});
 		const trustScore = trust !== null && trust.attempts > 0 ? trust.successRate : UNMEASURED_TRUST;
-		const qualityScore = quality?.score ?? 0;
 		// Shared scoring: trust converts flakiness into money — a model failing
 		// 20% of the time really costs ~25% more in retries. Latency does the same
 		// for slowness (TTFT over the reference). qualityExponent 0 makes this
-		// "cheapest above the floor"; the floor does the quality work.
+		const qualityScore = rankQuality?.score ?? 0;
 		const latencyMult = latencyMultiplier(latency, filters, expectedCompletionTokens, latencyWeightFor(filters, features.isToolResultContinuation));
 		// Escalation-cost term: the trust divisor prices a failure as a retry of
 		// THIS model, but a probe escalation re-dispatches the whole prompt on
@@ -380,9 +412,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		const score = 0;
 
 		const reasons: string[] = [
-			quality === null
+			rankQuality === null
 				? "unscored on every quality axis"
-				: `quality ${quality.score} on ${quality.axis}${quality.axis === effectiveAxis ? "" : ` (fallback from ${effectiveAxis})`}`,
+				: `quality ${rankQuality.score} on ${rankQuality.axis}${rankQuality.axis === effectiveAxis ? "" : ` (fallback from ${effectiveAxis})`}${effectiveAxis === taskCfg.axis ? "" : ` — ranked on ${effectiveAxis} because the turn carries tools`}`,
 			trust === null || trust.attempts === 0
 				? `trust unmeasured: neutral prior ${UNMEASURED_TRUST}`
 				: `trust ${trustScore.toFixed(2)} over ${trust.attempts} attempts`,

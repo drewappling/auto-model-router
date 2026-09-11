@@ -222,6 +222,26 @@ export interface FilterConfig {
 	/** Require `supported_parameters` to include `tools` whenever the request offers tools. */
 	requireToolSupport: boolean;
 	/**
+	 * Score a turn that carries tools on the `agentic` axis instead of its task's axis.
+	 * On by default: a tool loop is won or lost on tool-driving ability, and `chat` and
+	 * `documentation` score on `intelligence`, which does not measure it. Off restores
+	 * the task's own axis for every turn.
+	 */
+	agenticAxisForToolTurns: boolean;
+	/**
+	 * Minimum `agentic` score a model needs to be offered a turn that carries tools, 0-100.
+	 * The cheap tiers rank with `qualityExponent: 0` — cheapest above the floor — so on those
+	 * tiers the ranking axis is inert and only a floor keeps a tool-incapable model out.
+	 *
+	 * Judged on its own scale, NOT against a tier's `minQuality`: agentic scores run far lower
+	 * than coding and intelligence, so reusing a tier floor here empties the catalog. Measured:
+	 * 25 drops gpt-oss-20b (1.4) and gemma-3-12b (0.1) while leaving 14 models under $0.30/Mtok.
+	 *
+	 * A model that publishes NO agentic score is not filtered — only 103 of 223 tool-capable
+	 * models carry one, so rejecting the unscored would discard half the catalog. 0 disables.
+	 */
+	minAgenticForToolTurns: number;
+	/**
 	 * Smallest completion budget a REASONING model is dispatched with, tokens.
 	 *
 	 * A reasoning model spends the budget thinking before it answers, so a
