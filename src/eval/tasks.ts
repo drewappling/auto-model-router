@@ -12,9 +12,19 @@
 import type { QualityAxis } from "../config/types.ts";
 import { answerScore, extractJson, jsonField, multiAnswerCoverage, tokenCoverage } from "./grade.ts";
 
+/**
+ * How hard a task is, reported separately so a model's score says WHERE it falls off
+ * rather than only how far. A suite of one difficulty cannot separate competent models:
+ * measured on a live catalog, every model above the floor scored 7/7 on the original set,
+ * which is why calibration could not fit the coding axis at all.
+ */
+export type Complexity = "easy" | "moderate" | "hard";
+
 export interface EvalTask {
 	id: string;
 	axis: QualityAxis;
+	/** Absent ⇒ `easy`: the original suite was uniformly easy, and saying so is the point. */
+	complexity?: Complexity;
 	system?: string;
 	user: string;
 	/** Deterministic proxy grade in [0, 1]. */
@@ -229,6 +239,72 @@ export const EVAL_TASKS: readonly EvalTask[] = [
 				if (jsonField(step, "tool") === w.tool && jsonField(jsonField(step, "args"), w.key) === w.val) hit += 1;
 			}
 			return hit / want.length;
+		},
+	},
+
+	// ---- hard: items competent models actually get wrong, so the axis has a top end.
+	// Every answer below is hand-derived; multi-part items give partial credit, which is what
+	// produces spread instead of a wall of 1.0s.
+	{
+		id: "coding/event-loop-order",
+		axis: "coding",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "Given:\nconsole.log('a');\nsetTimeout(() => console.log('b'), 0);\nPromise.resolve().then(() => console.log('c'));\nconsole.log('d');\nReply with the four letters in the order they are printed, comma separated.",
+		// Microtasks drain before timers: a, d, c, b.
+		grade: (o) => multiAnswerCoverage(o, ["a", "d", "c", "b"]) === 1 ? (/a\W+d\W+c\W+b/i.test(o) ? 1 : 0.5) : 0,
+	},
+	{
+		id: "coding/sort-lexicographic",
+		axis: "coding",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "What does `[10, 9, 80].sort()` return in JavaScript? Reply with only the array.",
+		// Default sort compares as STRINGS: "10" < "80" < "9".
+		grade: (o) => (answerScore(o, "[10, 80, 9]") === 1 ? 1 : answerScore(o, "[10,80,9]")),
+	},
+	{
+		id: "coding/trace-hard",
+		axis: "coding",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "Give the result of each, one per line, in order:\n(1) [1,[2,[3,[4]]]].flat(2).length\n(2) 'abc'.padStart(5,'xy')\n(3) [...'aab'].filter((c,i,a)=>a.indexOf(c)===i).join('')\n(4) Number('')\n(5) [1,2,3].at(-1)",
+		// flat(2) leaves [1,2,3,[4]] ⇒ 4; padStart cycles the pad ⇒ xyabc; dedupe ⇒ ab; 0; 3.
+		grade: (o) => multiAnswerCoverage(o, ["4", "xyabc", "ab", "0", "3"]),
+	},
+	{
+		id: "intel/collatz-steps",
+		axis: "intelligence",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "Start with x = 7. Repeat exactly 7 times: if x is even, x = x / 2; otherwise x = 3x + 1. Reply with the final value of x alone.",
+		// 7 → 22 → 11 → 34 → 17 → 52 → 26 → 13
+		grade: (o) => answerScore(o, "13"),
+	},
+	{
+		id: "intel/arith-hard",
+		axis: "intelligence",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "Answer each, one per line, in order:\n(1) 47 * 53\n(2) 2^13\n(3) the 17th prime number\n(4) LCM(12, 18)\n(5) how many 1 bits are in the binary form of 1000",
+		// 2491; 8192; 59; 36; 1000 = 1111101000 ⇒ six 1 bits.
+		grade: (o) => multiAnswerCoverage(o, ["2491", "8192", "59", "36", "6"]),
+	},
+	{
+		id: "intel/strict-format",
+		axis: "intelligence",
+		complexity: "hard",
+		system: "Follow the output constraints exactly. Any extra text is a failure.",
+		user: "Name three primary colours. Reply with exactly three words, all lowercase, separated by single spaces, with no punctuation and no other text.",
+		// Instruction adherence under a negative constraint — what IFBench measures.
+		grade: (o) => {
+			const text = o.trim();
+			if (text === "" || /[.,;:!?"'`\n]/.test(text)) return 0;
+			const words = text.split(" ");
+			if (words.length !== 3) return 0;
+			if (words.some((w) => w !== w.toLowerCase())) return 0.5;
+			const known = ["red", "blue", "yellow", "green"];
+			return words.every((w) => known.includes(w)) ? 1 : 0.5;
 		},
 	},
 ];

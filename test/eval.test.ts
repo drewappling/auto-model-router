@@ -5,6 +5,7 @@ import { applyFeedScores, loadLocalScores, saveLocalScores, type FeedScore } fro
 import { answerScore, extractJson, isRefusalOrEmpty, jsonField, tokenCoverage } from "../src/eval/grade.ts";
 import { applyFit, fitAxis, fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
 import { runEval, type EvalResult } from "../src/eval/run.ts";
+import { EVAL_TASKS } from "../src/eval/tasks.ts";
 import { makeJudge, parseScore } from "../src/eval/judge.ts";
 import type { EvalTask, JudgedTask } from "../src/eval/tasks.ts";
 import { openDb } from "../src/util/sqlite.ts";
@@ -72,12 +73,58 @@ describe("calibration", () => {
 		expect(pickAnchors(catalog, "a/50")).not.toContain("a/50");
 	});
 
+	test("repeats pool observations, report spread, and split scores by complexity", async () => {
+		// A flaky model: the strict-format task passes on odd calls only. One pass cannot tell
+		// that apart from a model that always passes or always fails.
+		let call = 0;
+		const flaky = async (_slug: string, messages: { role: string; content: string }[]) => {
+			call += 1;
+			const user = messages[messages.length - 1]!.content;
+			if (user.includes("primary colours")) return call % 2 === 0 ? "red blue yellow" : "Red, Blue, and Yellow!";
+			return "";
+		};
+		const [single] = await runEval({ slugs: ["a/flaky"], complete: flaky, tasks: EVAL_TASKS.filter((t) => t.id === "intel/strict-format") });
+		expect(single!.repeats).toBe(1);
+		expect(single!.spread).toEqual({});
+
+		call = 0;
+		const [many] = await runEval({ slugs: ["a/flaky"], complete: flaky, tasks: EVAL_TASKS.filter((t) => t.id === "intel/strict-format"), repeats: 10 });
+		expect(many!.repeats).toBe(10);
+		expect(many!.axes.intelligence.n).toBe(10);
+		// Half the passes score 1 and half 0, so the pooled mean sits mid-range and the spread
+		// says plainly that the headline is one sample of something noisy.
+		expect(many!.axes.intelligence.sum / many!.axes.intelligence.n).toBeCloseTo(0.5, 1);
+		expect(many!.spread.intelligence).toBe(1);
+		// That task is in the hard band, so the breakdown attributes it there and nowhere else.
+		expect(many!.byComplexity.hard?.n).toBe(10);
+		expect(many!.byComplexity.easy).toBeUndefined();
+	});
+
+	test("the suite spans complexities, and hard items are not all pinned at the ceiling", () => {
+		const bands = new Set(EVAL_TASKS.map((t) => t.complexity ?? "easy"));
+		expect(bands.has("easy")).toBe(true);
+		expect(bands.has("hard")).toBe(true);
+		// A perfect model must still score 1 on every hard task: a task nobody can pass
+		// measures the grader, not the model.
+		const hard = EVAL_TASKS.filter((t) => t.complexity === "hard");
+		expect(hard.length).toBeGreaterThanOrEqual(6);
+		expect(hard.find((t) => t.id === "coding/sort-lexicographic")!.grade("[10, 80, 9]")).toBe(1);
+		expect(hard.find((t) => t.id === "coding/event-loop-order")!.grade("a, d, c, b")).toBe(1);
+		expect(hard.find((t) => t.id === "intel/collatz-steps")!.grade("13")).toBe(1);
+		expect(hard.find((t) => t.id === "intel/arith-hard")!.grade("2491\n8192\n59\n36\n6")).toBe(1);
+		expect(hard.find((t) => t.id === "coding/trace-hard")!.grade("4\nxyabc\nab\n0\n3")).toBe(1);
+		// And a plausible wrong answer must NOT score 1, or the task adds no signal.
+		expect(hard.find((t) => t.id === "coding/sort-lexicographic")!.grade("[9, 10, 80]")).toBeLessThan(1);
+		expect(hard.find((t) => t.id === "intel/collatz-steps")!.grade("1")).toBeLessThan(1);
+		expect(hard.find((t) => t.id === "intel/strict-format")!.grade("Red, blue, and yellow.")).toBeLessThan(1);
+	});
+
 	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {
 		expect(MIN_ANCHORS).toBe(3);
 		const anchors: EvalResult[] = [
-			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
-			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
-			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
+			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
+			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
+			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
 		];
 		const aaOf: Record<string, number> = { "a/one": 40, "a/two": 60, "a/three": 80 };
 		const cal = fitCalibration(anchors, (slug, axis) => (axis === "coding" ? aaOf[slug] : undefined));
@@ -85,7 +132,7 @@ describe("calibration", () => {
 		expect(cal.intelligence).toBeUndefined(); // no anchor data on that axis
 
 		const targets: EvalResult[] = [
-			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } }, errors: 0 },
+			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
 		];
 		const local = toLocalFeedScores(targets, cal, (s) => s.slice(0, s.indexOf("/")));
 		expect(local).toHaveLength(1);

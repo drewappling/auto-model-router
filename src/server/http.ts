@@ -703,6 +703,18 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					if (result.deleted > 0) log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
 					return json({ ...result, retentionDays: cfg.ledger.retentionDays });
 				}
+				if (req.method === "DELETE" && url.pathname === "/v1/router/benchmark") {
+					// Purge local measurements. A stored score carries no provenance, so one taken
+					// under a broken harness is indistinguishable from a good one — measured: an
+					// `agentic: 0` for a model published at 41.7, left over from a run whose
+					// dispatch errors were being graded as wrong answers. `?key=` drops one.
+					const key = url.searchParams.get("key");
+					const before = loadLocalScores(db);
+					const kept = key === null ? [] : before.filter((s) => s.key !== key);
+					saveLocalScores(db, kept);
+					log.info("purged local eval scores", { removed: before.length - kept.length, kept: kept.length });
+					return json({ removed: before.length - kept.length, kept: kept.map((s) => s.key) });
+				}
 				if (req.method === "POST" && url.pathname === "/v1/router/benchmark") {
 					// Score one model with our OWN eval suite, for the models no feed covers: a
 					// third of a live catalog carries no published score on any axis, and a model
@@ -760,6 +772,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						slugs: [slug, ...anchors],
 						complete,
 						toolComplete,
+						repeats: Math.min(Math.max(1, typeof body?.repeats === "number" ? Math.floor(body.repeats) : 1), 20),
 						concurrency: Math.min(Math.max(1, asked), 8),
 						...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
 					});
@@ -770,13 +783,13 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const authorOf = (s: string): string => models.find((m) => m.slug === s)?.author ?? "";
 					const fresh = toLocalFeedScores([target], cal, authorOf);
 					if (fresh.length === 0) {
-						return json({ slug, anchors, calibrated: null, raw: target.axes, errors: target.errors, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" });
+						return json({ slug, anchors, calibrated: null, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" });
 					}
 					// Merge, never replace: other models' measurements are not this run's to discard.
 					const kept = loadLocalScores(db).filter((s) => s.key !== fresh[0]!.key);
 					saveLocalScores(db, [...kept, ...fresh]);
 					log.info("benchmarked a model with the local eval suite", { slug, anchors: anchors.length, errors: target.errors, useLocalScores: cfg.benchmarks.useLocalScores });
-					return json({ slug, anchors, raw: target.axes, calibrated: fresh[0], errors: target.errors, applied: cfg.benchmarks.useLocalScores });
+					return json({ slug, anchors, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, calibrated: fresh[0], errors: target.errors, applied: cfg.benchmarks.useLocalScores });
 				}
 				if (req.method === "POST" && url.pathname === "/v1/router/feedback") {
 					// A user verdict on the newest routed turn of an omp session.

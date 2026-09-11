@@ -8,7 +8,7 @@
 
 import type { QualityAxis } from "../config/types.ts";
 import type { Judge } from "./judge.ts";
-import { EVAL_TASKS, JUDGED_TASKS, type EvalTask, type JudgedTask } from "./tasks.ts";
+import { EVAL_TASKS, JUDGED_TASKS, type Complexity, type EvalTask, type JudgedTask } from "./tasks.ts";
 import { AGENTIC_SCENARIOS, runScenario, type Scenario, type ToolSpec } from "./agentic.ts";
 import type { ToolCall } from "../upstream/types.ts";
 
@@ -31,6 +31,20 @@ export interface EvalResult {
 	axes: Record<QualityAxis, AxisScore>;
 	/** Tasks whose completion threw (dispatch failure). Excluded from `axes`. */
 	errors: number;
+	/** Passes actually completed. 1 unless `repeats` was given. */
+	repeats: number;
+	/**
+	 * Mean grade per difficulty band. This is where a model's ceiling shows: a suite of one
+	 * difficulty reports a single number and cannot say whether a model is strong or the
+	 * questions were easy.
+	 */
+	byComplexity: Partial<Record<Complexity, AxisScore>>;
+	/**
+	 * Per-axis spread across passes: max pass mean minus min pass mean, or null under two
+	 * passes. A wide spread means the headline is one sample of a noisy quantity, and is the
+	 * honest counterpart to reporting a score at all.
+	 */
+	spread: Partial<Record<QualityAxis, number>>;
 }
 
 function messagesFor(task: { system?: string; user: string }): ChatMessage[] {
@@ -60,9 +74,17 @@ export interface RunEvalArgs {
 	toolComplete?: (slug: string, messages: Record<string, unknown>[], tools: ToolSpec[]) => Promise<{ text: string; toolCalls: ToolCall[] }>;
 	/** Agentic tool-loop scenarios. Defaults to the built-in set when `toolComplete` is given. */
 	scenarios?: readonly Scenario[];
+	/**
+	 * How many times to run the whole suite per model, default 1. A single pass cannot tell a
+	 * real difference from sampling noise — Artificial Analysis runs 3-5 repeats and spends
+	 * >10 to claim a confidence interval. Every attempt is an independent observation, so the
+	 * axis mean is over `tasks x repeats` and `spread` reports how much the passes disagreed.
+	 */
+	repeats?: number;
 }
 
-async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> {
+/** One pass of the whole suite. Repeats call this and the observations are pooled. */
+async function scorePass(slug: string, args: RunEvalArgs): Promise<EvalResult> {
 	const tasks = args.tasks ?? EVAL_TASKS;
 	const judge = args.judge;
 	const judged = judge !== undefined ? (args.judged ?? JUDGED_TASKS) : [];
@@ -72,7 +94,7 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 		agentic: { sum: 0, n: 0 },
 	};
 	let errors = 0;
-	type Outcome = { axis: QualityAxis; grade: number; ok: boolean };
+	type Outcome = { axis: QualityAxis; grade: number; ok: boolean; complexity: Complexity };
 	// A THROW (or an unscorable judge reply) means the turn produced no usable
 	// observation — NOT a score of 0, which would poison an anchor whose model is
 	// merely unavailable. Such turns are tallied as errors and excluded.
@@ -80,9 +102,9 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 		tasks.map(async (task) => {
 			try {
 				const text = await args.complete(slug, messagesFor(task));
-				return { axis: task.axis, grade: task.grade(text), ok: true };
+				return { axis: task.axis, grade: task.grade(text), ok: true, complexity: task.complexity ?? "easy" };
 			} catch {
-				return { axis: task.axis, grade: 0, ok: false };
+				return { axis: task.axis, grade: 0, ok: false, complexity: task.complexity ?? "easy" };
 			}
 		}),
 	);
@@ -94,9 +116,9 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 						try {
 							const answer = await args.complete(slug, messagesFor(task));
 							const score = await judge(task, answer);
-							return score === null ? { axis: task.axis, grade: 0, ok: false } : { axis: task.axis, grade: score, ok: true };
+							return score === null ? { axis: task.axis, grade: 0, ok: false, complexity: "hard" } : { axis: task.axis, grade: score, ok: true, complexity: "hard" };
 						} catch {
-							return { axis: task.axis, grade: 0, ok: false };
+							return { axis: task.axis, grade: 0, ok: false, complexity: "hard" };
 						}
 					}),
 				);
@@ -109,21 +131,64 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 		for (const scenario of scenarios) {
 			try {
 				const run = await runScenario(scenario, (messages, tools) => args.toolComplete!(slug, messages, tools));
-				scenarioOutcomes.push({ axis: "agentic", grade: scenario.grade(run), ok: true });
+				scenarioOutcomes.push({ axis: "agentic", grade: scenario.grade(run), ok: true, complexity: "moderate" });
 			} catch {
-				scenarioOutcomes.push({ axis: "agentic", grade: 0, ok: false });
+				scenarioOutcomes.push({ axis: "agentic", grade: 0, ok: false, complexity: "moderate" });
 			}
 		}
 	}
+	const byComplexity: Partial<Record<Complexity, AxisScore>> = {};
 	for (const o of [...objective, ...judgedOutcomes, ...scenarioOutcomes]) {
 		if (!o.ok) {
+			// An unobserved task is NOT a zero: a provider's throttle or outage would otherwise
+			// be recorded as the model answering wrongly. Artificial Analysis goes further and
+			// withholds a result whose failures persisted; we at least never score one.
 			errors += 1;
 			continue;
 		}
 		axes[o.axis].sum += o.grade;
 		axes[o.axis].n += 1;
+		const band = (byComplexity[o.complexity] ??= { sum: 0, n: 0 });
+		band.sum += o.grade;
+		band.n += 1;
 	}
-	return { slug, axes, errors };
+	return { slug, axes, errors, repeats: 1, spread: {}, byComplexity };
+}
+
+const AXES: readonly QualityAxis[] = ["coding", "intelligence", "agentic"];
+
+/**
+ * A model's score over `repeats` passes. Observations are POOLED rather than averaged over
+ * pass means, so a pass that lost tasks to dispatch errors weighs only what it observed.
+ * Passes run one after another: they are the same model, and firing them concurrently just
+ * trips a provider's throttle and buys errors instead of data.
+ */
+async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> {
+	const passes = Math.max(1, Math.floor(args.repeats ?? 1));
+	const axes: Record<QualityAxis, AxisScore> = { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } };
+	const means: Record<QualityAxis, number[]> = { coding: [], intelligence: [], agentic: [] };
+	const byComplexity: Partial<Record<Complexity, AxisScore>> = {};
+	let errors = 0;
+	for (let i = 0; i < passes; i++) {
+		const pass = await scorePass(slug, args);
+		errors += pass.errors;
+		for (const axis of AXES) {
+			axes[axis].sum += pass.axes[axis].sum;
+			axes[axis].n += pass.axes[axis].n;
+			if (pass.axes[axis].n > 0) means[axis].push(pass.axes[axis].sum / pass.axes[axis].n);
+		}
+		for (const [band, score] of Object.entries(pass.byComplexity) as [Complexity, AxisScore][]) {
+			const acc = (byComplexity[band] ??= { sum: 0, n: 0 });
+			acc.sum += score.sum;
+			acc.n += score.n;
+		}
+	}
+	const spread: Partial<Record<QualityAxis, number>> = {};
+	for (const axis of AXES) {
+		const m = means[axis];
+		if (m.length > 1) spread[axis] = Math.max(...m) - Math.min(...m);
+	}
+	return { slug, axes, errors, repeats: passes, spread, byComplexity };
 }
 
 export async function runEval(args: RunEvalArgs): Promise<EvalResult[]> {
