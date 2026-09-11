@@ -723,14 +723,34 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const named = Array.isArray(body?.anchors) ? (body.anchors as unknown[]).filter((a): a is string => typeof a === "string") : [];
 					const anchors = named.length > 0 ? [...new Set(named)] : pickAnchors(models, slug);
 					if (anchors.length < MIN_ANCHORS) return wireErrorResponse({ status: 422, code: "invalid_request_error", message: `need at least ${MIN_ANCHORS} scored, tool-capable anchor models to calibrate against` });
+					// A rate-limited dispatch is not a failed task. Ollama Cloud answers "too many
+					// concurrent requests" well below four models in flight, and the runner folds a
+					// throwing completion in as grade 0 — which would score a provider's throttle as
+					// the model being wrong. Retry with backoff, and keep the default concurrency
+					// low enough that the throttle is rarely reached in the first place.
 					const complete: Completer = async (target, messages) => {
-						const out = await upstream.complete({ model: target, stream: false, temperature: 0, max_tokens: 1024, messages }, AbortSignal.timeout(120_000));
-						return out.text;
+						let last: unknown = null;
+						for (let attempt = 0; attempt < 4; attempt++) {
+							if (attempt > 0) {
+								const { promise, resolve } = Promise.withResolvers<void>();
+								setTimeout(resolve, attempt * 4000);
+								await promise;
+							}
+							try {
+								const out = await upstream.complete({ model: target, stream: false, temperature: 0, max_tokens: 1024, messages }, AbortSignal.timeout(120_000));
+								return out.text;
+							} catch (err) {
+								last = err;
+							}
+						}
+						throw last instanceof Error ? last : new Error(String(last));
 					};
 					const judgeSlug = typeof body?.judge === "string" && body.judge !== "" ? body.judge : "";
+					const asked = typeof body?.concurrency === "number" ? Math.floor(body.concurrency) : 2;
 					const results = await runEval({
 						slugs: [slug, ...anchors],
 						complete,
+						concurrency: Math.min(Math.max(1, asked), 8),
 						...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
 					});
 					const target = results[0]!;
