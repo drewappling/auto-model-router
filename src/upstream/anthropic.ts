@@ -355,6 +355,27 @@ function transportError(id: string, err: unknown): UpstreamError {
 	return new UpstreamError("network", 0, err instanceof Error ? err.message : String(err), true);
 }
 
+/**
+ * Anthropic accepts a Pro/Max subscription token only on Claude Code's own traffic: unless
+ * the FIRST system block carries this exact line, the API answers 429 `rate_limit_error`
+ * with the message "Error" — a refusal wearing a quota's clothes, not a real rate limit,
+ * which the breaker would otherwise read as "slow down" and cool the upstream off.
+ *
+ * Claude Code sends it itself. Every other client — an OpenAI-wire caller, the router's own
+ * classifier and digest chores — would be refused, so an `oauth-bearer` upstream adds it
+ * when it is missing. It goes in as its own leading block rather than being merged into the
+ * caller's text, because that is the shape Claude Code sends and it keeps the caller's
+ * `cache_control` markers attached to the blocks they were written for.
+ */
+const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function withClaudeCodeIdentity(body: Record<string, unknown>): Record<string, unknown> {
+	const system = Array.isArray(body.system) ? (body.system as Block[]) : [];
+	const first = asRec(system[0]);
+	if (first !== null && typeof first.text === "string" && first.text.startsWith(CLAUDE_CODE_IDENTITY)) return body;
+	return { ...body, system: [{ type: "text", text: CLAUDE_CODE_IDENTITY }, ...system] };
+}
+
 export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: FetchLike = fetch): NamedUpstreamClient {
 	const lookup = upstreamLookup(cfg, id);
 	const log = createLogger(cfg.logLevel);
@@ -379,7 +400,8 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 		const { modelId, model } = modelInfo(e, slug);
 		const opts: AnthropicBodyOptions = { modelId, supportsReasoning: model?.supportsReasoning ?? false };
 		if (model?.maxCompletionTokens !== undefined) opts.maxCompletionTokens = model.maxCompletionTokens;
-		return { rendered: toAnthropicBody(body, opts), servedSlug: `${id}/${modelId}` };
+		const rendered = toAnthropicBody(body, opts);
+		return { rendered: e.auth === "oauth-bearer" ? withClaudeCodeIdentity(rendered) : rendered, servedSlug: `${id}/${modelId}` };
 	}
 	function composeSignal(e: UpstreamEntry, caller: AbortSignal | undefined): AbortSignal | null {
 		const timeout = e.timeoutMs > 0 ? AbortSignal.timeout(e.timeoutMs) : null;
@@ -388,7 +410,11 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 	}
 	async function post(e: UpstreamEntry, body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<Response> {
 		const headers: Record<string, string> = { "content-type": "application/json", "anthropic-version": ANTHROPIC_VERSION, ...e.headers };
-		if (e.apiKey !== "") headers["x-api-key"] = e.apiKey;
+		if (e.auth === "oauth-bearer") {
+			// A Claude Pro/Max subscription token: Bearer auth at the first-party API, with the OAuth beta. No per-token cost is reported.
+			headers["authorization"] = `Bearer ${e.apiKey}`;
+			headers["anthropic-beta"] = e.headers["anthropic-beta"] ?? "oauth-2025-04-20,claude-code-20250219";
+		} else if (e.apiKey !== "") headers["x-api-key"] = e.apiKey;
 		try {
 			return await fetchImpl(`${e.baseUrl.replace(/\/+$/, "")}/v1/messages`, { method: "POST", headers, body: JSON.stringify(body), signal: composeSignal(e, signal) });
 		} catch (err) {

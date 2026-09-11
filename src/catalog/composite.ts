@@ -35,7 +35,12 @@ export interface CompositeBias {
 	/** False when OpenRouter cannot dispatch (no key): its models are listed for metadata only, never served. Default true. */
 	serveOpenRouter?: () => boolean;
 	/** Named upstreams' models, built from the OpenRouter models (twins) and filtered by each upstream's breaker. */
-	named?: { models(openrouter: readonly CatalogModel[]): readonly CatalogModel[]; serving(id: string): boolean };
+	named?: {
+		models(openrouter: readonly CatalogModel[]): readonly CatalogModel[];
+		serving(id: string): boolean;
+		/** That upstream's `costBias`, so prepaid capacity ranks below list price. 1 when it has none. */
+		bias?(id: string): number;
+	};
 }
 
 /** Shared empty list, so a deployment without named upstreams keeps the merged snapshot's identity. */
@@ -81,8 +86,14 @@ export function createCompositeCatalog(
 		merged = serveBase ? mergeSnapshots(base, available ? models : []) : { ...base, models: available ? [...models] : [] };
 		if (named.length > 0) merged = { ...merged, models: [...merged.models, ...named] };
 		// A fresh object either way once anything changed; stamp the live bias so
-		// candidate scoring reads it off the snapshot it is ranking.
-		merged = { ...merged, providerBias: { ollama: providerBias } };
+		// candidate scoring reads it off the snapshot it is ranking. Each named upstream
+		// adds its own, so prepaid capacity ranks below list price without being free.
+		const biases: Record<string, number> = { ollama: providerBias };
+		for (const m of named) {
+			const b = bias.named?.bias?.(m.provider) ?? 1;
+			if (b !== 1) biases[m.provider] = b;
+		}
+		merged = { ...merged, providerBias: biases };
 		return merged;
 	}
 

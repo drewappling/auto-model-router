@@ -906,10 +906,15 @@ export interface UpstreamModelConfig {
 	/** The model id the provider knows (an Azure deployment name for `azure`). The catalog slug is `<upstream id>/<id>`. */
 	id: string;
 	name?: string;
-	/** USD per million prompt tokens. */
-	input: number;
-	/** USD per million completion tokens. */
-	output: number;
+	/**
+	 * USD per million prompt tokens. Absent ⇒ the OpenRouter twin's price, which is what
+	 * a subscription upstream wants: the same weights are sold per token there, so the
+	 * twin is the only honest figure for what a turn is worth. Pair it with `costBias`
+	 * to rank prepaid capacity below list without pretending it is free.
+	 */
+	input?: number;
+	/** USD per million completion tokens. Absent ⇒ the OpenRouter twin's. */
+	output?: number;
 	/** USD per million cached prompt tokens, when the provider discounts them. */
 	cachedInput?: number;
 	/** USD per million prompt tokens written to cache (Anthropic). */
@@ -943,11 +948,20 @@ export interface UpstreamEntry {
 	apiKey: string;
 	/** Azure only: the `api-version` query parameter. */
 	apiVersion: string;
+	/** `api-key` sends `x-api-key`; `oauth-bearer` sends `Authorization: Bearer` plus the Claude OAuth beta headers (a Claude Pro/Max subscription token). */
+	auth: "api-key" | "oauth-bearer";
 	/** Extra request headers, e.g. a gateway's own auth. */
 	headers: Record<string, string>;
 	timeoutMs: number;
 	rateLimitCooldownMs: number;
 	quotaCooldownMs: number;
+	/**
+	 * Ranking multiplier on this upstream's forecast cost, like `ollama.costBias`: below 1
+	 * prefers capacity that is already paid for (a Claude Pro/Max subscription) without
+	 * pricing it at zero, which would win every tier and make quality floors meaningless.
+	 * Ranking only — the ledger still records the price the catalog carries. Default 1.
+	 */
+	costBias: number;
 	models: UpstreamModelConfig[];
 }
 

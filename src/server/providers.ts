@@ -77,7 +77,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 	};
 	const namedServingOne = (id: string): boolean => {
 		const entry = cfg.upstreams.find((u) => u.id === id);
-		if (entry === undefined || !entry.enabled || entry.apiKey === "" && entry.kind !== "openai") return entry !== undefined && entry.enabled && (named(id)?.available() ?? false);
+		if (entry === undefined || !entry.enabled || (entry.apiKey === "" && entry.kind !== "openai" && entry.auth !== "oauth-bearer")) return entry !== undefined && entry.enabled && (named(id)?.available() ?? false);
 		return named(id)?.available() ?? false;
 	};
 	const namedServing = (): string[] => cfg.upstreams.filter((u) => u.enabled && namedServingOne(u.id)).map((u) => u.id);
@@ -91,7 +91,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 			usage: ollamaUsage,
 			live: () => ({ costBias: cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage }),
 			serveOpenRouter: () => cfg.openrouter.apiKey !== "",
-			named: { models: (base) => staticCatalog.get(base), serving: namedServingOne },
+			named: { models: (base) => staticCatalog.get(base), serving: namedServingOne, bias: (id) => cfg.upstreams.find((u) => u.id === id)?.costBias ?? 1 },
 		}),
 		ollama,
 		ollamaServing,

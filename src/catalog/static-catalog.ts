@@ -29,9 +29,17 @@ export function buildUpstreamModels(entry: UpstreamEntry, openrouter: readonly C
 		const twin = (m.twin !== undefined ? bySlug.get(m.twin) : undefined) ?? twins.get(normalizeModelKey(m.id)) ?? null;
 		const modalities: Modality[] = ["text"];
 		if (m.vision ?? twin?.inputModalities.includes("image") ?? false) modalities.push("image");
-		const price: CatalogModel["price"] = { prompt: m.input / 1e6, completion: m.output / 1e6 };
-		if (m.cachedInput !== undefined) price.cacheRead = m.cachedInput / 1e6;
-		if (m.cacheWrite !== undefined) price.cacheWrite = m.cacheWrite / 1e6;
+		// An omitted price means "whatever the twin costs": a subscription sells the same
+		// weights per token on OpenRouter, so the twin is the only honest figure. Falling
+		// back to zero instead would win every tier outright and silence the quality floors.
+		const price: CatalogModel["price"] = {
+			prompt: m.input !== undefined ? m.input / 1e6 : (twin?.price.prompt ?? 0),
+			completion: m.output !== undefined ? m.output / 1e6 : (twin?.price.completion ?? 0),
+		};
+		const cacheRead = m.cachedInput !== undefined ? m.cachedInput / 1e6 : twin?.price.cacheRead;
+		const cacheWrite = m.cacheWrite !== undefined ? m.cacheWrite / 1e6 : twin?.price.cacheWrite;
+		if (cacheRead !== undefined) price.cacheRead = cacheRead;
+		if (cacheWrite !== undefined) price.cacheWrite = cacheWrite;
 		const model: CatalogModel = {
 			slug: `${entry.id}/${m.id}`,
 			canonicalSlug: `${entry.id}/${m.id}`,

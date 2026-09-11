@@ -100,6 +100,23 @@ describe("static catalog", () => {
 		expect(unknown!.tokenizer).toBe("Claude");
 	});
 
+	test("a subscription model with no price of its own inherits the twin's, so it never ranks as free", () => {
+		// A Pro/Max subscription publishes no per-token rates, and pricing it at zero would beat
+		// every model in every tier outright. The twin sells the same weights, so it is the rate.
+		const e = entry({ id: "anthropic-subscription", kind: "anthropic", costBias: 0.1, models: [{ id: "claude-sonnet-4-20250514", twin: "anthropic/claude-sonnet-4" }] });
+		const [sub] = buildUpstreamModels(e, twins);
+		const twin = twins.find((m) => m.slug === "anthropic/claude-sonnet-4")!;
+		expect(sub!.price.prompt).toBe(twin.price.prompt);
+		expect(sub!.price.completion).toBe(twin.price.completion);
+		expect(sub!.price.prompt).toBeGreaterThan(0);
+		expect(sub!.isFree).toBe(false);
+		// The discount is a RANKING bias on the entry, never a rewrite of the recorded price.
+		expect(e.costBias).toBe(0.1);
+		// An explicit zero still means zero: a self-hosted server is genuinely free.
+		const free = entry({ id: "vllm", kind: "openai", models: [{ id: "local", input: 0, output: 0 }] });
+		expect(buildUpstreamModels(free, twins)[0]!.price).toEqual({ prompt: 0, completion: 0 });
+	});
+
 	test("the source rebuilds only when the entries or the OpenRouter models change", () => {
 		const cfg = cfgWith([entry({ id: "vllm", kind: "openai" })]);
 		const src = createStaticCatalogSource(cfg);
@@ -348,6 +365,32 @@ describe("the Anthropic client", () => {
 		expect(overloaded.available()).toBe(false);
 		expect(classifyAnthropicStatus("a", 400, { error: { message: "prompt is too long: 250000 tokens" } })).toMatchObject({ kind: "context_length", retryable: false });
 		expect(classifyAnthropicStatus("a", 401, {})).toMatchObject({ kind: "auth", retryable: false });
+	});
+
+	test("a subscription upstream: OAuth bearer instead of x-api-key, and the Claude Code identity leads the system blocks", async () => {
+		// Anthropic answers a Pro/Max token 429 "Error" unless the first system block says this,
+		// so the literal is the wire contract and is spelled out here rather than imported.
+		const identity = "You are Claude Code, Anthropic's official CLI for Claude.";
+		let headers: Record<string, string> = {};
+		let sent: Record<string, unknown> = {};
+		const fetchImpl = async (_u: string, init?: RequestInit): Promise<Response> => {
+			headers = init?.headers as Record<string, string>;
+			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([`event: message_stop${NL}data: {"type":"message_stop"}`]);
+		};
+		const cfg = cfgWith([entry({ id: "sub", kind: "anthropic", auth: "oauth-bearer", baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-oat01-x", models: [{ id: "claude-sonnet-5", input: 0, output: 0 }] })]);
+		const drain = async (messages: unknown[]): Promise<void> => {
+			const d = await createAnthropicClient(cfg, "sub", fetchImpl).dispatch({ body: { model: "sub/claude-sonnet-5", messages, max_tokens: 16 }, sessionId: "s", signal: new AbortController().signal });
+			for await (const c of d.chunks) void c;
+		};
+		await drain([{ role: "user", content: "ping" }]);
+		expect(headers.authorization).toBe("Bearer sk-ant-oat01-x");
+		expect(headers["anthropic-beta"]).toContain("oauth-2025-04-20");
+		expect(headers["x-api-key"]).toBeUndefined();
+		expect(sent.system).toEqual([{ type: "text", text: identity }]);
+		// A caller that already identifies as Claude Code keeps its own block; it is not said twice.
+		await drain([{ role: "system", content: `${identity} Be brief.` }, { role: "user", content: "ping" }]);
+		expect(sent.system).toEqual([{ type: "text", text: `${identity} Be brief.` }]);
 	});
 });
 
