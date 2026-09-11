@@ -117,6 +117,14 @@ describe("calibration", () => {
 		expect(hard.find((t) => t.id === "coding/sort-lexicographic")!.grade("[9, 10, 80]")).toBeLessThan(1);
 		expect(hard.find((t) => t.id === "intel/collatz-steps")!.grade("1")).toBeLessThan(1);
 		expect(hard.find((t) => t.id === "intel/strict-format")!.grade("Red, blue, and yellow.")).toBeLessThan(1);
+		// The second hard band: computable only, no recall shortcut.
+		expect(hard.find((t) => t.id === "coding/stack-machine")!.grade("-32")).toBe(1);
+		expect(hard.find((t) => t.id === "coding/stack-machine")!.grade("-16")).toBeLessThan(1);
+		expect(hard.find((t) => t.id === "intel/ledger-balance")!.grade("60")).toBe(1);
+		expect(hard.find((t) => t.id === "intel/ledger-balance")!.grade("61")).toBeLessThan(1);
+		expect(hard.find((t) => t.id === "intel/constraint-conflict")!.grade("IMPOSSIBLE")).toBe(1);
+		expect(hard.find((t) => t.id === "intel/constraint-conflict")!.grade("12")).toBe(0);
+		expect(hard.find((t) => t.id === "coding/regex-backtrack")!.grade("XX\nab\nfalse\nx|y\na[b$]c")).toBe(1);
 	});
 
 	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {

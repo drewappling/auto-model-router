@@ -307,6 +307,46 @@ export const EVAL_TASKS: readonly EvalTask[] = [
 			return words.every((w) => known.includes(w)) ? 1 : 0.5;
 		},
 	},
+
+	// ---- harder still. The first hard band was aced 6/6 by deepseek-v4.1-flash, so it was
+	// not measuring a ceiling either. These need multi-step state tracking with no shortcut:
+	// the answer cannot be recalled, only computed, and one slip anywhere changes it.
+	{
+		id: "coding/stack-machine",
+		axis: "coding",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "A stack machine starts with an empty stack. Execute: PUSH 4, PUSH 7, ADD, PUSH 3, SWAP, SUB, PUSH 2, MUL, DUP, ADD.\nSUB pops a then b and pushes b-a. SWAP exchanges the top two. DUP duplicates the top. Reply with the final stack, bottom to top, comma separated.",
+		// 4 | 4,7 | 11 | 11,3 | 3,11 | 3-11=-8 | -8,2 | -16 | -16,-16 | -32
+		grade: (o) => answerScore(o, "-32"),
+	},
+	{
+		id: "intel/ledger-balance",
+		axis: "intelligence",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "An account starts at 0. Apply in order: +120, -45, then double the balance, -30, then halve the balance (round DOWN to a whole number), +7, then subtract a tenth of the balance (round DOWN), finally -1. Reply with the final balance alone.",
+		// 0→120→75→150→120→60→67; a tenth of 67 floors to 6 ⇒ 61; −1 ⇒ 60
+		grade: (o) => answerScore(o, "60"),
+	},
+	{
+		id: "intel/constraint-conflict",
+		axis: "intelligence",
+		complexity: "hard",
+		system: "Follow every constraint. If two constraints cannot both hold, say IMPOSSIBLE and nothing else.",
+		user: "Give a single whole number that is greater than 10, less than 20, divisible by 4, and odd. Reply with the number, or IMPOSSIBLE.",
+		// No odd multiple of 4 exists: recognising the contradiction is the capability.
+		grade: (o) => (/\bimpossible\b/i.test(o) ? 1 : 0),
+	},
+	{
+		id: "coding/regex-backtrack",
+		axis: "coding",
+		complexity: "hard",
+		system: JSON_ONLY,
+		user: "In JavaScript, give the result of each, one per line, in order:\n(1) 'aaa'.replace(/a*/g, 'X')\n(2) 'a1b2'.match(/[a-z](?=\\d)/g).join('')\n(3) /^(a+)+$/.test('aaab')\n(4) 'x.y.z'.split('.', 2).join('|')\n(5) 'abc'.replace(/(b)/, '[$1$$]')",
+		// Empty match at end ⇒ "XX"; lookahead ⇒ "ab"; false; "x|y"; "$$" is a literal $ ⇒ "a[b$]c"
+		grade: (o) => multiAnswerCoverage(o, ["XX", "ab", "false", "x|y", "a[b$]c"]),
+	},
 ];
 
 /**
