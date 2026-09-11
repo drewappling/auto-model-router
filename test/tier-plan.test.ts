@@ -358,6 +358,22 @@ describe("adaptive price ceilings", () => {
 		expect(on.candidates.map((c) => c.model.slug)).not.toContain("a/4");
 		expect(on.rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
 	});
+
+	test("a price ceiling judges the BIASED price, so prepaid capacity is not thrown out on list", () => {
+		// A subscription upstream inherits its OpenRouter twin's list price ($4/Mtok here) and is
+		// discounted by `costBias` because the capacity is already paid for. Judging the ceiling on
+		// list threw it out before the bias was ever read, which made the bias entirely inert.
+		const snap = snapshot(priced);
+		const biased = { ...snap, providerBias: { [snap.models[0]!.provider]: 0.1 } };
+		const run = (s: typeof snap) =>
+			buildCandidates({ req, features, tier: "moderate", task: "coding", snapshot: s, ledger: null, cfg: { ...BASE, adaptivePriceCeilings: true }, expectedCompletionTokens: 512, warmSlug: null });
+		// Unbiased: the band tightens moderate to $3 and a/4 is over it.
+		expect(run(snap).rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
+		// Biased ×0.1: $4 list is $0.40 to this deployment, so it clears the same ceiling.
+		const on = run(biased);
+		expect(on.candidates.map((c) => c.model.slug)).toContain("a/4");
+		expect(on.rejected.some((r) => r.slug === "a/4")).toBe(false);
+	});
 });
 
 describe("quality normalization and capability floor (benchmark findings 4/6)", () => {

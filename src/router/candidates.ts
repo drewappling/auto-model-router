@@ -254,20 +254,33 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// Price ceilings at the ACTUAL prompt size: long-context overrides can
 		// push a model over the ceiling exactly when conversations get long.
 		// Catalog prices are per-token; ceilings are per million tokens.
+		//
+		// The ceiling is compared against the BIASED price, because that is what the turn
+		// actually costs this deployment: capacity already paid for — an Ollama plan's
+		// included credits, a Claude Pro/Max subscription — carries the list price of the
+		// twin it is priced from, and a subscription model at $2-5/Mtok list would be
+		// thrown out here on every cheap tier before `costBias` was ever consulted. That
+		// made the bias silently inert: setting it to 0.00001 changed no decision at all.
 		const price = priceAt(model, Math.max(1, features.promptTokens));
-		if (!relaxPrice && priceCeiling !== undefined && price.prompt * 1e6 > priceCeiling) {
+		const providerBias =
+			snapshot.providerBias?.[model.provider] ??
+			(model.provider === "ollama" ? cfg.ollama.costBias : (cfg.upstreams.find((u) => u.id === model.provider)?.costBias ?? 1));
+		const biasedPrompt = price.prompt * providerBias;
+		const biasedCompletion = price.completion * providerBias;
+		const biasNote = providerBias === 1 ? "" : ` (×${providerBias} bias on $${(price.prompt * 1e6).toFixed(2)} list)`;
+		if (!relaxPrice && priceCeiling !== undefined && biasedPrompt * 1e6 > priceCeiling) {
 			rejected.push({
 				slug,
 				reason: "over_price_ceiling",
-				detail: `input $${(price.prompt * 1e6).toFixed(2)}/Mtok > ceiling $${priceCeiling.toFixed(2)}`,
+				detail: `input $${(biasedPrompt * 1e6).toFixed(2)}/Mtok > ceiling $${priceCeiling.toFixed(2)}${biasNote}`,
 			});
 			continue;
 		}
-		if (!relaxPrice && tierCfg.maxOutputPerMtok !== undefined && price.completion * 1e6 > tierCfg.maxOutputPerMtok) {
+		if (!relaxPrice && tierCfg.maxOutputPerMtok !== undefined && biasedCompletion * 1e6 > tierCfg.maxOutputPerMtok) {
 			rejected.push({
 				slug,
 				reason: "over_price_ceiling",
-				detail: `output $${(price.completion * 1e6).toFixed(2)}/Mtok > ceiling $${tierCfg.maxOutputPerMtok}`,
+				detail: `output $${(biasedCompletion * 1e6).toFixed(2)}/Mtok > ceiling $${tierCfg.maxOutputPerMtok}${biasNote}`,
 			});
 			continue;
 		}
@@ -357,14 +370,9 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			filters.escalationCostWeight > 0 && args.escalationUsdPerPromptToken !== undefined
 				? filters.escalationCostWeight * escalationRate * args.escalationUsdPerPromptToken * features.promptTokens
 				: 0;
-		// Provider bias: capacity already paid for — an Ollama plan's included credits, a
-		// Claude Pro/Max subscription — is money already spent, so an operator may value it
-		// below list price in ranking. The ledger still records list price.
-		// The snapshot carries the LIVE bias (credit-aware, and each named upstream's own);
-		// the static config value is the fallback for snapshots built without one.
-		const providerBias =
-			snapshot.providerBias?.[model.provider] ??
-			(model.provider === "ollama" ? cfg.ollama.costBias : (cfg.upstreams.find((u) => u.id === model.provider)?.costBias ?? 1));
+		// `providerBias` is computed with the price ceilings above — capacity already paid for
+		// is money already spent, so it is valued below list in ranking AND against the
+		// ceilings. The ledger still records list price either way.
 		const effectiveUsd = (fc.expectedUsd / Math.max(trustScore, 0.5) + escalationUsd) * latencyMult * providerBias;
 		// Score is assigned in a SECOND PASS below: both qualityNormalization and
 		// capabilityFloorUsd are properties of the candidate SET, not of one
