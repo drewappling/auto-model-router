@@ -137,7 +137,7 @@ describe("dispatch by slug prefix", () => {
 		},
 		complete: async (b) => {
 			seen.push(`${name}:complete:${String(b.model)}`);
-			return { text: "", costUsd: null };
+			return { text: "", costUsd: null, toolCalls: [] };
 		},
 		fetchModels: async () => [],
 		fetchModelsForUser: async () => [],

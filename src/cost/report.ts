@@ -330,7 +330,10 @@ export function buildUsageReport(
 	const feedbackBySlug = createFeedbackStore(db).countsBySlug(sinceMs, harnessId);
 	const models: ModelRow[] = modelRows.map((r) => ({
 		...toRow(r, windowSpend),
-		provider: r.key.startsWith("ollama/") ? "ollama" : "openrouter",
+		// `providerOfSlug`, not a two-way guess: a named upstream's namespace is a provider
+		// too. Hardcoding ollama-or-openrouter reported every subscription and direct-provider
+		// turn as OpenRouter — 87 Opus dispatches filed against a provider that never saw them.
+		provider: providerOfSlug(r.key),
 		tiers: mixByModel.get(r.key) ?? {},
 		feedback: feedbackBySlug.get(r.key) ?? { good: 0, bad: 0 },
 	}));

@@ -371,7 +371,7 @@ describe("multi upstream + composite catalog", () => {
 		},
 		complete: async (body) => {
 			calls.push(`${name}:complete:${String(body.model)}`);
-			return { text: "", costUsd: null };
+			return { text: "", costUsd: null, toolCalls: [] };
 		},
 		fetchModels: async () => {
 			calls.push(`${name}:models`);

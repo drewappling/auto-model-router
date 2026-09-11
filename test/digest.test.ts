@@ -83,7 +83,7 @@ function fakeUpstream(reply: (body: Record<string, unknown>) => string, costUsd:
 			dispatch: () => Promise.reject(new Error("not used")),
 			complete: async (body) => {
 				calls.push(body);
-				return { text: reply(body), costUsd };
+				return { text: reply(body), costUsd, toolCalls: [] };
 			},
 			fetchModels: () => Promise.resolve([]),
 			fetchModelsForUser: () => Promise.resolve([]),

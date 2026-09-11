@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { CompletionResult } from "../src/upstream/types.ts";
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
@@ -74,7 +75,7 @@ function forbiddenUpstream(): UpstreamClient {
 		dispatch(_opts: DispatchOptions): Promise<Dispatch> {
 			throw new Error("dispatch must not be called during classification");
 		},
-		complete(): Promise<{ text: string; costUsd: number | null }> {
+		complete(): Promise<CompletionResult> {
 			throw new Error("adjudicator must not be called");
 		},
 		fetchModels(): Promise<unknown[]> {
@@ -86,7 +87,7 @@ function forbiddenUpstream(): UpstreamClient {
 	};
 }
 
-function scriptedUpstream(behaviour: () => Promise<{ text: string; costUsd: number | null }>): UpstreamClient {
+function scriptedUpstream(behaviour: () => Promise<CompletionResult>): UpstreamClient {
 	return {
 		dispatch(_opts: DispatchOptions): Promise<Dispatch> {
 			throw new Error("dispatch must not be called during classification");
@@ -358,7 +359,7 @@ describe("classify", () => {
 		const f = extractFeatures(r, 5000);
 		const expected = scoreHeuristic(f, cfg);
 		const result = await classify(r, f, cfg, {
-			upstream: scriptedUpstream(() => Promise.resolve({ text: "definitely not a tier", costUsd: 0 })),
+			upstream: scriptedUpstream(() => Promise.resolve({ text: "definitely not a tier", costUsd: 0, toolCalls: [] })),
 			ledger: null,
 			catalog: null,
 		});
@@ -384,7 +385,7 @@ describe("classify", () => {
 		const r = req(messages);
 		const f = extractFeatures(r, 5000);
 		const result = await classify(r, f, cfg, {
-			upstream: scriptedUpstream(() => Promise.resolve({ text: "hard", costUsd: 0.00001 })),
+			upstream: scriptedUpstream(() => Promise.resolve({ text: "hard", costUsd: 0.00001, toolCalls: [] })),
 			ledger: null,
 			catalog: null,
 		});

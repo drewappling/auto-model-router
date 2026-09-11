@@ -15,6 +15,8 @@ import { applyRequestPolicy, resolveProfile } from "../router/index.ts";
 import { parsePolicyHeader } from "../wire/openai/request.ts";
 import { createDigester } from "./digest.ts";
 import { runEval, type Completer } from "../eval/run.ts";
+import type { ToolSpec } from "../eval/agentic.ts";
+import type { ToolCall } from "../upstream/types.ts";
 import type { QualityAxis } from "../config/types.ts";
 import { fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../eval/calibrate.ts";
 import { makeJudge } from "../eval/judge.ts";
@@ -728,7 +730,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					// throwing completion in as grade 0 — which would score a provider's throttle as
 					// the model being wrong. Retry with backoff, and keep the default concurrency
 					// low enough that the throttle is rarely reached in the first place.
-					const complete: Completer = async (target, messages) => {
+					const attemptComplete = async (payload: Record<string, unknown>): Promise<{ text: string; toolCalls: ToolCall[] }> => {
 						let last: unknown = null;
 						for (let attempt = 0; attempt < 4; attempt++) {
 							if (attempt > 0) {
@@ -737,19 +739,27 @@ export function startServer(cfg: RouterConfig): StartedServer {
 								await promise;
 							}
 							try {
-								const out = await upstream.complete({ model: target, stream: false, temperature: 0, max_tokens: 1024, messages }, AbortSignal.timeout(120_000));
-								return out.text;
+								const out = await upstream.complete(payload, AbortSignal.timeout(120_000));
+								return { text: out.text, toolCalls: out.toolCalls };
 							} catch (err) {
 								last = err;
 							}
 						}
 						throw last instanceof Error ? last : new Error(String(last));
 					};
+					const complete: Completer = async (target, messages) => (await attemptComplete({ model: target, stream: false, temperature: 0, max_tokens: 1024, messages })).text;
+					// The agentic loop needs the CALLS themselves, not prose describing them.
+					const toolComplete = async (target: string, messages: Record<string, unknown>[], tools: ToolSpec[]): Promise<{ text: string; toolCalls: ToolCall[] }> => {
+						const payload: Record<string, unknown> = { model: target, stream: false, temperature: 0, max_tokens: 1024, messages };
+						if (tools.length > 0) payload.tools = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+						return attemptComplete(payload);
+					};
 					const judgeSlug = typeof body?.judge === "string" && body.judge !== "" ? body.judge : "";
 					const asked = typeof body?.concurrency === "number" ? Math.floor(body.concurrency) : 2;
 					const results = await runEval({
 						slugs: [slug, ...anchors],
 						complete,
+						toolComplete,
 						concurrency: Math.min(Math.max(1, asked), 8),
 						...(judgeSlug === "" ? {} : { judge: makeJudge(complete, judgeSlug) }),
 					});

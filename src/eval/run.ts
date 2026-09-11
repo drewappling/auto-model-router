@@ -9,6 +9,8 @@
 import type { QualityAxis } from "../config/types.ts";
 import type { Judge } from "./judge.ts";
 import { EVAL_TASKS, JUDGED_TASKS, type EvalTask, type JudgedTask } from "./tasks.ts";
+import { AGENTIC_SCENARIOS, runScenario, type Scenario, type ToolSpec } from "./agentic.ts";
+import type { ToolCall } from "../upstream/types.ts";
 
 export interface ChatMessage {
 	role: "system" | "user" | "assistant";
@@ -51,6 +53,13 @@ export interface RunEvalArgs {
 	concurrency?: number;
 	/** Called as each model finishes, for progress logging. */
 	onProgress?: (result: EvalResult, done: number, total: number) => void;
+	/**
+	 * A tool-capable completer. Absent ⇒ the agentic SCENARIOS are skipped and the axis falls
+	 * back to the text tasks, which only ever measured whether a model can format JSON.
+	 */
+	toolComplete?: (slug: string, messages: Record<string, unknown>[], tools: ToolSpec[]) => Promise<{ text: string; toolCalls: ToolCall[] }>;
+	/** Agentic tool-loop scenarios. Defaults to the built-in set when `toolComplete` is given. */
+	scenarios?: readonly Scenario[];
 }
 
 async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> {
@@ -91,7 +100,22 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 						}
 					}),
 				);
-	for (const o of [...objective, ...judgedOutcomes]) {
+	// Agentic scenarios: a real tool loop, scored on the trajectory as well as the answer.
+	// Run sequentially — each is several turns, and firing them all at once is what made a
+	// provider's throttle look like a model getting things wrong.
+	const scenarioOutcomes: Outcome[] = [];
+	if (args.toolComplete !== undefined) {
+		const scenarios = args.scenarios ?? AGENTIC_SCENARIOS;
+		for (const scenario of scenarios) {
+			try {
+				const run = await runScenario(scenario, (messages, tools) => args.toolComplete!(slug, messages, tools));
+				scenarioOutcomes.push({ axis: "agentic", grade: scenario.grade(run), ok: true });
+			} catch {
+				scenarioOutcomes.push({ axis: "agentic", grade: 0, ok: false });
+			}
+		}
+	}
+	for (const o of [...objective, ...judgedOutcomes, ...scenarioOutcomes]) {
 		if (!o.ok) {
 			errors += 1;
 			continue;

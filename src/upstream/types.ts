@@ -59,14 +59,32 @@ export interface Dispatch {
 	generationId(): Promise<string | null>;
 }
 
+/** One tool call a model asked for, provider-shape normalised. */
+export interface ToolCall {
+	id: string;
+	name: string;
+	/** Parsed arguments; `{}` when the model sent malformed JSON (which is itself a finding). */
+	args: Record<string, unknown>;
+	/** True when `arguments` did not parse — graded as a schema failure, not a refusal. */
+	malformed: boolean;
+}
+
+export interface CompletionResult {
+	text: string;
+	costUsd: number | null;
+	toolCalls: ToolCall[];
+}
+
 export interface UpstreamClient {
 	/** Streaming chat completion. Always requests `stream: true` upstream. */
 	dispatch(opts: DispatchOptions): Promise<Dispatch>;
 	/**
-	 * Non-streaming single-shot, used by the classifier adjudicator.
-	 * Returns assistant text and the reported cost.
+	 * Non-streaming single-shot, used by the classifier adjudicator and the eval
+	 * harness. Returns assistant text, the reported cost, and any tool calls the
+	 * model asked for — the eval suite drives a real tool loop, which needs the
+	 * calls themselves and not a text description of them.
 	 */
-	complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }>;
+	complete(body: Record<string, unknown>, signal: AbortSignal): Promise<CompletionResult>;
 	/** Raw catalog fetch. Returns the parsed `data` array untouched. */
 	fetchModels(signal?: AbortSignal): Promise<unknown[]>;
 	/**

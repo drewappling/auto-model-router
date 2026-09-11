@@ -17,6 +17,8 @@
  */
 
 import type { RouterConfig, UpstreamEntry } from "../config/types.ts";
+import type { CompletionResult } from "./types.ts";
+import { openaiToolCalls } from "./toolcalls.ts";
 import { createLogger } from "../util/log.ts";
 import type { StreamEvent, UpstreamChunk } from "../wire/types.ts";
 import type { FetchLike, OllamaAvailability } from "./ollama.ts";
@@ -245,15 +247,16 @@ export function createCompatClient(cfg: RouterConfig, id: string, fetchImpl: Fet
 			return { chunks, generationId: () => idPromise };
 		},
 
-		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }> {
+		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<CompletionResult> {
 			const e = entry();
 			const res = await post(e, toCompatBody(id, { ...body, stream: false }), signal);
 			if (!res.ok) throw await httpError(res);
 			const json = asRec(await res.json());
 			const choices = json?.choices;
 			const choice0 = Array.isArray(choices) && choices.length > 0 ? asRec(choices[0]) : null;
-			const content = (choice0 ? asRec(choice0.message) : null)?.content;
-			return { text: typeof content === "string" ? content : "", costUsd: null };
+			const message = choice0 ? asRec(choice0.message) : null;
+			const content = message?.content;
+			return { text: typeof content === "string" ? content : "", costUsd: null, toolCalls: openaiToolCalls(message) };
 		},
 
 		// The catalog is static configuration; nothing to fetch.

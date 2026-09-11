@@ -17,6 +17,8 @@
  */
 
 import type { RouterConfig, UpstreamEntry, UpstreamModelConfig } from "../config/types.ts";
+import type { CompletionResult } from "./types.ts";
+import { anthropicToolCalls } from "./toolcalls.ts";
 import type { UsageCounts } from "../cost/types.ts";
 import { createLogger } from "../util/log.ts";
 import type { FinishReason, StreamEvent, UpstreamChunk } from "../wire/types.ts";
@@ -475,7 +477,7 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 			return { chunks, generationId: () => idPromise };
 		},
 
-		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }> {
+		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<CompletionResult> {
 			const e = entry();
 			const { rendered } = render(e, { ...body, stream: false });
 			const res = await post(e, rendered, signal);
@@ -483,7 +485,7 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 			const json = asRec(await res.json());
 			const content = Array.isArray(json?.content) ? json.content : [];
 			const text = content.map((b) => (asRec(b)?.type === "text" && typeof asRec(b)?.text === "string" ? (asRec(b)!.text as string) : "")).join("");
-			return { text, costUsd: null };
+			return { text, costUsd: null, toolCalls: anthropicToolCalls(json) };
 		},
 
 		async fetchModels(): Promise<unknown[]> {

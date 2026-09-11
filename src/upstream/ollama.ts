@@ -26,6 +26,8 @@
  */
 
 import type { RouterConfig } from "../config/types.ts";
+import type { CompletionResult } from "./types.ts";
+import { openaiToolCalls } from "./toolcalls.ts";
 import { OLLAMA_SLUG_PREFIX, ollamaModelId } from "../catalog/ollama-catalog.ts";
 import { createLogger } from "../util/log.ts";
 import type { StreamEvent, UpstreamChunk } from "../wire/types.ts";
@@ -236,7 +238,7 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 			return { chunks, generationId: () => idPromise };
 		},
 
-		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; costUsd: number | null }> {
+		async complete(body: Record<string, unknown>, signal: AbortSignal): Promise<CompletionResult> {
 			let res: Response;
 			try {
 				res = await fetchImpl(`${baseUrl()}/chat/completions`, {
@@ -254,7 +256,7 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 			const choice0 = Array.isArray(choices) && choices.length > 0 ? asRec(choices[0]) : null;
 			const message = choice0 ? asRec(choice0.message) : null;
 			const content = message?.content;
-			return { text: typeof content === "string" ? content : "", costUsd: null };
+			return { text: typeof content === "string" ? content : "", costUsd: null, toolCalls: openaiToolCalls(message) };
 		},
 
 		async fetchModels(signal?: AbortSignal): Promise<unknown[]> {

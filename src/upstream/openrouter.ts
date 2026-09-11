@@ -7,6 +7,8 @@
  */
 
 import type { RouterConfig } from "../config/types.ts";
+import type { CompletionResult } from "./types.ts";
+import { openaiToolCalls } from "./toolcalls.ts";
 import { createLogger } from "../util/log.ts";
 import type { UpstreamChunk } from "../wire/types.ts";
 import { parseSse } from "./sse-parse.ts";
@@ -185,7 +187,7 @@ export function createOpenRouterClient(cfg: RouterConfig): UpstreamClient {
 		async complete(
 			body: Record<string, unknown>,
 			signal: AbortSignal,
-		): Promise<{ text: string; costUsd: number | null }> {
+		): Promise<CompletionResult> {
 			// Single attempt by design: this feeds the classifier adjudicator,
 			// where a retry would double adjudication cost on ambiguous turns.
 			let res: Response;
@@ -210,6 +212,7 @@ export function createOpenRouterClient(cfg: RouterConfig): UpstreamClient {
 			return {
 				text: typeof content === "string" ? content : "",
 				costUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+				toolCalls: openaiToolCalls(message),
 			};
 		},
 
