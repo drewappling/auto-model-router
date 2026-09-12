@@ -4,7 +4,7 @@
  * reconfigurable, so those settings can change while the router runs.
  */
 
-import type { Database } from "bun:sqlite";
+import type { SqlDb } from "../util/sql.ts";
 
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
@@ -35,7 +35,7 @@ export interface ReloadableContextBridge extends ContextBridge {
  * restart. The block store is the database, not the bridge, so a rebuild keeps
  * every pinned block and session binding.
  */
-export function createBridgeFromConfig(cfg: RouterConfig, db: Database): ReloadableContextBridge {
+export function createBridgeFromConfig(cfg: RouterConfig, db: SqlDb): ReloadableContextBridge {
 	let inner = buildBridge(cfg, db);
 	return {
 		get enabled() {
@@ -58,7 +58,7 @@ export function createBridgeFromConfig(cfg: RouterConfig, db: Database): Reloada
 	};
 }
 
-function buildBridge(cfg: RouterConfig, db: Database): ContextBridge {
+function buildBridge(cfg: RouterConfig, db: SqlDb): ContextBridge {
 	const c = cfg.context;
 	if (!c.enabled || c.baseUrl === "" || c.token === "") return createDisabledBridge();
 	const log = createLogger(cfg.logLevel);

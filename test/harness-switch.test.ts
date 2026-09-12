@@ -11,20 +11,20 @@ import { decideSwitch, nativeModelFor, parseSwitchPolicy, type SwitchPolicy } fr
  */
 
 describe("advise", () => {
-	test("classifies a prompt without a ledger or dispatch and reports the shape the extension reads", () => {
-		const a = advise(DEFAULT_CONFIG, null, { ompSessionId: "s", harnessId: "", text: "Redesign the routing pipeline so escalation and failover share one retry loop; consider cache costs and write the migration plan." });
+	test("classifies a prompt without a ledger or dispatch and reports the shape the extension reads", async () => {
+		const a = await advise(DEFAULT_CONFIG, null, { ompSessionId: "s", harnessId: "", text: "Redesign the routing pipeline so escalation and failover share one retry loop; consider cache costs and write the migration plan." });
 		expect(TIER_ORDER).toContain(a.tier);
 		expect(a.confidence).toBeGreaterThanOrEqual(0);
 		expect(a.confidence).toBeLessThanOrEqual(1);
 		expect(a.reasons.length).toBeGreaterThan(0);
 		expect(a.lastTier).toBeNull();
-		const terse = advise(DEFAULT_CONFIG, null, { ompSessionId: "", harnessId: "", text: "ok" });
+		const terse = await advise(DEFAULT_CONFIG, null, { ompSessionId: "", harnessId: "", text: "ok" });
 		expect(TIER_ORDER.indexOf(terse.tier)).toBeLessThanOrEqual(TIER_ORDER.indexOf(a.tier));
 	});
 });
 
 describe("switch policy", () => {
-	test("parses defensively and maps a tier to the nearest configured tier at or below it", () => {
+	test("parses defensively and maps a tier to the nearest configured tier at or below it", async () => {
 		expect(parseSwitchPolicy(null).enabled).toBe(false);
 		const p = parseSwitchPolicy({ enabled: true, models: { moderate: "anthropic/claude-sonnet-5", hard: "anthropic/claude-opus-4-8", simple: "no-slash" }, minConfidence: 0.5 });
 		expect(p.models).toEqual({ moderate: "anthropic/claude-sonnet-5", hard: "anthropic/claude-opus-4-8" });
@@ -39,7 +39,7 @@ describe("decideSwitch", () => {
 	const policy: SwitchPolicy = { enabled: true, models: { hard: "anthropic/claude-opus-4-8" }, minConfidence: 0.6 };
 	const router = "auto-model-router/auto";
 
-	test("moves up from the router for confident hard work, back for lighter work, and never past a manual choice", () => {
+	test("moves up from the router for confident hard work, back for lighter work, and never past a manual choice", async () => {
 		const up = decideSwitch({ policy, advised: { tier: "hard", confidence: 0.8 }, active: router, activeIsRouter: true, switchedTo: null, returnTo: null });
 		expect(up).toMatchObject({ action: "up", model: "anthropic/claude-opus-4-8" });
 		// Low confidence: stay.

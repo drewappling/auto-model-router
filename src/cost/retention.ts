@@ -12,16 +12,16 @@
  * than a detail of the caller.
  */
 
-import type { Ledger, PruneResult } from "./types.ts";
+import type { AsyncLedger, PruneResult } from "./types.ts";
 
 /** Floor between two scheduled prunes. A retention window is measured in days; an hour is fine grain for it. */
 export const RETENTION_INTERVAL_MS = 3_600_000;
 
 export interface RetentionRunner {
 	/** Prunes when the interval has elapsed since the last run; null when it was skipped. */
-	maybeRun(nowMs?: number): PruneResult | null;
+	maybeRun(nowMs?: number): Promise<PruneResult | null>;
 	/** Prunes regardless (the route), and satisfies the schedule for the next hour. */
-	runNow(nowMs?: number): PruneResult;
+	runNow(nowMs?: number): Promise<PruneResult>;
 	/** The configured window this runner would apply, for a caller that reports it. */
 	retentionDays(): number | null;
 }
@@ -34,24 +34,24 @@ export interface RetentionRunner {
  * and so lowering it takes effect on the next tick rather than the next boot.
  */
 export function createRetentionRunner(opts: {
-	ledger: Ledger;
+	ledger: AsyncLedger;
 	retentionDays: () => number | null;
 	intervalMs?: number;
 }): RetentionRunner {
 	const intervalMs = opts.intervalMs ?? RETENTION_INTERVAL_MS;
 	// Never run: the first call is always due, so a lowered window applies at boot.
 	let lastRunMs: number | null = null;
-	const run = (nowMs: number): PruneResult => {
+	const run = async (nowMs: number): Promise<PruneResult> => {
 		lastRunMs = nowMs;
-		return opts.ledger.prune?.(opts.retentionDays(), nowMs) ?? { deleted: 0, oldestKeptMs: null };
+		return await opts.ledger.prune(opts.retentionDays(), nowMs);
 	};
 	return {
-		maybeRun(nowMs = Date.now()) {
+		async maybeRun(nowMs = Date.now()) {
 			if (lastRunMs !== null && nowMs - lastRunMs < intervalMs) return null;
-			return run(nowMs);
+			return await run(nowMs);
 		},
-		runNow(nowMs = Date.now()) {
-			return run(nowMs);
+		async runNow(nowMs = Date.now()) {
+			return await run(nowMs);
 		},
 		retentionDays: opts.retentionDays,
 	};

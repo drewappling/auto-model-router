@@ -8,8 +8,10 @@
  * usage-priced figure the orchestrator computed, else the forecast.
  */
 
-import type { Database } from "bun:sqlite";
-import { createFeedbackStore, type FeedbackCounts } from "./feedback.ts";
+// `num` here is the local thousands formatter for the rendered report, so the
+// coercion helpers are aliased rather than renamed at 40 call sites.
+import { num as asNum, numOrNull as asNumOrNull, type SqlDb } from "../util/sql.ts";
+import type { FeedbackCounts } from "./feedback.ts";
 
 export interface ReportTotals {
 	dispatches: number;
@@ -142,9 +144,20 @@ export interface AnatomyShare {
 }
 
 const USD = "COALESCE(reported_usd, predicted_usd)";
-const PT = "json_extract(usage, '$.promptTokens')";
-const CT = "json_extract(usage, '$.cachedTokens')";
-const COMP = "json_extract(usage, '$.completionTokens')";
+
+/**
+ * The usage members this report sums, spelled for the engine in front of it.
+ * `json_extract` against `->>` is the whole difference, and getting the
+ * BOOLEAN one wrong does not fail — it silently misclassifies every row.
+ */
+function fragments(db: SqlDb): { PT: string; CT: string; COMP: string; EST: string } {
+	return {
+		PT: db.jsonNum("usage", "promptTokens"),
+		CT: db.jsonNum("usage", "cachedTokens"),
+		COMP: db.jsonNum("usage", "completionTokens"),
+		EST: `${db.jsonBool("usage", "cachedEstimated")} = 1`,
+	};
+}
 /** Named upstream ids the ledger's provider derivation knows; set by createProviders from the live config. */
 let knownUpstreamIds: () => readonly string[] = () => [];
 /** Ids, or a getter read live so a hot-reloaded list applies; an embedder (the team edition) calls this too, since the registry is per process. */
@@ -170,11 +183,12 @@ function providerCase(): string {
 	return `CASE WHEN slug LIKE 'ollama/%' THEN 'ollama' ${knownUpstreamIds().map((id) => `WHEN slug LIKE '${id}/%' THEN '${id}'`).join(" ")} ELSE 'openrouter' END`;
 }
 const STREAMED = "ttft_ms IS NOT NULL AND ttft_ms > 0 AND error IS NULL";
-const EST = "json_extract(usage, '$.cachedEstimated') = 1";
 /** Rows a forecast can be judged on: a reported cost, a prediction, clean and kept, not a side call. */
 const FORECASTABLE = "reported_usd > 0 AND predicted_usd IS NOT NULL AND wasted = 0 AND error IS NULL AND requested_model <> 'digest'";
 
-const ROW_SELECT = `
+function rowSelect(db: SqlDb): string {
+	const { PT, CT, COMP, EST } = fragments(db);
+	return `
 	COUNT(*) AS dispatches,
 	COALESCE(SUM(${USD}), 0) AS spend,
 	COALESCE(SUM(${PT}), 0) AS prompt_tokens,
@@ -186,35 +200,44 @@ const ROW_SELECT = `
 	SUM(CASE WHEN ${STREAMED} AND latency_ms > ttft_ms AND ${COMP} > 0 THEN latency_ms - ttft_ms END) AS elapsed_ms,
 	SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 	SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors`;
+}
 
 interface RawRow {
 	key: string;
-	dispatches: number;
-	spend: number;
-	prompt_tokens: number;
-	cached_tokens: number;
-	estimated_rows: number | null;
-	avg_prompt_tokens: number;
-	ttft_ms: number | null;
-	ctok_sum: number | null;
-	elapsed_ms: number | null;
-	escalations: number;
-	errors: number;
+	dispatches: unknown;
+	spend: unknown;
+	prompt_tokens: unknown;
+	cached_tokens: unknown;
+	estimated_rows: unknown;
+	avg_prompt_tokens: unknown;
+	ttft_ms: unknown;
+	ctok_sum: unknown;
+	elapsed_ms: unknown;
+	escalations: unknown;
+	errors: unknown;
 }
 
-function toRow(r: RawRow, windowSpend: number): ReportRow {
+function toRow(raw: RawRow, windowSpend: number): ReportRow {
+	// Every numeric field goes through `num`: Postgres returns COUNT(*) and
+	// BIGINT sums as strings, and arithmetic on those is wrong rather than loud.
+	const spend = asNum(raw.spend);
+	const promptTokens = asNum(raw.prompt_tokens);
+	const cachedTokens = asNum(raw.cached_tokens);
+	const ttftMs = asNumOrNull(raw.ttft_ms);
+	const elapsedMs = asNumOrNull(raw.elapsed_ms);
+	const ctokSum = asNumOrNull(raw.ctok_sum);
 	return {
-		key: r.key,
-		dispatches: r.dispatches,
-		spendUsd: r.spend,
-		share: windowSpend > 0 ? r.spend / windowSpend : 0,
-		cacheHitRate: r.prompt_tokens > 0 ? r.cached_tokens / r.prompt_tokens : 0,
-		cacheEstimated: (r.estimated_rows ?? 0) > 0,
-		avgPromptTokens: Math.round(r.avg_prompt_tokens),
-		avgTtftMs: r.ttft_ms === null ? null : Math.round(r.ttft_ms),
-		tokensPerSec: r.elapsed_ms !== null && r.elapsed_ms > 0 && r.ctok_sum !== null ? (r.ctok_sum * 1000) / r.elapsed_ms : null,
-		escalations: r.escalations,
-		errors: r.errors,
+		key: raw.key,
+		dispatches: asNum(raw.dispatches),
+		spendUsd: spend,
+		share: windowSpend > 0 ? spend / windowSpend : 0,
+		cacheHitRate: promptTokens > 0 ? cachedTokens / promptTokens : 0,
+		cacheEstimated: asNum(raw.estimated_rows) > 0,
+		avgPromptTokens: Math.round(asNum(raw.avg_prompt_tokens)),
+		avgTtftMs: ttftMs === null ? null : Math.round(ttftMs),
+		tokensPerSec: elapsedMs !== null && elapsedMs > 0 && ctokSum !== null ? (ctokSum * 1000) / elapsedMs : null,
+		escalations: asNum(raw.escalations),
+		errors: asNum(raw.errors),
 	};
 }
 
@@ -229,14 +252,44 @@ export function harnessFilter(harnessId: string, param = "$harness"): { sql: str
 }
 
 /**
+ * Verdict counts per model, scoped to the judging harness.
+ *
+ * Read here rather than through `createFeedbackStore`, which still owns the
+ * WRITE path on a bun:sqlite handle: the report only ever counted, and a
+ * second engine would otherwise need the whole store ported to read two
+ * columns. A ledger nobody has judged has no table at all.
+ */
+async function feedbackCounts(db: SqlDb, sinceMs: number, harnessId: string): Promise<Map<string, FeedbackCounts>> {
+	const out = new Map<string, FeedbackCounts>();
+	if (!(await db.tableExists("feedback"))) return out;
+	const hf = harnessFilter(harnessId, "$fh");
+	const where = ["f.created_at_ms >= $since", ...hf.sql.map((s) => s.replace(/^harness_id/, "l.harness_id"))].join(" AND ");
+	const rows = await db.query<{ slug: string; good: unknown; bad: unknown }>(
+		`SELECT f.slug,
+			COALESCE(SUM(CASE WHEN f.verdict = 'good' THEN 1 ELSE 0 END), 0) AS good,
+			COALESCE(SUM(CASE WHEN f.verdict = 'bad' THEN 1 ELSE 0 END), 0) AS bad
+		 FROM feedback f LEFT JOIN ledger l ON l.id = f.ledger_id
+		 WHERE ${where} GROUP BY f.slug`,
+		{ $since: sinceMs, ...hf.bind },
+	);
+	for (const row of rows) out.set(row.slug, { good: asNum(row.good), bad: asNum(row.bad) });
+	return out;
+}
+
+/**
  * Builds the report for the last `windowDays`. `harnessId` narrows to one
  * harness (the `X-Omp-Harness` header) or a comma-separated set of them (a
  * team edition group); empty means everything.
  */
-export function buildUsageReport(
-	db: Database,
+export async function buildUsageReport(
+	db: SqlDb,
 	opts: { windowDays: number; harnessId?: string; nowMs?: number; baselines?: readonly BaselinePrice[]; /** Exclusive upper bound; default open-ended. */ untilMs?: number },
-): UsageReport {
+): Promise<UsageReport> {
+	const { PT, CT, COMP, EST } = fragments(db);
+	const ROW_SELECT = rowSelect(db);
+	// A JSON BOOLEAN, like usage.cachedEstimated: the engines disagree on both
+	// the accessor and the value's type.
+	const subagent = `${db.jsonBool("features", "isSubagent")} = 1`;
 	const nowMs = opts.nowMs ?? Date.now();
 	const windowDays = Math.max(1, opts.windowDays);
 	const sinceMs = nowMs - windowDays * 86_400_000;
@@ -246,17 +299,16 @@ export function buildUsageReport(
 	const where = ["created_at_ms >= $since", ...(untilMs === undefined ? [] : ["created_at_ms < $until"]), ...hf.sql].join(" AND ");
 	const bind = { $since: sinceMs, ...(untilMs === undefined ? {} : { $until: untilMs }), ...hf.bind };
 
-	const t = db
-		.query(
-			`SELECT COUNT(*) AS dispatches,
+	const t = (await db.one<Record<string, unknown>>(
+		`SELECT COUNT(*) AS dispatches,
 				COUNT(DISTINCT conversation_key) AS conversations,
 				COALESCE(SUM(${USD}), 0) AS spend,
 				COALESCE(SUM(${PT}), 0) AS prompt_tokens,
 				COALESCE(SUM(${CT}), 0) AS cached_tokens,
 				COALESCE(SUM(${COMP}), 0) AS completion_tokens,
 				SUM(CASE WHEN ${EST} THEN 1 ELSE 0 END) AS estimated_rows,
-				SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN 1 ELSE 0 END) AS subagent_rows,
-				COALESCE(SUM(CASE WHEN json_extract(features, '$.isSubagent') = 1 THEN ${USD} ELSE 0 END), 0) AS subagent_spend,
+				SUM(CASE WHEN ${subagent} THEN 1 ELSE 0 END) AS subagent_rows,
+				COALESCE(SUM(CASE WHEN ${subagent} THEN ${USD} ELSE 0 END), 0) AS subagent_spend,
 				SUM(CASE WHEN requested_model = 'digest' THEN 1 ELSE 0 END) AS digests,
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${USD} ELSE 0 END), 0) AS digest_spend,
 				COALESCE(SUM(CASE WHEN requested_model = 'digest' THEN ${PT} ELSE 0 END), 0) AS digest_input,
@@ -267,42 +319,22 @@ export function buildUsageReport(
 				COALESCE(SUM(CASE WHEN ${FORECASTABLE} THEN ABS(predicted_usd - reported_usd) / reported_usd END), 0) AS fc_err,
 				SUM(CASE WHEN ${FORECASTABLE} AND predicted_usd > reported_usd THEN 1 ELSE 0 END) AS fc_over,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
-				SUM(CASE WHEN instr(reasons, 'failover:') > 0 THEN 1 ELSE 0 END) AS failovers,
+				SUM(CASE WHEN ${db.contains("reasons", "'failover:'")} THEN 1 ELSE 0 END) AS failovers,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
 				SUM(CASE WHEN error = 'request aborted' THEN 1 ELSE 0 END) AS aborted
 			 FROM ledger WHERE ${where}`,
-		)
-		.get(bind) as {
-		dispatches: number;
-		conversations: number;
-		spend: number;
-		prompt_tokens: number;
-		cached_tokens: number;
-		completion_tokens: number;
-		estimated_rows: number | null;
-		subagent_rows: number | null;
-		subagent_spend: number;
-		digests: number | null;
-		digest_spend: number;
-		digest_input: number;
-		digest_reruns: number | null;
-		redactions: number;
-		redacted_rows: number | null;
-		fc_n: number | null;
-		fc_err: number;
-		fc_over: number | null;
-		escalations: number | null;
-		failovers: number | null;
-		errors: number | null;
-		aborted: number | null;
+		bind,
+	)) as unknown as {
+		[key: string]: unknown;
 	};
 
 	// Model switches: consecutive non-wasted rows of one conversation on
 	// different slugs. Computed in JS over a slim projection; the window is
 	// bounded, and SQLite window functions would make the query less portable.
-	const seq = db
-		.query(`SELECT conversation_key AS ck, slug FROM ledger WHERE ${where} AND wasted = 0 ORDER BY conversation_key, created_at_ms`)
-		.all(bind) as { ck: string; slug: string }[];
+	const seq = await db.query<{ ck: string; slug: string }>(
+		`SELECT conversation_key AS ck, slug FROM ledger WHERE ${where} AND wasted = 0 ORDER BY conversation_key, created_at_ms`,
+		bind,
+	);
 	let switches = 0;
 	for (let i = 1; i < seq.length; i++) {
 		const a = seq[i - 1]!;
@@ -310,24 +342,31 @@ export function buildUsageReport(
 		if (a.ck === b.ck && a.slug !== b.slug) switches++;
 	}
 
-	const windowSpend = t.spend;
+	const windowSpend = asNum(t.spend);
+	// GROUP BY repeats the expression rather than the alias: Postgres does not
+	// accept a select alias there.
 	const providers = (
-		db.query(`SELECT ${providerCase()} AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY key ORDER BY spend DESC`).all(bind) as RawRow[]
+		await db.query<RawRow>(
+			`SELECT ${providerCase()} AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY ${providerCase()} ORDER BY spend DESC`,
+			bind,
+		)
 	).map((r) => toRow(r, windowSpend));
 
-	const modelRows = db
-		.query(`SELECT COALESCE(served_slug, slug) AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY key ORDER BY spend DESC`)
-		.all(bind) as RawRow[];
-	const tierMix = db
-		.query(`SELECT COALESCE(served_slug, slug) AS key, tier, COUNT(*) AS n FROM ledger WHERE ${where} GROUP BY key, tier`)
-		.all(bind) as { key: string; tier: string; n: number }[];
+	const modelRows = await db.query<RawRow>(
+		`SELECT COALESCE(served_slug, slug) AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY COALESCE(served_slug, slug) ORDER BY spend DESC`,
+		bind,
+	);
+	const tierMix = await db.query<{ key: string; tier: string; n: unknown }>(
+		`SELECT COALESCE(served_slug, slug) AS key, tier, COUNT(*) AS n FROM ledger WHERE ${where} GROUP BY COALESCE(served_slug, slug), tier`,
+		bind,
+	);
 	const mixByModel = new Map<string, Record<string, number>>();
 	for (const m of tierMix) {
 		const rec = mixByModel.get(m.key) ?? {};
-		rec[m.tier] = m.n;
+		rec[m.tier] = asNum(m.n);
 		mixByModel.set(m.key, rec);
 	}
-	const feedbackBySlug = createFeedbackStore(db).countsBySlug(sinceMs, harnessId);
+	const feedbackBySlug = await feedbackCounts(db, sinceMs, harnessId);
 	const models: ModelRow[] = modelRows.map((r) => ({
 		...toRow(r, windowSpend),
 		// `providerOfSlug`, not a two-way guess: a named upstream's namespace is a provider
@@ -339,41 +378,44 @@ export function buildUsageReport(
 	}));
 
 	const tiers = (
-		db.query(`SELECT tier AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY key ORDER BY spend DESC`).all(bind) as RawRow[]
+		await db.query<RawRow>(`SELECT tier AS key, ${ROW_SELECT} FROM ledger WHERE ${where} GROUP BY tier ORDER BY spend DESC`, bind)
 	).map((r) => toRow(r, windowSpend));
 
+	const dayExpr = db.utcDay("created_at_ms");
 	const days = (
-		db
-			.query(
-				`SELECT date(created_at_ms / 1000, 'unixepoch') AS day, COUNT(*) AS dispatches, COALESCE(SUM(${USD}), 0) AS spend,
+		await db.query<{ day: string; dispatches: unknown; spend: unknown; prompt_tokens: unknown; cached_tokens: unknown }>(
+			`SELECT ${dayExpr} AS day, COUNT(*) AS dispatches, COALESCE(SUM(${USD}), 0) AS spend,
 					COALESCE(SUM(${PT}), 0) AS prompt_tokens, COALESCE(SUM(${CT}), 0) AS cached_tokens
-				 FROM ledger WHERE ${where} GROUP BY day ORDER BY day`,
-			)
-			.all(bind) as { day: string; dispatches: number; spend: number; prompt_tokens: number; cached_tokens: number }[]
-	).map((d) => ({
-		day: d.day,
-		dispatches: d.dispatches,
-		spendUsd: d.spend,
-		cacheHitRate: d.prompt_tokens > 0 ? d.cached_tokens / d.prompt_tokens : 0,
-	}));
-
-	const an = db
-		.query(
-			`SELECT COUNT(*) AS rows, AVG(json_extract(features, '$.anatomy.messages')) AS msgs,
-				AVG(json_extract(features, '$.anatomy.systemBytes')) AS sys, AVG(json_extract(features, '$.anatomy.userBytes')) AS usr,
-				AVG(json_extract(features, '$.anatomy.assistantBytes')) AS asst, AVG(json_extract(features, '$.anatomy.toolBytes')) AS tool,
-				AVG(json_extract(features, '$.toolSchemaBytes')) AS schemas,
-				AVG(json_extract(features, '$.anatomy.olderHalfBytes')) AS older, AVG(json_extract(features, '$.anatomy.staleToolBytes')) AS stale
-			 FROM ledger WHERE ${where} AND json_extract(features, '$.anatomy.messages') IS NOT NULL`,
+				 FROM ledger WHERE ${where} GROUP BY ${dayExpr} ORDER BY 1`,
+			bind,
 		)
-		.get(bind) as { rows: number; msgs: number | null; sys: number | null; usr: number | null; asst: number | null; tool: number | null; schemas: number | null; older: number | null; stale: number | null };
+	).map((d) => {
+		const promptTokens = asNum(d.prompt_tokens);
+		return {
+			day: d.day,
+			dispatches: asNum(d.dispatches),
+			spendUsd: asNum(d.spend),
+			cacheHitRate: promptTokens > 0 ? asNum(d.cached_tokens) / promptTokens : 0,
+		};
+	});
+
+	const anat = (key: string): string => db.jsonPathNum("features", ["anatomy", key]);
+	const an = (await db.one<Record<string, unknown>>(
+		`SELECT COUNT(*) AS rows, AVG(${anat("messages")}) AS msgs,
+				AVG(${anat("systemBytes")}) AS sys, AVG(${anat("userBytes")}) AS usr,
+				AVG(${anat("assistantBytes")}) AS asst, AVG(${anat("toolBytes")}) AS tool,
+				AVG(${db.jsonNum("features", "toolSchemaBytes")}) AS schemas,
+				AVG(${anat("olderHalfBytes")}) AS older, AVG(${anat("staleToolBytes")}) AS stale
+			 FROM ledger WHERE ${where} AND ${anat("messages")} IS NOT NULL`,
+		bind,
+	)) ?? {};
 	let anatomy: AnatomyShare | null = null;
-	if (an.rows > 0) {
-		const total = (an.sys ?? 0) + (an.usr ?? 0) + (an.asst ?? 0) + (an.tool ?? 0);
-		const share = (v: number | null): number => (total > 0 ? (v ?? 0) / total : 0);
+	if (asNum(an.rows) > 0) {
+		const total = asNum(an.sys) + asNum(an.usr) + asNum(an.asst) + asNum(an.tool);
+		const share = (v: unknown): number => (total > 0 ? asNum(v) / total : 0);
 		anatomy = {
-			rows: an.rows,
-			avgMessages: Math.round(an.msgs ?? 0),
+			rows: asNum(an.rows),
+			avgMessages: Math.round(asNum(an.msgs)),
 			system: share(an.sys),
 			user: share(an.usr),
 			assistant: share(an.asst),
@@ -388,9 +430,9 @@ export function buildUsageReport(
 	// price with the window's own cache hit rate (cached tokens read at the
 	// baseline's cache rate, or full price when it publishes none).
 	const baselines: BaselineRow[] = (opts.baselines ?? []).map((b) => {
-		const fresh = Math.max(0, t.prompt_tokens - t.cached_tokens);
-		const usd = fresh * b.prompt + t.cached_tokens * (b.cacheRead ?? b.prompt) + t.completion_tokens * b.completion;
-		return { slug: b.slug, usd, savedShare: usd > 0 ? 1 - t.spend / usd : 0 };
+		const fresh = Math.max(0, asNum(t.prompt_tokens) - asNum(t.cached_tokens));
+		const usd = fresh * b.prompt + asNum(t.cached_tokens) * (b.cacheRead ?? b.prompt) + asNum(t.completion_tokens) * b.completion;
+		return { slug: b.slug, usd, savedShare: usd > 0 ? 1 - windowSpend / usd : 0 };
 	});
 
 	return {
@@ -399,29 +441,29 @@ export function buildUsageReport(
 		sinceMs,
 		harnessId,
 		totals: {
-			dispatches: t.dispatches,
-			conversations: t.conversations,
-			spendUsd: t.spend,
-			cacheHitRate: t.prompt_tokens > 0 ? t.cached_tokens / t.prompt_tokens : 0,
-			promptTokens: t.prompt_tokens,
-			completionTokens: t.completion_tokens,
-			escalations: t.escalations ?? 0,
-			failovers: t.failovers ?? 0,
-			errors: t.errors ?? 0,
-			aborted: t.aborted ?? 0,
+			dispatches: asNum(t.dispatches),
+			conversations: asNum(t.conversations),
+			spendUsd: windowSpend,
+			cacheHitRate: asNum(t.prompt_tokens) > 0 ? asNum(t.cached_tokens) / asNum(t.prompt_tokens) : 0,
+			promptTokens: asNum(t.prompt_tokens),
+			completionTokens: asNum(t.completion_tokens),
+			escalations: asNum(t.escalations),
+			failovers: asNum(t.failovers),
+			errors: asNum(t.errors),
+			aborted: asNum(t.aborted),
 			modelSwitches: switches,
-			cacheEstimated: (t.estimated_rows ?? 0) > 0,
-			subagentDispatches: t.subagent_rows ?? 0,
-			subagentSpendUsd: t.subagent_spend,
-			digests: t.digests ?? 0,
-			digestSpendUsd: t.digest_spend,
-			digestInputTokens: t.digest_input,
-			digestReruns: t.digest_reruns ?? 0,
-			redactions: t.redactions,
-			redactedTurns: t.redacted_rows ?? 0,
-			forecastSamples: t.fc_n ?? 0,
-			forecastMeanError: (t.fc_n ?? 0) > 0 ? t.fc_err / (t.fc_n ?? 1) : 0,
-			forecastOverShare: (t.fc_n ?? 0) > 0 ? (t.fc_over ?? 0) / (t.fc_n ?? 1) : 0,
+			cacheEstimated: asNum(t.estimated_rows) > 0,
+			subagentDispatches: asNum(t.subagent_rows),
+			subagentSpendUsd: asNum(t.subagent_spend),
+			digests: asNum(t.digests),
+			digestSpendUsd: asNum(t.digest_spend),
+			digestInputTokens: asNum(t.digest_input),
+			digestReruns: asNum(t.digest_reruns),
+			redactions: asNum(t.redactions),
+			redactedTurns: asNum(t.redacted_rows),
+			forecastSamples: asNum(t.fc_n),
+			forecastMeanError: asNum(t.fc_n) > 0 ? asNum(t.fc_err) / asNum(t.fc_n) : 0,
+			forecastOverShare: asNum(t.fc_n) > 0 ? asNum(t.fc_over) / asNum(t.fc_n) : 0,
 		},
 		providers,
 		models,

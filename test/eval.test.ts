@@ -12,26 +12,26 @@ import type { EvalTask, JudgedTask } from "../src/eval/tasks.ts";
 import { openDb } from "../src/util/sqlite.ts";
 
 describe("grade helpers", () => {
-	test("answerScore matches whole reply, last line, or a standalone token", () => {
+	test("answerScore matches whole reply, last line, or a standalone token", async () => {
 		expect(answerScore("9.9", "9.9")).toBe(1);
 		expect(answerScore("The answer is 9.9", "9.9")).toBe(1);
 		expect(answerScore("reasoning...\n9.9", "9.9")).toBe(1);
 		expect(answerScore("19.99", "9.9")).toBe(0); // not a substring match
 		expect(answerScore("", "9.9")).toBe(0);
 	});
-	test("tokenCoverage is the fraction of tokens present", () => {
+	test("tokenCoverage is the fraction of tokens present", async () => {
 		expect(tokenCoverage("return a + b;", ["a + b"])).toBe(1);
 		expect(tokenCoverage("n * 2", ["n", "*", "2"])).toBe(1);
 		expect(tokenCoverage("n plus two", ["n", "*", "2"])).toBeCloseTo(1 / 3);
 	});
-	test("extractJson tolerates fences and prose; jsonField reads a key", () => {
+	test("extractJson tolerates fences and prose; jsonField reads a key", async () => {
 		expect(extractJson('here: {"answer": 8} ok')).toEqual({ answer: 8 });
 		expect(extractJson("```json\n[2,3,5]\n```")).toEqual([2, 3, 5]);
 		expect(extractJson("no json here")).toBeUndefined();
 		expect(jsonField({ tool: "read_file" }, "tool")).toBe("read_file");
 		expect(jsonField([1, 2], "tool")).toBeUndefined();
 	});
-	test("isRefusalOrEmpty flags empties and refusals", () => {
+	test("isRefusalOrEmpty flags empties and refusals", async () => {
 		expect(isRefusalOrEmpty("")).toBe(true);
 		expect(isRefusalOrEmpty("I cannot help with that")).toBe(true);
 		expect(isRefusalOrEmpty("sure, here")).toBe(false);
@@ -39,7 +39,7 @@ describe("grade helpers", () => {
 });
 
 describe("calibration", () => {
-	test("fitAxis is OLS, needs MIN_ANCHORS points and some spread", () => {
+	test("fitAxis is OLS, needs MIN_ANCHORS points and some spread", async () => {
 		const fit = fitAxis([
 			{ raw: 0.2, aa: 40 },
 			{ raw: 0.5, aa: 60 },
@@ -56,7 +56,7 @@ describe("calibration", () => {
 		expect(fitAxis([{ raw: 0.8, aa: 40 }, { raw: 0.5, aa: 60 }, { raw: 0.2, aa: 80 }])).toBeNull();
 	});
 
-	test("pickAnchors spreads over the score range, skips the target and the unscored", () => {
+	test("pickAnchors spreads over the score range, skips the target and the unscored", async () => {
 		const m = (slug: string, coding: number | undefined, supportsTools = true) => ({ slug, quality: coding === undefined ? {} : { coding }, supportsTools });
 		const catalog = [m("a/10", 10), m("a/30", 30), m("a/50", 50), m("a/70", 70), m("a/90", 90), m("a/target", undefined), m("a/notools", 60, false)];
 		const picked = pickAnchors(catalog, "a/target");
@@ -101,7 +101,7 @@ describe("calibration", () => {
 		expect(many!.byComplexity.easy).toBeUndefined();
 	});
 
-	test("the suite spans complexities, and hard items are not all pinned at the ceiling", () => {
+	test("the suite spans complexities, and hard items are not all pinned at the ceiling", async () => {
 		const bands = new Set(EVAL_TASKS.map((t) => t.complexity ?? "easy"));
 		expect(bands.has("easy")).toBe(true);
 		expect(bands.has("hard")).toBe(true);
@@ -128,7 +128,7 @@ describe("calibration", () => {
 		expect(hard.find((t) => t.id === "coding/regex-backtrack")!.grade("XX\nab\nfalse\nx|y\na[b$]c")).toBe(1);
 	});
 
-	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {
+	test("fitCalibration + toLocalFeedScores place a target on the AA scale", async () => {
 		expect(MIN_ANCHORS).toBe(3);
 		const anchors: EvalResult[] = [
 			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {}, axesHard: { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
@@ -150,7 +150,7 @@ describe("calibration", () => {
 		expect(local[0]!.intelligence).toBeUndefined(); // axis had no fit, so not emitted
 	});
 
-	test("calibrating on the hard band beats calibrating on everything", () => {
+	test("calibrating on the hard band beats calibrating on everything", async () => {
 		// Three anchors published 20/50/80 apart. On the FULL suite they all score ~0.97
 		// because easy and moderate pin everyone at the ceiling; on the hard band alone they
 		// separate. Same models, same publishing, different x — and only one of them can fit.
@@ -180,7 +180,7 @@ describe("calibration", () => {
 		expect(pooled).toEqual([]);
 	});
 
-	test("a weak fit is refused, not published", () => {
+	test("a weak fit is refused, not published", async () => {
 		// Points with a real but noisy relationship: computable (r >= MIN_R) yet not worth
 		// acting on. `r` and `n` used to be computed and then thrown away.
 		const noisy = [
@@ -252,7 +252,7 @@ describe("local source integration", () => {
 		};
 	}
 
-	test("local fills only where no stronger source has the axis", () => {
+	test("local fills only where no stronger source has the axis", async () => {
 		const catalog = [raw("z-ai/glm-5.3-flash")];
 		const feeds: FeedScore[] = [
 			{ key: "glm-5-3-flash", creator: "z-ai", source: "artificial_analysis", coding: 61 },
@@ -266,7 +266,7 @@ describe("local source integration", () => {
 		expect(result.sources.artificial_analysis).toBe(1);
 	});
 
-	test("saveLocalScores / loadLocalScores round-trip", () => {
+	test("saveLocalScores / loadLocalScores round-trip", async () => {
 		const db = openDb(":memory:");
 		const scores: FeedScore[] = [{ key: "muse-glimmer-30b", creator: "meta", source: "local", coding: 42, agentic: 39 }];
 		saveLocalScores(db, scores, 123);
@@ -276,7 +276,7 @@ describe("local source integration", () => {
 });
 
 describe("llm judge", () => {
-	test("parseScore takes the last standalone 0-10 and scales to 0-1", () => {
+	test("parseScore takes the last standalone 0-10 and scales to 0-1", async () => {
 		expect(parseScore("8")).toBeCloseTo(0.8, 5);
 		expect(parseScore("Score: 10/10")).toBeCloseTo(1, 5);
 		expect(parseScore("I count 3 issues, so 7")).toBeCloseTo(0.7, 5); // last wins

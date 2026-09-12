@@ -1,15 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import type { AsyncLedger } from "../src/cost/types.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { migrateStore } from "../src/util/schema.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot, CatalogSource } from "../src/catalog/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import type { LedgerEntry } from "../src/cost/types.ts";
 import { createDigester, digestApplies, digestMarker } from "../src/server/digest.ts";
 import type { UpstreamClient } from "../src/upstream/types.ts";
 import { createLogger } from "../src/util/log.ts";
-import { openDb } from "../src/util/sqlite.ts";
 import { digestToast, parsePolicy, shouldSend, textOf } from "../omp-extension/digest-logic.ts";
 
 /**
@@ -37,7 +42,7 @@ function cfgWith(over: Partial<RouterConfig["digest"]> = {}): RouterConfig {
 	return cfg;
 }
 
-function seedSession(ledger: ReturnType<typeof createLedger>, tier: string): void {
+async function seedSession(ledger: AsyncLedger, tier: string): Promise<void> {
 	const e: LedgerEntry = {
 		id: crypto.randomUUID(),
 		createdAtMs: Date.now(),
@@ -72,7 +77,7 @@ function seedSession(ledger: ReturnType<typeof createLedger>, tier: string): voi
 		error: null,
 		promptTokensSaved: 0,
 	};
-	ledger.record(e);
+	await ledger.record(e);
 }
 
 function fakeUpstream(reply: (body: Record<string, unknown>) => string, costUsd: number | null = 0.0004): { upstream: UpstreamClient; calls: Record<string, unknown>[] } {
@@ -95,7 +100,7 @@ const BIG = Array.from({ length: 400 }, (_, i) => `${i + 1}: export const value$
 
 describe("digestApplies", () => {
 	const d = { ...DEFAULT_CONFIG.digest, enabled: true, minBytes: 100, maxBytes: 1000 };
-	test("gates on switch, error, tool, size and session tier", () => {
+	test("gates on switch, error, tool, size and session tier", async () => {
 		expect(digestApplies({ ...d, enabled: false }, "read", 500, false, "hard").ok).toBe(false);
 		expect(digestApplies(d, "read", 500, true, "hard").ok).toBe(false);
 		expect(digestApplies(d, "edit", 500, false, "hard").ok).toBe(false);
@@ -111,9 +116,10 @@ describe("digestApplies", () => {
 describe("createDigester", () => {
 	test("condenses a large read for a hard-tier session on a cheap model and records a ledger row", async () => {
 		const cfg = cfgWith();
-		const db = openDb(":memory:");
-		const ledger = createLedger(db, cfg);
-		seedSession(ledger, "hard");
+		const db = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+		await seedSession(ledger, "hard");
 		const { upstream, calls } = fakeUpstream(() => "Omitted 380 trivial constants.\n1: export const value0 = 0;\n...");
 		const d = createDigester({ cfg, catalog, ledger, upstream, log });
 		const r = await d.digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: { path: "src/values.ts" }, content: BIG, query: "find value0" });
@@ -129,44 +135,47 @@ describe("createDigester", () => {
 		expect(catalog.find(call.model as string)?.price.prompt).toBeLessThanOrEqual(cfg.tiers.simple.maxInputPerMtok! / 1e6);
 		expect(JSON.stringify(call.messages)).toContain("Task: find value0");
 		// A ledger row under requestedModel "digest" with the served model and its cost.
-		const rows = ledger.recentEntries(10).filter((e) => e.requestedModel === "digest");
+		const rows = (await ledger.recentEntries(10)).filter((e) => e.requestedModel === "digest");
 		expect(rows).toHaveLength(1);
 		expect(rows[0]!.slug).toBe(call.model as string);
 		expect(rows[0]!.reportedUsd).toBeCloseTo(0.0004, 6);
 		expect(rows[0]!.ompSessionId).toBe("omp-1");
-		db.close();
+		await db.close();
 	});
 
 	test("declines below the session tier, over the cost guard, when the model fails, or when nothing shrinks", async () => {
-		const db = openDb(":memory:");
+		const db = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		const cfg = cfgWith();
-		const ledger = createLedger(db, cfg);
-		seedSession(ledger, "simple");
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+		await seedSession(ledger, "simple");
 		const cheap = createDigester({ cfg, catalog, ledger, upstream: fakeUpstream(() => "short").upstream, log });
 		expect(await cheap.digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: {}, content: BIG, query: "" })).toMatchObject({ digested: false, reason: expect.stringContaining("below digest.fromTier") });
 
-		const db2 = openDb(":memory:");
+		const db2 = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db2);
 		const strict = cfgWith({ maxCostUsd: 0 });
-		const ledger2 = createLedger(db2, strict);
-		seedSession(ledger2, "hard");
+		const ledger2 = createSqlLedger(db2, strict, { findModel: () => null });
+		await seedSession(ledger2, "hard");
 		expect(await createDigester({ cfg: strict, catalog, ledger: ledger2, upstream: fakeUpstream(() => "x").upstream, log }).digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: {}, content: BIG, query: "" })).toMatchObject({ digested: false, reason: expect.stringContaining("exceeds digest.maxCostUsd") });
 
 		const failing: UpstreamClient = { ...fakeUpstream(() => "x").upstream, complete: () => Promise.reject(new Error("boom")) };
 		expect(await createDigester({ cfg, catalog, ledger: ledger2, upstream: failing, log }).digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: {}, content: BIG, query: "" })).toMatchObject({ digested: false, reason: "digest model failed: boom" });
 		// The failed attempt is still a ledger row, with the error.
-		expect(ledger2.recentEntries(5).find((e) => e.requestedModel === "digest")?.error).toBe("boom");
+		expect((await ledger2.recentEntries(5)).find((e) => e.requestedModel === "digest")?.error).toBe("boom");
 
 		const same = createDigester({ cfg, catalog, ledger: ledger2, upstream: fakeUpstream(() => BIG).upstream, log });
 		expect(await same.digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: {}, content: BIG, query: "" })).toMatchObject({ digested: false, reason: "digest did not shrink the output" });
-		db.close();
+		await db.close();
 		db2.close();
 	});
 
 	test("a compaction-sourced digest is gated on compaction.digestToolResults and judges the given tier", async () => {
 		const cfg = cfgWith({ enabled: false });
 		cfg.compaction.digestToolResults = true;
-		const db = openDb(":memory:");
-		const ledger = createLedger(db, cfg);
+		const db = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 		// No session rows at all: the tier comes from the request.
 		const { upstream, calls } = fakeUpstream(() => "Condensed.");
 		const d = createDigester({ cfg, catalog, ledger, upstream, log });
@@ -178,63 +187,65 @@ describe("createDigester", () => {
 		const r = await d.digest({ ...base, tier: "hard", source: "compaction" });
 		expect(r.digested).toBe(true);
 		expect(calls).toHaveLength(1);
-		expect(ledger.recentEntries(5).find((e) => e.requestedModel === "digest")?.reasons[0]).toContain("digest (compaction)");
+		expect((await ledger.recentEntries(5)).find((e) => e.requestedModel === "digest")?.reasons[0]).toContain("digest (compaction)");
 		cfg.compaction.digestToolResults = false;
 		expect(await d.digest({ ...base, tier: "hard", source: "compaction" })).toMatchObject({ digested: false });
-		db.close();
+		await db.close();
 	});
 
 	test("a later call of the same tool with the same primary argument marks the digest wasted", async () => {
 		const cfg = cfgWith();
-		const db = openDb(":memory:");
-		const ledger = createLedger(db, cfg);
-		seedSession(ledger, "hard");
+		const db = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+		await seedSession(ledger, "hard");
 		const dg = createDigester({ cfg, catalog, ledger, upstream: fakeUpstream(() => "Condensed.").upstream, log });
 		const r = await dg.digest({ ompSessionId: "omp-1", harnessId: "", toolName: "read", input: { path: "src/a.ts", offset: 1 }, content: BIG, query: "" });
 		expect(r.digested).toBe(true);
-		const row = () => ledger.recentEntries(10).find((e) => e.requestedModel === "digest")!;
-		expect(row().wasted).toBe(false);
+		const row = async (): Promise<LedgerEntry> => (await ledger.recentEntries(10)).find((e) => e.requestedModel === "digest")!;
+		expect((await row()).wasted).toBe(false);
 		// A different file, a different tool, another session: no match.
-		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/b.ts"}' }, { name: "grep", argsJson: '{"pattern":"src/a.ts"}' }])).toBe(0);
-		expect(dg.noteToolCalls("omp-2", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
-		expect(row().wasted).toBe(false);
+		expect(await dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/b.ts"}' }, { name: "grep", argsJson: '{"pattern":"src/a.ts"}' }])).toBe(0);
+		expect(await dg.noteToolCalls("omp-2", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
+		expect((await row()).wasted).toBe(false);
 		// The next request carries the call that PRODUCED the digest in its last assistant message: not a re-run.
-		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts","offset":1}' }])).toBe(0);
-		expect(row().wasted).toBe(false);
+		expect(await dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts","offset":1}' }])).toBe(0);
+		expect((await row()).wasted).toBe(false);
 		// The same read again (case-insensitive tool name, any other args): the agent wanted the full output.
-		expect(dg.noteToolCalls("omp-1", [{ name: "Read", argsJson: '{"path":"src/a.ts","limit":50}' }])).toBe(1);
-		expect(row().wasted).toBe(true);
+		expect(await dg.noteToolCalls("omp-1", [{ name: "Read", argsJson: '{"path":"src/a.ts","limit":50}' }])).toBe(1);
+		expect((await row()).wasted).toBe(true);
 		// Marked once; a third read does not count again.
-		expect(dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
-		db.close();
+		expect(await dg.noteToolCalls("omp-1", [{ name: "read", argsJson: '{"path":"src/a.ts"}' }])).toBe(0);
+		await db.close();
 	});
 
 	test("a pinned digest model is used as-is", async () => {
 		const pinned = MODELS.find((m) => m.price.prompt > 0)!.slug;
 		const cfg = cfgWith({ model: pinned });
-		const db = openDb(":memory:");
-		const ledger = createLedger(db, cfg);
-		seedSession(ledger, "hard");
+		const db = openSqlDb(join(tmpdir(), `t-digest.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+		await seedSession(ledger, "hard");
 		const { upstream, calls } = fakeUpstream(() => "digest");
 		await createDigester({ cfg, catalog, ledger, upstream, log }).digest({ ompSessionId: "omp-1", harnessId: "", toolName: "grep", input: { pattern: "x" }, content: BIG, query: "" });
 		expect(calls[0]?.model as string).toBe(pinned);
-		db.close();
+		await db.close();
 	});
 });
 
 describe("digest marker and extension logic", () => {
-	test("the marker names the tool, sizes, model and how to get the full output", () => {
+	test("the marker names the tool, sizes, model and how to get the full output", async () => {
 		expect(digestMarker("grep", { pattern: "retry" }, "z-ai/glm-5.3-flash", 48_000, 3_000)).toBe(
 			'[digest: grep output 48,000 bytes → 3,000 chars by z-ai/glm-5.3-flash. Full output: re-run grep {"pattern":"retry"}]',
 		);
 	});
 
-	test("textOf joins text parts and flags images", () => {
+	test("textOf joins text parts and flags images", async () => {
 		expect(textOf([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toEqual({ text: "a\nb", hasImage: false });
 		expect(textOf([{ type: "image" }, { type: "text", text: "a" }])).toEqual({ text: "a", hasImage: true });
 	});
 
-	test("shouldSend applies the client-side gate; parsePolicy is defensive", () => {
+	test("shouldSend applies the client-side gate; parsePolicy is defensive", async () => {
 		const p = parsePolicy({ enabled: true, minBytes: 10, maxBytes: 100, tools: ["Read", "grep"], fromTier: "hard" });
 		expect(p.tools).toEqual(["read", "grep"]);
 		expect(shouldSend(p, "read", false, "x".repeat(50), false)).toBe(true);
@@ -248,7 +259,7 @@ describe("digest marker and extension logic", () => {
 		expect(parsePolicy({ enabled: true }).minBytes).toBe(12_000);
 	});
 
-	test("digestToast is one readable line", () => {
+	test("digestToast is one readable line", async () => {
 		expect(digestToast("read", 48 * 1024, 3 * 1024, "ollama/glm-5.3-flash", 0.00042)).toBe("digested read 48KB → 3KB via glm-5.3-flash ($0.0004)");
 	});
 });

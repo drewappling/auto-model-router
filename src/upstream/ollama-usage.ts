@@ -24,7 +24,7 @@
  * percents) rather than 100%, which errs toward keeping the bias on.
  */
 
-import type { Database } from "bun:sqlite";
+import { num, type SqlDb } from "../util/sql.ts";
 import type { Logger } from "../util/log.ts";
 
 export interface OllamaUsage {
@@ -158,9 +158,9 @@ export const NO_USAGE: OllamaUsageSource = { get: async () => null, peek: () => 
 
 /** Where calibration samples come from and go: the ledger's Ollama total and the plan's credits. */
 export interface CalibrationDeps {
-	db: Database;
+	db: SqlDb;
 	/** The ledger's all-time Ollama spend, read at sampling time. */
-	ledgerUsd(): number;
+	ledgerUsd(): Promise<number>;
 	/** Configured credit override (0 = detect from the plan). */
 	planCreditsOverrideUsd: number;
 }
@@ -172,17 +172,25 @@ export function createOllamaUsageSource(
 	// the dashboard later, so the reader stays live and simply idles until it is.
 	if (opts.pollMs <= 0) return NO_USAGE;
 	const cal = opts.calibration;
-	const insertSample = cal === undefined ? null : cal.db.query("INSERT OR REPLACE INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, ?, ?)");
-	const readSamples = cal === undefined ? null : cal.db.query("SELECT at_ms, meter_usd, ledger_usd FROM ollama_meter_samples WHERE at_ms >= ? ORDER BY at_ms ASC");
 	let calibrationMemo: OllamaCalibration | null = null;
-	function sample(usage: OllamaUsage): void {
-		if (cal === null || cal === undefined || insertSample === null || readSamples === null) return;
+	async function sample(usage: OllamaUsage): Promise<void> {
+		if (cal === null || cal === undefined) return;
 		const credits = ollamaPlanCredits(usage, cal.planCreditsOverrideUsd);
 		if (credits === null || usage.monthlyUsedFraction === null) return;
 		try {
-			insertSample.run(usage.fetchedAtMs, usage.monthlyUsedFraction * credits, cal.ledgerUsd());
-			const rows = readSamples.all(usage.fetchedAtMs - 30 * 86_400_000) as { at_ms: number; meter_usd: number; ledger_usd: number }[];
-			calibrationMemo = calibrationFrom(rows.map((r) => ({ atMs: r.at_ms, meterUsd: r.meter_usd, ledgerUsd: r.ledger_usd })));
+			const db = cal.db;
+			// `INSERT OR REPLACE` is SQLite-only; `ON CONFLICT` says the same thing
+			// on both engines, and the key is the sample instant.
+			await db.sql`INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd)
+				VALUES (${usage.fetchedAtMs}, ${usage.monthlyUsedFraction * credits}, ${await cal.ledgerUsd()})
+				ON CONFLICT (at_ms) DO UPDATE SET meter_usd = excluded.meter_usd, ledger_usd = excluded.ledger_usd`;
+			const rows = await db.query<{ at_ms: unknown; meter_usd: unknown; ledger_usd: unknown }>(
+				"SELECT at_ms, meter_usd, ledger_usd FROM ollama_meter_samples WHERE at_ms >= $since ORDER BY at_ms ASC",
+				{ since: usage.fetchedAtMs - 30 * 86_400_000 },
+			);
+			calibrationMemo = calibrationFrom(
+				rows.map((r) => ({ atMs: num(r.at_ms), meterUsd: num(r.meter_usd), ledgerUsd: num(r.ledger_usd) })),
+			);
 		} catch (err) {
 			opts.log.debug("ollama calibration sample failed", { error: err instanceof Error ? err.message : String(err) });
 		}
@@ -232,7 +240,9 @@ export function createOllamaUsageSource(
 				if (parsed !== null) {
 					current = { ...parsed, plan };
 					warned = false;
-					sample(current);
+					// Awaited: the next poll's calibration reads what this one wrote,
+					// and a shared store makes that a round trip rather than a call.
+					await sample(current);
 				} else if (!warned) {
 					warned = true;
 					opts.log.warn("ollama usage payload had no recognisable fields; credit-aware bias stays on its last reading");

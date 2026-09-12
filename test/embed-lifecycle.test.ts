@@ -124,7 +124,7 @@ afterAll(async () => {
 });
 
 describe("embedded router: port selection", () => {
-	test("adopts the port models.yml advertises, so omp's pre-resolved handle is valid", () => {
+	test("adopts the port models.yml advertises, so omp's pre-resolved handle is valid", async () => {
 		expect(portOfLatestRegistration()).toBe(advertised);
 	});
 
@@ -132,13 +132,13 @@ describe("embedded router: port selection", () => {
 		expect(await alive(advertised)).toBe(true);
 	});
 
-	test("does NOT write its port into models.yml", () => {
+	test("does NOT write its port into models.yml", async () => {
 		// Persisting an ephemeral port makes it authoritative for the NEXT
 		// session's startup resolution, which is where the dead handle came from.
 		expect(readFileSync(modelsYmlPath, "utf8")).toBe(modelsYmlBefore);
 	});
 
-	test("publishes the port for subagents and the toast", () => {
+	test("publishes the port for subagents and the toast", async () => {
 		const portFile = join(home, "embed.port");
 		expect(existsSync(portFile)).toBe(true);
 		expect(readFileSync(portFile, "utf8").trim()).toBe(String(advertised));
@@ -146,7 +146,7 @@ describe("embedded router: port selection", () => {
 });
 
 describe("embedded router: lifetime", () => {
-	test("registers NO session_shutdown teardown", () => {
+	test("registers NO session_shutdown teardown", async () => {
 		// omp fires that from a throwaway host during provider refresh, so a
 		// teardown there kills a router the live session is still using.
 		expect(handlers.get("session_shutdown") ?? []).toHaveLength(0);
@@ -165,7 +165,7 @@ describe("embedded router: lifetime", () => {
 		expect(await alive(advertised)).toBe(true);
 	});
 
-	test("each session still gets its own registration, so per-session tagging survives reuse", () => {
+	test("each session still gets its own registration, so per-session tagging survives reuse", async () => {
 		expect(registrations.length).toBeGreaterThanOrEqual(2);
 	});
 });

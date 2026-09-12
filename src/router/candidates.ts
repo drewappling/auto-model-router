@@ -7,7 +7,7 @@
 import type { CatalogModel, CatalogSnapshot } from "../catalog/types.ts";
 import type { FilterConfig, QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
-import type { Ledger, LedgerSignals, ModelLatency } from "../cost/types.ts";
+import type { LedgerSignals, ModelLatency } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
 import { effectivePriceCeiling, effectiveQualityFloor, tierPlanFor } from "./tier-plan.ts";
 import type { Candidate, Features, Rejection, TaskType, Tier } from "./types.ts";
@@ -27,7 +27,6 @@ export interface BuildCandidatesArgs {
 	/** Task type; its config selects the axis, quality floor, and image filter. */
 	task: TaskType;
 	snapshot: CatalogSnapshot;
-	ledger: Ledger | null;
 	cfg: RouterConfig;
 	expectedCompletionTokens: number;
 	/** Slug whose prompt cache is warm this turn; wins score ties. */
@@ -154,7 +153,7 @@ function latencyMultiplier(latency: ModelLatency | null, filters: FilterConfig, 
 }
 
 export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candidate[]; rejected: Rejection[] } {
-	const { req, features, tier, task, snapshot, ledger, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
+	const { req, features, tier, task, snapshot, cfg, expectedCompletionTokens, warmSlug, relaxLevel = 0 } = args;
 	// A Set only when non-empty: the common path allocates nothing.
 	const excluded = args.excludeSlugs === undefined || args.excludeSlugs.length === 0 ? null : new Set(args.excludeSlugs);
 	const tierCfg = cfg.tiers[tier];
@@ -318,14 +317,11 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
-		// Use pre-fetched signals when available (batch lookup, one query per
-		// signal kind for the entire candidate set instead of one per model).
-		// Falls back to per-slug calls when signals is not provided (e.g. tests).
+		// Signals are prefetched by `route` — one query per signal kind for the
+		// whole candidate set. Absent means "the ledger knows nothing about this
+		// model", which is what a cold start looks like and is handled below.
 		const signals = args.signals;
-		const trust =
-			signals?.get(slug)?.trust ??
-			ledger?.trust(slug, filters.trustScopedByHarness ? req.harnessId : undefined, filters.feedbackByTask ? task : undefined) ??
-			null;
+		const trust = signals?.get(slug)?.trust ?? null;
 		if (!relaxTrust && trust !== null && trust.attempts >= filters.minTrustSamples && trust.successRate < filters.minTrust) {
 			rejected.push({
 				slug,
@@ -342,11 +338,7 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		// gate can. Only measured models are dropped, so a new model still gets its
 		// cold-start turns to accumulate samples. Relaxed with trust in rescue.
 		const needLatency = filters.latencyWeight > 0 || filters.maxExpectedWaitMs !== undefined;
-		const latency = needLatency
-			? (signals?.get(slug)?.latency ??
-				ledger?.latency(slug, filters.trustScopedByHarness ? req.harnessId : undefined) ??
-				null)
-			: null;
+		const latency = needLatency ? (signals?.get(slug)?.latency ?? null) : null;
 		if (
 			!relaxTrust &&
 			filters.maxExpectedWaitMs !== undefined &&

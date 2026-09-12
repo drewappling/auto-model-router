@@ -24,9 +24,9 @@ import { parse as parseYaml, stringify } from "yaml";
 import { loadConfig, resolveTilde } from "../config/load.ts";
 import { configInputSchema } from "../config/schema.ts";
 import type { RouterConfig } from "../config/types.ts";
-import { createLedger } from "../cost/ledger.ts";
+import { createSqlLedger } from "../cost/ledger-sql.ts";
+import { dialectOf, openSqlDb } from "../util/sql.ts";
 import type { BlendedRate } from "../cost/types.ts";
-import { openDb } from "../util/sqlite.ts";
 import { configOpts, flagString, type CliArgs } from "./args.ts";
 import {
 	mergeConfigPartial,
@@ -330,14 +330,15 @@ export function ompModelsPath(): string {
 export async function configCommand(args: CliArgs): Promise<void> {
 	const cfg = loadConfig(configOpts(args));
 
-	// Reading a blend must not create a database just by asking.
+	// Reading a blend must not create a store just by asking. A Postgres URL is
+	// always there to be asked; a file has to exist first.
 	let blend: BlendedRate | null = null;
-	if (existsSync(cfg.ledger.path)) {
-		const db = openDb(cfg.ledger.path);
+	if (dialectOf(cfg.ledger.path) === "postgres" || existsSync(cfg.ledger.path)) {
+		const db = openSqlDb(cfg.ledger.path);
 		try {
-			blend = createLedger(db, cfg).blendedRate(cfg.ledger.blendWindowDays);
+			blend = await createSqlLedger(db, cfg, { findModel: () => null }).blendedRate(cfg.ledger.blendWindowDays);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	}
 

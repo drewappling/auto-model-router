@@ -26,6 +26,13 @@ const OUTPUT_TO_INPUT_PRIOR = 5;
 const CACHE_READ_TO_INPUT_PRIOR = 0.1;
 const CACHE_WRITE_TO_INPUT_PRIOR = 1.25;
 
+/** One window row, already parsed, whichever engine produced it. */
+export interface BlendSample {
+	usage: UsageCounts;
+	reportedUsd: number;
+	breakdown: CostBreakdown;
+}
+
 export function computeBlendedRate(db: Database, cfg: RouterConfig, windowDays: number): BlendedRate | null {
 	const sinceMs = Date.now() - windowDays * 86_400_000;
 	// We own the schema; row shape fixed by util/sqlite.ts and cost/ledger.ts.
@@ -35,7 +42,23 @@ export function computeBlendedRate(db: Database, cfg: RouterConfig, windowDays: 
 			 WHERE created_at_ms >= ? AND reported_usd IS NOT NULL AND cost_breakdown IS NOT NULL`,
 		)
 		.all(sinceMs) as BlendRow[];
+	return foldBlendSamples(
+		rows.map((row) => ({
+			usage: JSON.parse(row.usage) as UsageCounts,
+			reportedUsd: row.reported_usd,
+			breakdown: JSON.parse(row.cost_breakdown) as CostBreakdown,
+		})),
+		cfg,
+		windowDays,
+	);
+}
 
+/**
+ * The apportioning itself, over already-parsed rows. Pure so both the local
+ * and the shared-database ledger produce the same blend from the same window
+ * instead of each carrying a copy of the arithmetic.
+ */
+export function foldBlendSamples(samples: readonly BlendSample[], cfg: RouterConfig, windowDays: number): BlendedRate | null {
 	let sampleCount = 0;
 	let inputUsd = 0;
 	let inputTokens = 0;
@@ -46,22 +69,20 @@ export function computeBlendedRate(db: Database, cfg: RouterConfig, windowDays: 
 	let cacheWriteUsd = 0;
 	let cacheWriteTokens = 0;
 
-	for (const row of rows) {
-		const usage = JSON.parse(row.usage) as UsageCounts;
-		const split = JSON.parse(row.cost_breakdown) as CostBreakdown;
+	for (const { usage, reportedUsd, breakdown: split } of samples) {
 		const tokenSplit = split.freshPrompt + split.cacheRead + split.cacheWrite + split.completion + split.reasoning;
 		// Entries whose usage produced no token-billed cost (pure image/request
 		// billing) carry no price signal per token; skip them.
 		if (tokenSplit <= 0) continue;
 		const freshTokens = Math.max(usage.promptTokens - usage.cachedTokens - usage.cacheWriteTokens, 0);
 
-		inputUsd += (row.reported_usd * split.freshPrompt) / tokenSplit;
+		inputUsd += (reportedUsd * split.freshPrompt) / tokenSplit;
 		inputTokens += freshTokens;
-		outputUsd += (row.reported_usd * (split.completion + split.reasoning)) / tokenSplit;
+		outputUsd += (reportedUsd * (split.completion + split.reasoning)) / tokenSplit;
 		outputTokens += usage.completionTokens;
-		cacheReadUsd += (row.reported_usd * split.cacheRead) / tokenSplit;
+		cacheReadUsd += (reportedUsd * split.cacheRead) / tokenSplit;
 		cacheReadTokens += usage.cachedTokens;
-		cacheWriteUsd += (row.reported_usd * split.cacheWrite) / tokenSplit;
+		cacheWriteUsd += (reportedUsd * split.cacheWrite) / tokenSplit;
 		cacheWriteTokens += usage.cacheWriteTokens;
 		sampleCount += 1;
 	}

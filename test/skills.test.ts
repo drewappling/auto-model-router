@@ -9,7 +9,7 @@ const NL = String.fromCharCode(10);
 const bundle = (version: string, skills: Record<string, Record<string, string>>): SkillsBundle => ({ version, skills: Object.entries(skills).map(([name, files]) => ({ name, files })) });
 
 describe("skills served by the remote, installed by connect", () => {
-	test("a bundle is parsed defensively", () => {
+	test("a bundle is parsed defensively", async () => {
 		expect(parseSkillsBundle({ version: "v1", skills: [{ name: "team-context", files: { "SKILL.md": "# x" } }] })?.skills[0]?.name).toBe("team-context");
 		expect(parseSkillsBundle({ version: "v1", skills: [{ name: "Bad Name", files: { "SKILL.md": "# x" } }] })).toBeNull();
 		expect(parseSkillsBundle({ version: "v1", skills: [{ name: "ok", files: { "notes.md": "x" } }] })).toBeNull(); // no SKILL.md
@@ -18,7 +18,7 @@ describe("skills served by the remote, installed by connect", () => {
 		expect(parseSkillsBundle("nope")).toBeNull();
 	});
 
-	test("install writes each skill into each target, updates in place, removes what is gone, and leaves a member's own skill alone", () => {
+	test("install writes each skill into each target, updates in place, removes what is gone, and leaves a member's own skill alone", async () => {
 		const home = mkdtempSync(join(tmpdir(), "amr-skills-"));
 		const rh = join(home, ".auto-model-router");
 		const claude = join(home, ".claude", "skills");
@@ -83,7 +83,7 @@ describe("skills served by the remote, installed by connect", () => {
 		expect((await fetchSkills("https://t", "k", odd)).note).toContain("not understood");
 	});
 
-	test("connect installs the bundle only into the harnesses it configured", () => {
+	test("connect installs the bundle only into the harnesses it configured", async () => {
 		const home = mkdtempSync(join(tmpdir(), "amr-skills-connect-"));
 		mkdirSync(join(home, ".claude"), { recursive: true });
 		const agent = join(home, ".omp", "agent");

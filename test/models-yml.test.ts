@@ -49,7 +49,7 @@ function countOf(text: string, needle: string): number {
 }
 
 describe("renderProviderBlock", () => {
-	test("emits costs in USD per MILLION tokens, not per token", () => {
+	test("emits costs in USD per MILLION tokens, not per token", async () => {
 		const providers = providersOf(`providers:\n${BLOCK.split("\n").map((l) => (l === "" ? "" : `  ${l}`)).join("\n")}\n`);
 		const router = providers["auto-model-router"];
 		expect(typeof router).toBe("object");
@@ -60,17 +60,17 @@ describe("renderProviderBlock", () => {
 		expect(BLOCK).toContain(`input: ${cfg.ledger.fallbackBlend.inputPerMtok}`);
 	});
 
-	test("declares one model per configured profile", () => {
+	test("declares one model per configured profile", async () => {
 		for (const profile of cfg.profiles) expect(BLOCK).toContain(`id: ${profile.id}`);
 	});
 
-	test("advertises a keyless openai-compatible provider", () => {
+	test("advertises a keyless openai-compatible provider", async () => {
 		expect(BLOCK).toContain("api: openai-completions");
 		expect(BLOCK).toContain("auth: none");
 		expect(BLOCK).toContain("/v1");
 	});
 
-	test("with the bridge on, the scope and origin headers name the variables the extension sets", () => {
+	test("with the bridge on, the scope and origin headers name the variables the extension sets", async () => {
 		// The file is machine-wide, so neither can be a literal: omp resolves a
 		// header value that names an env var per request (src/context/scope.ts).
 		const bridged = renderProviderBlock(loadConfig({ overrides: { context: { enabled: true, baseUrl: "http://agentdox:3003", token: "t" } } }), null);
@@ -81,7 +81,7 @@ describe("renderProviderBlock", () => {
 });
 
 describe("spliceProviderBlock", () => {
-	test("preserves every original line and comment", () => {
+	test("preserves every original line and comment", async () => {
 		const result = spliceProviderBlock(EXISTING, BLOCK);
 		expect(result.action).toBe("inserted");
 		const after = result.text.split("\n");
@@ -92,13 +92,13 @@ describe("spliceProviderBlock", () => {
 		expect(result.text).toContain("# model's architectural limit.");
 	});
 
-	test("leaves the pre-existing providers intact and adds ours", () => {
+	test("leaves the pre-existing providers intact and adds ours", async () => {
 		const result = spliceProviderBlock(EXISTING, BLOCK);
 		const providers = providersOf(result.text);
 		expect(Object.keys(providers).sort()).toEqual(["auto-model-router", "fastflowlm", "ollama"]);
 	});
 
-	test("is idempotent: a second run replaces rather than duplicates", () => {
+	test("is idempotent: a second run replaces rather than duplicates", async () => {
 		const once = spliceProviderBlock(EXISTING, BLOCK);
 		const twice = spliceProviderBlock(once.text, BLOCK);
 		expect(twice.action).toBe("replaced");
@@ -108,7 +108,7 @@ describe("spliceProviderBlock", () => {
 		providersOf(twice.text);
 	});
 
-	test("refreshed cost figures replace the old ones in place", () => {
+	test("refreshed cost figures replace the old ones in place", async () => {
 		const first = spliceProviderBlock(EXISTING, renderProviderBlock(cfg, null));
 		const updated = spliceProviderBlock(
 			first.text,
@@ -126,20 +126,20 @@ describe("spliceProviderBlock", () => {
 		providersOf(updated.text);
 	});
 
-	test("adds a providers mapping when the file has none", () => {
+	test("adds a providers mapping when the file has none", async () => {
 		const result = spliceProviderBlock("# just a comment\n", BLOCK);
 		expect(result.text).toContain("# just a comment");
 		expect(countOf(result.text, "providers:")).toBe(1);
 		expect(Object.keys(providersOf(result.text))).toContain("auto-model-router");
 	});
 
-	test("creates a whole file from empty input", () => {
+	test("creates a whole file from empty input", async () => {
 		const result = spliceProviderBlock("", BLOCK);
 		expect(result.action).toBe("created");
 		expect(Object.keys(providersOf(result.text))).toContain("auto-model-router");
 	});
 
-	test("survives a UTF-8 BOM without producing a duplicate providers key", () => {
+	test("survives a UTF-8 BOM without producing a duplicate providers key", async () => {
 		// A BOM made the first line read as "\uFEFFproviders:", so the top-level
 		// key was missed and a second one appended -- which makes omp discard the
 		// entire file.
@@ -150,7 +150,7 @@ describe("spliceProviderBlock", () => {
 		expect(Object.keys(providersOf(result.text)).sort()).toEqual(["auto-model-router", "fastflowlm", "ollama"]);
 	});
 
-	test("preserves CRLF line endings", () => {
+	test("preserves CRLF line endings", async () => {
 		const crlf = EXISTING.replaceAll("\n", "\r\n");
 		const result = spliceProviderBlock(crlf, BLOCK);
 		expect(result.text).toContain("\r\n");
@@ -159,7 +159,7 @@ describe("spliceProviderBlock", () => {
 		providersOf(result.text);
 	});
 
-	test("matches the existing child indentation", () => {
+	test("matches the existing child indentation", async () => {
 		// EXISTING indents providers' children by four spaces; mixing widths
 		// under one mapping is invalid YAML.
 		const result = spliceProviderBlock(EXISTING, BLOCK);
@@ -168,7 +168,7 @@ describe("spliceProviderBlock", () => {
 		expect(begin?.startsWith("    #")).toBe(true);
 	});
 
-	test("a two-space file gets two-space children", () => {
+	test("a two-space file gets two-space children", async () => {
 		const twoSpace = "providers:\n  ollama:\n    auth: none\n";
 		const result = spliceProviderBlock(twoSpace, BLOCK);
 		const begin = result.text.split("\n").find((l) => l.includes(BEGIN_GUARD));
@@ -178,19 +178,19 @@ describe("spliceProviderBlock", () => {
 });
 
 describe("assertUsableModelsYaml", () => {
-	test("accepts a correctly spliced result", () => {
+	test("accepts a correctly spliced result", async () => {
 		expect(() => assertUsableModelsYaml(spliceProviderBlock(EXISTING, BLOCK).text)).not.toThrow();
 	});
 
-	test("rejects a duplicate providers key, which YAML treats as fatal", () => {
+	test("rejects a duplicate providers key, which YAML treats as fatal", async () => {
 		expect(() => assertUsableModelsYaml("providers:\n  a:\n    auth: none\nproviders:\n  b:\n    auth: none\n")).toThrow();
 	});
 
-	test("rejects a file without our provider", () => {
+	test("rejects a file without our provider", async () => {
 		expect(() => assertUsableModelsYaml("providers:\n  ollama:\n    auth: none\n")).toThrow();
 	});
 
-	test("rejects a file with no providers mapping", () => {
+	test("rejects a file with no providers mapping", async () => {
 		expect(() => assertUsableModelsYaml("something: else\n")).toThrow();
 	});
 });

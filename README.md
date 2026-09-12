@@ -888,7 +888,9 @@ disk and back up the previous file to a timestamped `.bak`.
 ### Configuration file location
 
 - Router config: `$AUTO_MODEL_ROUTER_HOME/config.yml` (default `~/.auto-model-router/config.yml`).
-- Ledger DB: `$AUTO_MODEL_ROUTER_HOME/router.db` (SQLite, WAL).
+- Ledger DB: `$AUTO_MODEL_ROUTER_HOME/router.db` (SQLite, WAL), or a
+  `postgres://` URL in `ledger.path` when two replicas must share one store —
+  see [Sharing the store](#sharing-the-store).
 
 ### Environment variables
 
@@ -1158,12 +1160,40 @@ task needed, and `digest.maxOutputTokens` or `digest.model` is the lever.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `path` | `$AUTO_MODEL_ROUTER_HOME/router.db` | SQLite ledger path. |
+| `path` | `$AUTO_MODEL_ROUTER_HOME/router.db` | SQLite ledger path, or a `postgres://` URL. See [Sharing the store](#sharing-the-store). |
 | `blendWindowDays` | `7` | Window for the blended cost rate. |
 | `blendMinSamples` | `25` | Turns before the measured blend replaces the fallback. |
 | `fallbackBlend` | input `1.5`, output `7.5` | Pre-measurement blend (USD/Mtok) for omp's cost display. |
 | `conversationTtlMs` | `604800000` (7 d) | Drop conversation state untouched this long. |
 | `retentionDays` | `null` | Delete ledger rows — and the feedback keyed to them — older than this many days, checked at most hourly; `null` (the default) and `0` keep everything. The ledger grows about 2.5 MB a day under steady use. See [Data governance](#data-governance). |
+
+#### Sharing the store
+
+`ledger.path` accepts a `postgres://` URL as well as a SQLite path. One
+implementation serves both (`src/cost/ledger-sql.ts` over the dialect shim in
+`src/util/sql.ts`), and `tools/ledger-parity.ts` compares every signal and
+every report engine-against-engine on real rows.
+
+What moves to the shared store is what a second replica must see one copy of:
+
+- the turn rows a budget cap is counted from,
+- conversation routing memory (held tier, warm prompt-cache model, spend),
+- the agentdox context blocks.
+
+What stays local is the cache layer — the catalog payload, the benchmark
+feeds, the local eval scores, the once-a-day summary marker. With a Postgres
+ledger those live in `$AUTO_MODEL_ROUTER_HOME/cache.db`. A cache shared
+between replicas buys contention and nothing else, and `local_scores` belongs
+to the machine that measured it.
+
+Two replicas on one Postgres were verified end to end: a turn served by one
+replica leaves the next turn of that conversation on the same warm model when
+it lands on the other (`cache: keeping warm …`), and a replica that has served
+nothing refuses with `402 budget_exceeded` once the shared spend is past its
+cap — where the same cap against an empty store serves.
+
+A SQLite deployment is unchanged: the file is still migrated in place through
+the nineteen shipped versions, and both halves live in the one file.
 
 ### `redaction` — keep configured strings out of every request
 

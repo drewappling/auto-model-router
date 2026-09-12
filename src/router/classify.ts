@@ -6,7 +6,7 @@
 import type { CatalogSource } from "../catalog/types.ts";
 import type { QualityAxis, RouterConfig } from "../config/types.ts";
 import { forecast } from "../cost/forecast.ts";
-import type { Ledger } from "../cost/types.ts";
+import type { AsyncLedger } from "../cost/types.ts";
 import { estimateTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { sha256Hex } from "../util/hash.ts";
@@ -219,7 +219,7 @@ export function classifyTask(f: Features): TaskType {
 
 export interface ClassifyDeps {
 	upstream: UpstreamClient;
-	ledger: Ledger | null;
+	ledger: AsyncLedger | null;
 	catalog: CatalogSource | null;
 }
 
@@ -334,11 +334,13 @@ export async function classify(
 	}
 
 	// Cost guard: adjudication must be cheap relative to the turn it classifies.
-	const blend = deps.ledger?.blendedRate(cfg.ledger.blendWindowDays) ?? null;
+	const blend = (await deps.ledger?.blendedRate(cfg.ledger.blendWindowDays)) ?? null;
 	const inputRate = (blend?.inputPerMtok ?? cfg.ledger.fallbackBlend.inputPerMtok) / 1e6;
 	const outputRate = (blend?.outputPerMtok ?? cfg.ledger.fallbackBlend.outputPerMtok) / 1e6;
 	const judge = deps.catalog?.find(cc.model);
-	const digestTokens = estimateTokens(Buffer.byteLength(ADJUDICATOR_SYSTEM) + Buffer.byteLength(digest), "unknown", deps.ledger);
+	// The adjudicator prompt is short and its family unknown, so the default
+	// family ratio is as good as a measured one here.
+	const digestTokens = estimateTokens(Buffer.byteLength(ADJUDICATOR_SYSTEM) + Buffer.byteLength(digest), "unknown", null);
 	const adjudicatorUsd =
 		judge !== undefined
 			? forecast(judge, {

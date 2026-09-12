@@ -22,9 +22,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config/load.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { computeStats } from "../src/server/http.ts";
-import { openDb } from "../src/util/sqlite.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const DATA_PATH = join(ROOT, "site", "data", "benchmarks.json");
@@ -56,9 +56,9 @@ if (!existsSync(dbPath)) {
 	process.exit(0);
 }
 
-const db = openDb(dbPath);
+const db = openSqlDb(dbPath);
 try {
-	const stats = computeStats(createLedger(db, cfg), days === undefined ? {} : { windowDays: days });
+	const stats = await computeStats(createSqlLedger(db, cfg, { findModel: () => null }), days === undefined ? {} : { windowDays: days });
 	const perTurnUsd = stats.requests > 0 ? stats.windowSpendUsd / stats.requests : 0;
 	data.ledgerSnapshot = {
 		generatedAt: new Date(stats.generatedAtMs).toISOString().slice(0, 10),
@@ -78,5 +78,5 @@ try {
 	writeFileSync(DATA_PATH, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 	console.log(`ledgerSnapshot \u2190 ${stats.requests} turns from ${dbPath} (${stats.windowDays === null ? "all time" : `${stats.windowDays}d`})`);
 } finally {
-	db.close();
+	await db.close();
 }

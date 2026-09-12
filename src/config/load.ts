@@ -17,6 +17,15 @@ export function resolveTilde(p: string): string {
 	return p;
 }
 
+/**
+ * The router's own directory: config, the local cache database, and the
+ * default ledger file. One resolver so a caller that needs a sibling file
+ * lands in the same place `loadConfig` reads from.
+ */
+export function routerHome(): string {
+	return resolveTilde(process.env.AUTO_MODEL_ROUTER_HOME ?? "~/.auto-model-router");
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -68,7 +77,7 @@ export type DeepPartial<T> = T extends readonly unknown[] | Date | RegExp
  * fail at dispatch time.
  */
 export function loadConfig(opts?: { path?: string; overrides?: DeepPartial<RouterConfig> }): RouterConfig {
-	const home = resolveTilde(process.env.AUTO_MODEL_ROUTER_HOME ?? "~/.auto-model-router");
+	const home = routerHome();
 
 	// Config file, when present.
 	const filePath = opts?.path !== undefined

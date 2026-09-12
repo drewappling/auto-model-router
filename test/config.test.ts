@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("loadConfig", () => {
-	test("loads defaults with no config file and no API key", () => {
+	test("loads defaults with no config file and no API key", async () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
 		setEnv("AUTO_MODEL_ROUTER_HOME", tempDir());
 		setEnv("PI_CODING_AGENT_DIR", tempDir());
@@ -51,14 +51,14 @@ describe("loadConfig", () => {
 		expect(cfg.tiers.hard.minQuality).toBe(DEFAULT_CONFIG.tiers.hard.minQuality);
 	});
 
-	test("resolves the ledger path under the router home", () => {
+	test("resolves the ledger path under the router home", async () => {
 		const home = tempDir();
 		setEnv("AUTO_MODEL_ROUTER_HOME", home);
 		const cfg = loadConfig({});
 		expect(cfg.ledger.path).toContain(home);
 	});
 
-	test("deep-merges nested objects from the config file", () => {
+	test("deep-merges nested objects from the config file", async () => {
 		const path = writeConfig("tiers:\n  hard:\n    minQuality: 88\n");
 		const cfg = loadConfig({ path });
 		expect(cfg.tiers.hard.minQuality).toBe(88);
@@ -67,7 +67,7 @@ describe("loadConfig", () => {
 		expect(cfg.tiers.trivial.minQuality).toBe(DEFAULT_CONFIG.tiers.trivial.minQuality);
 	});
 
-	test("replaces arrays wholesale rather than merging them", () => {
+	test("replaces arrays wholesale rather than merging them", async () => {
 		// Matches omp's own settings semantics: arrays never union or append.
 		expect(DEFAULT_CONFIG.escalation.probeTiers.length).toBeGreaterThan(1);
 		const path = writeConfig("escalation:\n  probeTiers:\n    - trivial\n");
@@ -75,7 +75,7 @@ describe("loadConfig", () => {
 		expect(cfg.escalation.probeTiers).toEqual(["trivial"]);
 	});
 
-	test("names the offending path when a value is invalid", () => {
+	test("names the offending path when a value is invalid", async () => {
 		const path = writeConfig("server:\n  port: not-a-number\n");
 		let message = "";
 		try {
@@ -87,33 +87,33 @@ describe("loadConfig", () => {
 		expect(message).toContain("port");
 	});
 
-	test("environment variables override file values", () => {
+	test("environment variables override file values", async () => {
 		const path = writeConfig("server:\n  port: 9001\n");
 		setEnv("AUTO_MODEL_ROUTER_PORT", "9999");
 		const cfg = loadConfig({ path });
 		expect(cfg.server.port).toBe(9999);
 	});
 
-	test("explicit overrides beat the environment", () => {
+	test("explicit overrides beat the environment", async () => {
 		setEnv("AUTO_MODEL_ROUTER_PORT", "9999");
 		const cfg = loadConfig({ overrides: { server: { host: "127.0.0.1", port: 7777, maxConcurrentTurns: 24 } } });
 		expect(cfg.server.port).toBe(7777);
 	});
 
-	test("reads the OpenRouter key from the environment", () => {
+	test("reads the OpenRouter key from the environment", async () => {
 		setEnv("OPENROUTER_API_KEY", "sk-or-test-value");
 		const cfg = loadConfig({});
 		expect(cfg.openrouter.apiKey).toBe("sk-or-test-value");
 	});
 
-	test("accepts a config that only overrides one scalar", () => {
+	test("accepts a config that only overrides one scalar", async () => {
 		const path = writeConfig("logLevel: debug\n");
 		const cfg = loadConfig({ path });
 		expect(cfg.logLevel).toBe("debug");
 		expect(cfg.escalation.enabled).toBe(DEFAULT_CONFIG.escalation.enabled);
 	});
 
-	test("an empty config file is valid and changes nothing", () => {
+	test("an empty config file is valid and changes nothing", async () => {
 		const path = writeConfig("");
 		const cfg = loadConfig({ path });
 		expect(cfg.server.port).toBe(DEFAULT_CONFIG.server.port);

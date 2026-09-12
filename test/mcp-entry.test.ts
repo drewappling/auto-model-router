@@ -12,7 +12,7 @@ const servers = (p: string): Record<string, unknown> => (read(p).mcpServers as R
 const auth = (p: string): string => (servers(p)[MCP_SERVER_NAME] as { headers: { Authorization: string } }).headers.Authorization;
 
 describe("mergeMcpServers", () => {
-	test("adds the team-context server next to the others and keeps every other key", () => {
+	test("adds the team-context server next to the others and keeps every other key", async () => {
 		const before = JSON.stringify({ $schema: "https://x/mcp-schema.json", mcpServers: { agentdox: { type: "http", url: "http://localhost:3003/mcp" } }, other: 1 });
 		const after = mergeMcpServers(before, "https://team.example/mcp", "amrt_k");
 		expect(after).not.toBeNull();
@@ -26,12 +26,12 @@ describe("mergeMcpServers", () => {
 		expect(after!.endsWith("\n")).toBe(true);
 	});
 
-	test("an empty or missing file becomes a fresh mcpServers document", () => {
+	test("an empty or missing file becomes a fresh mcpServers document", async () => {
 		expect(JSON.parse(mergeMcpServers("", "https://t/mcp", "k")!)).toEqual({ mcpServers: { [MCP_SERVER_NAME]: { type: "http", url: "https://t/mcp", headers: { Authorization: "Bearer k" } } } });
 		expect(JSON.parse(mergeMcpServers("  \n", "https://t/mcp", "k")!)).toHaveProperty("mcpServers");
 	});
 
-	test("is idempotent, removes on null, and leaves a file it cannot parse alone", () => {
+	test("is idempotent, removes on null, and leaves a file it cannot parse alone", async () => {
 		const one = mergeMcpServers("", "https://t/mcp", "k")!;
 		expect(mergeMcpServers(one, "https://t/mcp", "k")).toBeNull(); // unchanged
 		expect(mergeMcpServers(one, "https://t/mcp", "k2")).not.toBeNull(); // a new key rewrites
@@ -54,7 +54,7 @@ describe("connect writes the team MCP endpoint", () => {
 		return { home, agent, env };
 	}
 
-	test("into omp mcp.json and Claude Code ~/.claude.json, only for the harnesses it configured", () => {
+	test("into omp mcp.json and Claude Code ~/.claude.json, only for the harnesses it configured", async () => {
 		const { home, agent, env } = fixture();
 		try {
 			// Pre-existing servers and unrelated settings survive.
@@ -95,7 +95,7 @@ describe("connect writes the team MCP endpoint", () => {
 		}
 	});
 
-	test("a dry run reports the files without writing them; no mcp option leaves them alone", () => {
+	test("a dry run reports the files without writing them; no mcp option leaves them alone", async () => {
 		const { home, agent, env } = fixture();
 		try {
 			const r = connectRemote({ url: "https://team.example", key: "amrt_k", userId: "u", name: "Ada", profile: false, dryRun: true, only: ["omp"], env, home, packageDir: "/pkg", mcp: { url: "https://team.example/mcp" }, platform: "linux", pathHas: () => false });

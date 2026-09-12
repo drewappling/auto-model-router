@@ -51,7 +51,7 @@ import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { buildUsageReport, renderUsageReport, type UsageReport } from "../src/cost/report.ts";
 import { buildDailySummary, renderDailySummary } from "../src/cost/summary.ts";
-import { openDb } from "../src/util/sqlite.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
@@ -180,11 +180,13 @@ async function loadReport(req: ReportRequest): Promise<UsageReport> {
 		if (!existsSync(cfg.ledger.path)) {
 			throw new Error(`router unreachable (${err instanceof Error ? err.message : String(err)}) and no ledger at ${cfg.ledger.path}`);
 		}
-		const db = openDb(cfg.ledger.path);
+		// Fallback read when the router is unreachable: straight at the ledger,
+		// through the handle that works whichever engine holds it.
+		const db = openSqlDb(cfg.ledger.path);
 		try {
-			return buildUsageReport(db, req);
+			return await buildUsageReport(db, req);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	}
 }
@@ -343,11 +345,11 @@ async function summary(pi: ExtensionAPI, ctx: ExtensionContext, argText: string)
 		ctx.ui.notify(`router unreachable at ${routerBaseUrl()} and no ledger at ${cfg.ledger.path}`, "error");
 		return;
 	}
-	const db = openDb(cfg.ledger.path);
+	const db = openSqlDb(cfg.ledger.path);
 	try {
-		post(pi, `${renderDailySummary(buildDailySummary(db, { harnessId }))}\n(router unreachable: read from the ledger; spikes and the Ollama meter need the router)`);
+		post(pi, `${renderDailySummary(await buildDailySummary(db, { harnessId }))}\n(router unreachable: read from the ledger; spikes and the Ollama meter need the router)`);
 	} finally {
-		db.close();
+		await db.close();
 	}
 }
 

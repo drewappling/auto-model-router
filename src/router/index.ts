@@ -10,23 +10,25 @@
  * real request without perturbing the conversation it belongs to.
  */
 
-import type { CatalogSource } from "../catalog/types.ts";
+import type { CatalogSnapshot, CatalogSource } from "../catalog/types.ts";
 import type { ProfileConfig, RouterConfig } from "../config/types.ts";
-import type { Ledger } from "../cost/types.ts";
+import { type AsyncLedger, type LedgerReader } from "../cost/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
+import { modelNotFound } from "../wire/openai/errors.ts";
 import type { NormRequest, RequestPolicy } from "../wire/types.ts";
 import { classify, classifyTask } from "./classify.ts";
 import { extractFeatures } from "./features.ts";
-import { select } from "./select.ts";
+import { monthStartMs, select, type TurnReads } from "./select.ts";
 import { TIER_ORDER, type Classification, type ConversationStore, type Decision, type Router, type Tier } from "./types.ts";
-
 export interface RouterDeps {
 	config: RouterConfig;
 	catalog: CatalogSource;
-	ledger: Ledger;
+	ledger: AsyncLedger;
 	conversations: ConversationStore;
 	upstream: UpstreamClient;
+	/** Async ledger reads; defaults to reading `ledger` directly. */
+	reader?: LedgerReader;
 }
 
 /**
@@ -90,20 +92,89 @@ export function resolveProfile(cfg: RouterConfig, requestedModel: string, isSuba
 	return fallback;
 }
 
+/**
+ * The `model` a client names is a profile id. When it is neither a profile nor
+ * a catalog slug, routing something else and reporting the asked-for name back
+ * is a silent substitution: the caller is billed for a model it never chose.
+ * A real slug becomes a pin (absolute, the way a session override is); anything
+ * else is refused.
+ *
+ * @param asked the client's `model` before the provider prefix was stripped.
+ * @returns the slug to pin, or undefined when a profile matched.
+ */
+export function pinForRequestedModel(
+	cfg: RouterConfig,
+	slugs: readonly string[],
+	requestedModel: string,
+	asked: string,
+): string | undefined {
+	if (cfg.profiles.some((p) => p.id === requestedModel)) return undefined;
+	if (slugs.includes(asked)) return asked;
+	throw modelNotFound(asked);
+}
+
+/**
+ * Reads the ledger for one turn, concurrently, before selection runs.
+ *
+ * Only what this turn's configuration actually consults is fetched: month and
+ * day spend are skipped when no such budget is set, and the escalation-cost
+ * term is skipped when its weight is 0. Empty catalog ⇒ no signal queries at
+ * all, which is what keeps the tests' fakes cheap.
+ */
+export async function prefetchTurnReads(
+	reader: LedgerReader | null,
+	req: NormRequest,
+	profile: ProfileConfig,
+	cfg: RouterConfig,
+	snapshot: CatalogSnapshot,
+	task: string,
+	nowMs: number = Date.now(),
+): Promise<TurnReads> {
+	if (reader === null) return {};
+	const slugs = snapshot.models.map((m) => m.slug);
+	const harness = cfg.filters.trustScopedByHarness ? req.harnessId : undefined;
+	const perMonthUsd = profile.budget?.perMonthUsd ?? cfg.budget.perMonthUsd;
+	const perDayUsd = profile.budget?.perDayUsd ?? cfg.budget.perDayUsd;
+	const [signals, cacheReliability, escalation, monthSpendUsd, daySpendUsd] = await Promise.all([
+		slugs.length > 0 ? reader.signals(slugs, harness, cfg.filters.feedbackByTask ? task : undefined) : undefined,
+		slugs.length > 0 && cfg.filters.cacheReliabilityMinSamples > 0 ? reader.cacheReliability(slugs) : undefined,
+		cfg.filters.escalationCostWeight > 0 ? reader.escalationCost(cfg.ledger.blendWindowDays) : undefined,
+		// Month pacing can tighten the daily ceiling, so month spend is needed
+		// whenever either budget is set.
+		perMonthUsd !== undefined ? reader.spendSince(monthStartMs(nowMs), req.harnessId) : undefined,
+		perDayUsd !== undefined || perMonthUsd !== undefined ? reader.spendSince(nowMs - 86_400_000, req.harnessId) : undefined,
+	]);
+	return {
+		...(signals === undefined ? {} : { signals }),
+		...(cacheReliability === undefined ? {} : { cacheReliability }),
+		...(escalation === undefined ? {} : { escalationUsdPerPromptToken: escalation?.usdPerPromptToken ?? null }),
+		...(monthSpendUsd === undefined ? {} : { monthSpendUsd }),
+		...(daySpendUsd === undefined ? {} : { daySpendUsd }),
+	};
+}
+
 export function createRouter(deps: RouterDeps): Router {
 	const { config, catalog, ledger, conversations, upstream } = deps;
+	// A Postgres ledger supplies its own reader; a local one is wrapped, so the
+	// prefetch path is identical for both.
+	// The unified ledger IS a reader: `LedgerReader` is the narrow half of it.
+	const reader = deps.reader ?? ledger;
 
 	return {
 		async route(
 			req: NormRequest,
 			opts: { attempt: number; escalateFrom?: Tier; excludeSlugs?: readonly string[]; forceTier?: Tier; forceSlug?: string },
 		): Promise<Decision> {
-			const state = conversations.get(req.conversationKey) ?? conversations.load(req.conversationKey);
+			const state = (await conversations.get(req.conversationKey)) ?? (await conversations.load(req.conversationKey));
 			const snapshot = await catalog.get();
 
 			const priorTokenizer =
 				state.currentSlug === null ? undefined : catalog.find(state.currentSlug)?.tokenizer;
-			const promptTokens = estimatePromptTokens(req, priorTokenizer ?? NEUTRAL_TOKENIZER, ledger);
+			const tokenizer = priorTokenizer ?? NEUTRAL_TOKENIZER;
+			// One ratio, fetched before estimating: the estimate itself runs in
+			// synchronous code that a shared store cannot be read from.
+			const ratio = await ledger.tokenRatio(tokenizer);
+			const promptTokens = estimatePromptTokens(req, tokenizer, ratio);
 			const features = extractFeatures(req, promptTokens);
 
 			let classification: Classification;
@@ -136,7 +207,22 @@ export function createRouter(deps: RouterDeps): Router {
 				classification = await classify(req, features, config, { upstream, ledger, catalog });
 			}
 
-			const policed = applyRequestPolicy(resolveProfile(config, req.requestedModel, req.isSubagent), config, req.policy, opts.forceSlug);
+			const pinnedByModel = pinForRequestedModel(
+				config,
+				snapshot.models.map((m) => m.slug),
+				req.requestedModel,
+				req.requestedModelFull ?? req.requestedModel,
+			);
+			const policed = applyRequestPolicy(
+				resolveProfile(config, req.requestedModel, req.isSubagent),
+				config,
+				req.policy,
+				opts.forceSlug ?? pinnedByModel,
+			);
+			// Every ledger read this turn needs, fetched here rather than inside
+			// `select`: selection stays a synchronous pure function, and a ledger
+			// that can only be read asynchronously (Postgres) works unchanged.
+			const reads = await prefetchTurnReads(reader, req, policed.profile, policed.cfg, snapshot, classification.task);
 			const decision = select({
 				req,
 				features,
@@ -144,9 +230,9 @@ export function createRouter(deps: RouterDeps): Router {
 				profile: policed.profile,
 				state,
 				snapshot,
-				ledger,
 				cfg: policed.cfg,
 				nowMs: Date.now(),
+				reads,
 				...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
 				...(policed.forceSlug === undefined ? {} : { forceSlug: policed.forceSlug }),
 			});

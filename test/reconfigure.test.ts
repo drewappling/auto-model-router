@@ -16,7 +16,7 @@ import { openDb } from "../src/util/sqlite.ts";
  */
 
 describe("applying config in place", () => {
-	test("blocks keep their identity, only leaves change, and the changed paths come back dotted", () => {
+	test("blocks keep their identity, only leaves change, and the changed paths come back dotted", async () => {
 		const cfg = structuredClone(DEFAULT_CONFIG);
 		const ollamaRef = cfg.ollama; // what a client binds at construction
 		const changed = applyConfigPatch(cfg, { ollama: { enabled: true, apiKey: "k" } });
@@ -27,7 +27,7 @@ describe("applying config in place", () => {
 		expect(applyConfigPatch(cfg, { ollama: { apiKey: "k" } })).toEqual([]);
 	});
 
-	test("a patch touches only what it names; a full apply prunes what the source dropped", () => {
+	test("a patch touches only what it names; a full apply prunes what the source dropped", async () => {
 		const target: Record<string, unknown> = { a: { x: 1, y: 2 }, b: 3 };
 		expect(assignInPlace(target, { a: { x: 9 } })).toEqual(["a.x"]);
 		expect(target).toEqual({ a: { x: 9, y: 2 }, b: 3 });
@@ -35,7 +35,7 @@ describe("applying config in place", () => {
 		expect(target).toEqual({ a: { x: 9 } });
 	});
 
-	test("a patch cannot alias live config", () => {
+	test("a patch cannot alias live config", async () => {
 		const cfg = structuredClone(DEFAULT_CONFIG);
 		const patch = { filters: { allow: ["a/b"] } };
 		applyConfigPatch(cfg, patch);
@@ -43,7 +43,7 @@ describe("applying config in place", () => {
 		expect(cfg.filters.allow).toEqual(["a/b"]);
 	});
 
-	test("touched matches a block and its keys", () => {
+	test("touched matches a block and its keys", async () => {
 		expect(touched(["ollama.apiKey"], "ollama")).toBe(true);
 		expect(touched(["context"], "context")).toBe(true);
 		expect(touched(["filters.allow"], "openrouter", "ollama")).toBe(false);

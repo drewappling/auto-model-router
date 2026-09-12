@@ -48,7 +48,7 @@ function sse(frames: string[]): Response {
 }
 
 describe("upstreams config", () => {
-	test("an entry is accepted with defaults filled; a reserved or malformed id is refused", () => {
+	test("an entry is accepted with defaults filled; a reserved or malformed id is refused", async () => {
 		const ok = configInputSchema.safeParse({ upstreams: [{ id: "openai-direct", kind: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "sk", models: [{ id: "gpt-4o", input: 2.5, output: 10 }] }] });
 		expect(ok.success).toBe(true);
 		const full = completeUpstreamEntry({ id: "vllm", kind: "openai", baseUrl: "http://vllm:8000/v1", models: [] });
@@ -61,7 +61,7 @@ describe("upstreams config", () => {
 		expect(configInputSchema.safeParse({ upstreams: [{ id: "x", kind: "bedrock", baseUrl: "https://x", models: [] }] }).success).toBe(false);
 	});
 
-	test("a live patch replaces the list and completes sparse entries", () => {
+	test("a live patch replaces the list and completes sparse entries", async () => {
 		const cfg = cfgWith([]);
 		const changed = applyConfigPatch(cfg, { upstreams: [{ id: "azure-eu", kind: "azure", baseUrl: "https://r.openai.azure.com", apiKey: "k", models: [{ id: "gpt-4o-deploy", input: 2.5, output: 10 }] }] } as never);
 		expect(changed).toEqual(["upstreams"]);
@@ -72,7 +72,7 @@ describe("upstreams config", () => {
 describe("static catalog", () => {
 	const twins = [normalizeCatalogModel(orRaw("openai/gpt-4o", 70, true))!, normalizeCatalogModel(orRaw("anthropic/claude-sonnet-4", 80))!];
 
-	test("models are priced per token, namespaced by the entry id, and borrow the twin's scores and modalities", () => {
+	test("models are priced per token, namespaced by the entry id, and borrow the twin's scores and modalities", async () => {
 		const e = entry({ id: "openai-direct", kind: "openai", models: [{ id: "gpt-4o", input: 2.5, output: 10, cachedInput: 1.25 }, { id: "custom-ft", input: 3, output: 12, contextLength: 32_000, quality: { coding: 55 }, supportsTools: false }] });
 		const models = buildUpstreamModels(e, twins);
 		expect(models.map((m) => m.slug)).toEqual(["openai-direct/gpt-4o", "openai-direct/custom-ft"]);
@@ -91,7 +91,7 @@ describe("static catalog", () => {
 		expect(ft.inputModalities).toEqual(["text"]);
 	});
 
-	test("an explicit twin wins over the name match; an anthropic entry defaults to the Claude tokenizer", () => {
+	test("an explicit twin wins over the name match; an anthropic entry defaults to the Claude tokenizer", async () => {
 		const e = entry({ id: "anthropic-direct", kind: "anthropic", models: [{ id: "claude-sonnet-4-20250514", input: 3, output: 15, twin: "anthropic/claude-sonnet-4", cacheWrite: 3.75, cachedInput: 0.3 }, { id: "claude-unknown", input: 1, output: 5 }] });
 		const [sonnet, unknown] = buildUpstreamModels(e, twins);
 		expect(sonnet!.quality.coding).toBe(80);
@@ -100,7 +100,7 @@ describe("static catalog", () => {
 		expect(unknown!.tokenizer).toBe("Claude");
 	});
 
-	test("a subscription model with no price of its own inherits the twin's, so it never ranks as free", () => {
+	test("a subscription model with no price of its own inherits the twin's, so it never ranks as free", async () => {
 		// A Pro/Max subscription publishes no per-token rates, and pricing it at zero would beat
 		// every model in every tier outright. The twin sells the same weights, so it is the rate.
 		const e = entry({ id: "anthropic-subscription", kind: "anthropic", costBias: 0.1, models: [{ id: "claude-sonnet-4-20250514", twin: "anthropic/claude-sonnet-4" }] });
@@ -117,7 +117,7 @@ describe("static catalog", () => {
 		expect(buildUpstreamModels(free, twins)[0]!.price).toEqual({ prompt: 0, completion: 0 });
 	});
 
-	test("the source rebuilds only when the entries or the OpenRouter models change", () => {
+	test("the source rebuilds only when the entries or the OpenRouter models change", async () => {
 		const cfg = cfgWith([entry({ id: "vllm", kind: "openai" })]);
 		const src = createStaticCatalogSource(cfg);
 		const first = src.get(twins);
@@ -157,7 +157,7 @@ describe("dispatch by slug prefix", () => {
 		expect(namedUpstreamOf("openai-direct/gpt-4o", ["openai-direct"])).toBe("openai-direct");
 	});
 
-	test("the ledger names the provider of a slug from the known ids", () => {
+	test("the ledger names the provider of a slug from the known ids", async () => {
 		setKnownUpstreamIds(["azure-eu", "bad id"]);
 		expect(providerOfSlug("azure-eu/gpt-4o")).toBe("azure-eu");
 		expect(providerOfSlug("openai/gpt-4o")).toBe("openrouter");
@@ -168,7 +168,7 @@ describe("dispatch by slug prefix", () => {
 });
 
 describe("the OpenAI-compatible client", () => {
-	test("the body loses the router's OpenRouter dialect: prefix, cascade, session, cache markers; reasoning becomes reasoning_effort", () => {
+	test("the body loses the router's OpenRouter dialect: prefix, cascade, session, cache markers; reasoning becomes reasoning_effort", async () => {
 		const out = toCompatBody("vllm", { model: "vllm/llama", models: ["vllm/llama", "vllm/other"], session_id: "s", stream: true, reasoning: { effort: "xhigh" }, messages: [{ role: "system", content: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }] }, { role: "user", content: "hi" }] });
 		expect(out.model).toBe("llama");
 		expect(out.models).toBeUndefined();
@@ -180,7 +180,7 @@ describe("the OpenAI-compatible client", () => {
 		expect(toCompatBody("vllm", { model: "vllm/llama", reasoning: { enabled: false } }).reasoning_effort).toBeUndefined();
 	});
 
-	test("endpoints: OpenAI bears a token; Azure names the deployment in the path and keys with api-key", () => {
+	test("endpoints: OpenAI bears a token; Azure names the deployment in the path and keys with api-key", async () => {
 		const oa = compatEndpoint(entry({ id: "openai-direct", kind: "openai", baseUrl: "https://api.openai.com/v1/", headers: { "x-org": "o" } }), "gpt-4o");
 		expect(oa.url).toBe("https://api.openai.com/v1/chat/completions");
 		expect(oa.headers).toMatchObject({ authorization: "Bearer sk-x", "x-org": "o" });
@@ -190,7 +190,7 @@ describe("the OpenAI-compatible client", () => {
 		expect(az.headers.authorization).toBeUndefined();
 	});
 
-	test("statuses: OpenAI's insufficient_quota 429 is the account, a plain 429 the moment; 400 context is final", () => {
+	test("statuses: OpenAI's insufficient_quota 429 is the account, a plain 429 the moment; 400 context is final", async () => {
 		expect(classifyCompatStatus("x", 429, { error: { code: "insufficient_quota", message: "You exceeded your current quota" } })).toMatchObject({ kind: "quota", retryable: true });
 		expect(classifyCompatStatus("x", 429, { error: { message: "Rate limit reached" } })).toMatchObject({ kind: "rate_limit", retryable: true });
 		expect(classifyCompatStatus("x", 400, { error: { message: "This model's maximum context length is 8192 tokens" } })).toMatchObject({ kind: "context_length", retryable: false });
@@ -246,7 +246,7 @@ describe("the OpenAI-compatible client", () => {
 });
 
 describe("the Anthropic client", () => {
-	test("the request: system blocks keep cache markers, turns alternate, tools and results map, thinking follows the effort", () => {
+	test("the request: system blocks keep cache markers, turns alternate, tools and results map, thinking follows the effort", async () => {
 		const body = {
 			model: "anthropic-direct/claude-sonnet-4",
 			stream: true,
@@ -286,7 +286,7 @@ describe("the Anthropic client", () => {
 		expect(plain.temperature).toBe(0.2);
 	});
 
-	test("the stream: message_start opens, text and tool blocks become chunks, message_delta closes with usage in the OpenAI convention", () => {
+	test("the stream: message_start opens, text and tool blocks become chunks, message_delta closes with usage in the OpenAI convention", async () => {
 		const t = createAnthropicTranslator("anthropic-direct/claude-sonnet-4");
 		const push = (event: string, data: Record<string, unknown>) => t.push({ event, data: JSON.stringify(data) });
 		const start = push("message_start", { type: "message_start", message: { id: "msg_1", model: "claude-sonnet-4-20250514", usage: { input_tokens: 100, cache_read_input_tokens: 40, cache_creation_input_tokens: 10 } } })!;
@@ -380,7 +380,7 @@ describe("the Anthropic client", () => {
 		};
 		const cfg = cfgWith([entry({ id: "sub", kind: "anthropic", auth: "oauth-bearer", baseUrl: "https://api.anthropic.com", apiKey: "sk-ant-oat01-x", models: [{ id: "claude-sonnet-5", input: 0, output: 0 }] })]);
 		const drain = async (messages: unknown[]): Promise<void> => {
-			const d = await createAnthropicClient(cfg, "sub", fetchImpl).dispatch({ body: { model: "sub/claude-sonnet-5", messages, max_tokens: 16 }, sessionId: "s", signal: new AbortController().signal });
+			const d = await (await createAnthropicClient(cfg, "sub", fetchImpl)).dispatch({ body: { model: "sub/claude-sonnet-5", messages, max_tokens: 16 }, sessionId: "s", signal: new AbortController().signal });
 			for await (const c of d.chunks) void c;
 		};
 		await drain([{ role: "user", content: "ping" }]);

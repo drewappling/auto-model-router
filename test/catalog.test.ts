@@ -12,7 +12,7 @@ function rawFor(slug: string): unknown {
 }
 
 describe("normalizeCatalogModel", () => {
-	test("survives every record in the real catalog without throwing", () => {
+	test("survives every record in the real catalog without throwing", async () => {
 		let normalized = 0;
 		for (const raw of RAW) {
 			const model = normalizeCatalogModel(raw);
@@ -22,7 +22,7 @@ describe("normalizeCatalogModel", () => {
 		expect(normalized).toBeGreaterThan(RAW.length * 0.9);
 	});
 
-	test("every normalized model has strictly positive prompt and completion prices", () => {
+	test("every normalized model has strictly positive prompt and completion prices", async () => {
 		for (const raw of RAW) {
 			const model = normalizeCatalogModel(raw);
 			if (model === null) continue;
@@ -33,7 +33,7 @@ describe("normalizeCatalogModel", () => {
 		}
 	});
 
-	test("rejects the openrouter meta-routers, whose -1 pricing means unknown", () => {
+	test("rejects the openrouter meta-routers, whose -1 pricing means unknown", async () => {
 		// Routing to another router is both out of scope and uncostable: a -1
 		// price would otherwise be read as free and win every tier outright.
 		for (const slug of ["openrouter/auto", "openrouter/pareto-code", "openrouter/fusion"]) {
@@ -41,7 +41,7 @@ describe("normalizeCatalogModel", () => {
 		}
 	});
 
-	test("does not mistake unknown (-1) pricing for free pricing", () => {
+	test("does not mistake unknown (-1) pricing for free pricing", async () => {
 		const free = normalizeCatalogModel(rawFor("openai/gpt-oss-20b:free"));
 		expect(free).not.toBeNull();
 		expect(free?.isFree).toBe(true);
@@ -49,7 +49,7 @@ describe("normalizeCatalogModel", () => {
 		expect(normalizeCatalogModel(rawFor("openrouter/auto"))).toBeNull();
 	});
 
-	test("preserves published quality scores and never imputes missing ones", () => {
+	test("preserves published quality scores and never imputes missing ones", async () => {
 		const scoredInFixture = RAW.filter(
 			(m) =>
 				typeof m === "object" &&
@@ -74,7 +74,7 @@ describe("normalizeCatalogModel", () => {
 		expect(unscored).toBeGreaterThan(0);
 	});
 
-	test("reads long-context override tiers, sorted ascending", () => {
+	test("reads long-context override tiers, sorted ascending", async () => {
 		const sonnet = normalizeCatalogModel(rawFor("anthropic/claude-sonnet-4.5"));
 		expect(sonnet).not.toBeNull();
 		expect(sonnet?.priceTiers.length).toBeGreaterThan(0);
@@ -91,7 +91,7 @@ describe("normalizeCatalogModel", () => {
 		expect(first?.price.prompt).toBeGreaterThan(sonnet?.price.prompt ?? 0);
 	});
 
-	test("an override tier inherits components it does not restate", () => {
+	test("an override tier inherits components it does not restate", async () => {
 		for (const raw of RAW) {
 			const model = normalizeCatalogModel(raw);
 			if (model === null || model.priceTiers.length === 0) continue;
@@ -103,7 +103,7 @@ describe("normalizeCatalogModel", () => {
 		}
 	});
 
-	test("strips the floating-alias marker from the author segment", () => {
+	test("strips the floating-alias marker from the author segment", async () => {
 		const alias = normalizeCatalogModel(rawFor("~x-ai/grok-latest"));
 		expect(alias).not.toBeNull();
 		expect(alias?.author).toBe("x-ai");
@@ -111,7 +111,7 @@ describe("normalizeCatalogModel", () => {
 		expect(alias?.slug.startsWith("~")).toBe(true);
 	});
 
-	test("derives capability flags from supported_parameters", () => {
+	test("derives capability flags from supported_parameters", async () => {
 		const sonnet = normalizeCatalogModel(rawFor("anthropic/claude-sonnet-4.5"));
 		expect(sonnet?.supportsTools).toBe(true);
 		expect(sonnet?.supportsToolChoice).toBe(true);
@@ -122,7 +122,7 @@ describe("normalizeCatalogModel", () => {
 		expect(toolless?.supportsTools).toBe(false);
 	});
 
-	test("rejects records missing the fields routing depends on", () => {
+	test("rejects records missing the fields routing depends on", async () => {
 		expect(normalizeCatalogModel({})).toBeNull();
 		expect(normalizeCatalogModel(null)).toBeNull();
 		expect(normalizeCatalogModel({ id: "x/y" })).toBeNull();
@@ -220,7 +220,7 @@ describe("createCatalog key-scoped availability", () => {
 		const db = openDb(":memory:");
 		const catalog = createCatalog(cfg, upstream, db);
 
-		await expect(catalog.get()).rejects.toThrow("Unauthorized");
+		(await expect(catalog.get())).rejects.toThrow("Unauthorized");
 		db.close();
 	});
 

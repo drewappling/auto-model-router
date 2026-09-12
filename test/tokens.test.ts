@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { migrateStore } from "../src/util/schema.ts";
+import { num, openSqlDb } from "../src/util/sql.ts";
 
 import { loadConfig } from "../src/config/load.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { adjustPendingEstimate, DEFAULT_BYTES_PER_TOKEN, estimatePromptTokens, estimateTokens } from "../src/tokens/estimate.ts";
-import { openDb } from "../src/util/sqlite.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
 const cfg = loadConfig({});
@@ -48,34 +52,35 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 }
 
 describe("estimateTokens", () => {
-	test("uses the default ratio for an unknown tokenizer family", () => {
+	test("uses the default ratio for an unknown tokenizer family", async () => {
 		expect(estimateTokens(3600, "no-such-tokenizer", null)).toBe(Math.ceil(3600 / DEFAULT_BYTES_PER_TOKEN));
 	});
 
-	test("scales linearly with byte count and never goes negative", () => {
+	test("scales linearly with byte count and never goes negative", async () => {
 		expect(estimateTokens(0, "gpt", null)).toBe(0);
 		const small = estimateTokens(1000, "gpt", null);
 		const large = estimateTokens(10_000, "gpt", null);
 		expect(large).toBeGreaterThan(small);
 	});
 
-	test("a code-dense family estimates more tokens for the same bytes", () => {
+	test("a code-dense family estimates more tokens for the same bytes", async () => {
 		// BPE tokenizers emit more tokens per character on code than on prose,
 		// so a lower bytes-per-token ratio must yield a higher token count.
 		expect(estimateTokens(10_000, "deepseek", null)).toBeGreaterThan(estimateTokens(10_000, "gpt", null));
 	});
 
-	test("is case-insensitive about the tokenizer name", () => {
+	test("is case-insensitive about the tokenizer name", async () => {
 		expect(estimateTokens(5000, "Claude", null)).toBe(estimateTokens(5000, "claude", null));
 	});
 });
 
 describe("ledger calibration", () => {
-	test("a calibrated ratio replaces the family default once enough samples land", () => {
-		const db = openDb(":memory:");
+	test("a calibrated ratio replaces the family default once enough samples land", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
-			expect(ledger.tokenRatio("claude")).toBeNull();
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+			expect(await ledger.tokenRatio("claude")).toBeNull();
 
 			const req = parseChatRequest(
 				{ model: "auto", messages: [{ role: "user", content: "x".repeat(4000) }] },
@@ -86,8 +91,8 @@ describe("ledger calibration", () => {
 			// bytes/token; the ledger must converge on the measurement.
 			const observedTokens = Math.round(req.promptBytes / 2);
 			for (let i = 0; i < 30; i++) {
-				estimatePromptTokens(req, "claude", ledger);
-				ledger.record(
+				estimatePromptTokens(req, "claude", null);
+				await ledger.record(
 					entry({
 						conversationKey: req.conversationKey,
 						usage: { ...EMPTY_USAGE, promptTokens: observedTokens, completionTokens: 10 },
@@ -95,33 +100,35 @@ describe("ledger calibration", () => {
 				);
 			}
 
-			const ratio = ledger.tokenRatio("claude");
+			const ratio = await ledger.tokenRatio("claude");
 			expect(ratio).not.toBeNull();
 			if (ratio === null) return;
 			expect(ratio).toBeCloseTo(2, 1);
 
-			// And the estimate now follows the measurement, not the default.
-			const calibrated = estimateTokens(4000, "claude", ledger);
+			// And the estimate follows the measurement, not the family default.
+			const calibrated = estimateTokens(4000, "claude", ratio);
 			expect(calibrated).toBeGreaterThan(estimateTokens(4000, "claude", null));
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("an uncalibrated family still falls back to its default", () => {
-		const db = openDb(":memory:");
+	test("an uncalibrated family still falls back to its default", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
-			expect(ledger.tokenRatio("gemini")).toBeNull();
-			expect(estimateTokens(3600, "gemini", ledger)).toBe(estimateTokens(3600, "gemini", null));
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
+			expect(await ledger.tokenRatio("gemini")).toBeNull();
+			// An uncalibrated family reads null, which is exactly the default path.
+			expect(estimateTokens(3600, "gemini", await ledger.tokenRatio("gemini"))).toBe(estimateTokens(3600, "gemini", null));
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });
 
 describe("estimatePromptTokens", () => {
-	test("counts tool schemas, not just message text", () => {
+	test("counts tool schemas, not just message text", async () => {
 		const bare = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers());
 		const withTools = parseChatRequest(
 			{
@@ -143,7 +150,7 @@ describe("estimatePromptTokens", () => {
 		expect(estimatePromptTokens(withTools, "gpt", null)).toBeGreaterThan(estimatePromptTokens(bare, "gpt", null));
 	});
 
-	test("charges a per-image allowance on top of text", () => {
+	test("charges a per-image allowance on top of text", async () => {
 		const text = parseChatRequest(
 			{ model: "auto", messages: [{ role: "user", content: [{ type: "text", text: "describe" }] }] },
 			new Headers(),
@@ -173,99 +180,103 @@ describe("calibration hygiene (review 2026-09-05 §8)", () => {
 		return parseChatRequest({ model: "auto", messages: [{ role: "user", content: text }] }, new Headers());
 	}
 
-	test("a provider reporting impossible token counts never calibrates its family", () => {
-		const db = openDb(":memory:");
+	test("a provider reporting impossible token counts never calibrates its family", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 			const req = requestOf("x".repeat(10_000));
 			for (let i = 0; i < 30; i++) {
-				estimatePromptTokens(req, "qwen3", ledger);
+				estimatePromptTokens(req, "qwen3", null);
 				// 0.4 bytes/token: ~8x what the bytes imply (seen live from one provider).
-				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 0.4) } }));
+				await ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 0.4) } }));
 			}
-			expect(ledger.tokenRatio("qwen3")).toBeNull();
+			expect(await ledger.tokenRatio("qwen3")).toBeNull();
 			for (let i = 0; i < 30; i++) {
-				estimatePromptTokens(req, "qwen3", ledger);
-				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 3.2) } }));
+				estimatePromptTokens(req, "qwen3", null);
+				await ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 3.2) } }));
 			}
-			expect(ledger.tokenRatio("qwen3")).toBeCloseTo(3.2, 1);
+			expect(await ledger.tokenRatio("qwen3")).toBeCloseTo(3.2, 1);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("adjustPendingEstimate calibrates against the dispatched bytes, not the raw request", () => {
-		const db = openDb(":memory:");
+	test("adjustPendingEstimate calibrates against the dispatched bytes, not the raw request", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 			const req = requestOf("y".repeat(10_000));
 			for (let i = 0; i < 30; i++) {
-				estimatePromptTokens(req, "grok", ledger);
+				estimatePromptTokens(req, "grok", null);
 				// Compaction halved the prompt before dispatch; the upstream billed the half.
 				adjustPendingEstimate(req.conversationKey, req.promptBytes / 2);
-				ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 2 / 3.5) } }));
+				await ledger.record(entry({ conversationKey: req.conversationKey, usage: { ...EMPTY_USAGE, promptTokens: Math.round(req.promptBytes / 2 / 3.5) } }));
 			}
 			// Paired with the raw bytes this would have learned 7.0; the dispatched bytes give the true 3.5.
-			expect(ledger.tokenRatio("grok")).toBeCloseTo(3.5, 1);
+			expect(await ledger.tokenRatio("grok")).toBeCloseTo(3.5, 1);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });
 
 describe("ledger.escalationCost", () => {
-	test("measures what escalated retries bill per prompt token, once enough exist", () => {
-		const db = openDb(":memory:");
+	test("measures what escalated retries bill per prompt token, once enough exist", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 			for (let i = 0; i < 9; i++) {
-				ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
+				await ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
 			}
-			expect(ledger.escalationCost?.(7)).toBeNull(); // 9 < the sample floor
-			ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
+			expect(await ledger.escalationCost(7)).toBeNull(); // 9 < the sample floor
+			await ledger.record(entry({ attempt: 1, reportedUsd: 0.02, usage: { ...EMPTY_USAGE, promptTokens: 1_000 } }));
 			// Errored retries carry no usage and are excluded.
-			ledger.record(entry({ attempt: 1, reportedUsd: null, error: "upstream_error: boom", usage: EMPTY_USAGE }));
+			await ledger.record(entry({ attempt: 1, reportedUsd: null, error: "upstream_error: boom", usage: EMPTY_USAGE }));
 			// Memoised: a fresh ledger reads through.
-			const fresh = createLedger(db, cfg);
-			const cost = fresh.escalationCost?.(7);
+			const fresh = createSqlLedger(db, cfg, { findModel: () => null });
+			const cost = await fresh.escalationCost(7);
 			expect(cost).not.toBeNull();
-			expect(cost!.samples).toBe(10);
-			expect(cost!.usdPerPromptToken).toBeCloseTo(0.02 / 1_000, 8);
+			expect(cost?.samples).toBe(10);
+			expect(cost?.usdPerPromptToken).toBeCloseTo(0.02 / 1_000, 8);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });
 
 
 describe("ledger.softFailureSpikes", () => {
-	test("flags a model whose last-hour failure rate is a spike against its own 7-day baseline", () => {
-		const db = openDb(":memory:");
+	test("flags a model whose last-hour failure rate is a spike against its own 7-day baseline", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 			const now = 1_800_000_000_000;
 			const H = 3_600_000;
 			// Baseline: 100 dispatches over the prior week at 5% soft failures.
 			for (let i = 0; i < 100; i++) {
-				ledger.record(entry({ createdAtMs: now - 2 * H - i * 60 * 60_000, escalationSignal: i % 20 === 0 ? "empty_completion" : null, wasted: i % 20 === 0 }));
+				await ledger.record(entry({ createdAtMs: now - 2 * H - i * 60 * 60_000, escalationSignal: i % 20 === 0 ? "empty_completion" : null, wasted: i % 20 === 0 }));
 			}
 			// Last hour: 10 dispatches, 4 soft failures (40%): a spike.
 			for (let i = 0; i < 10; i++) {
-				ledger.record(entry({ createdAtMs: now - 5 * 60_000 - i * 60_000, escalationSignal: i < 4 ? "repeat_tool_call" : null, wasted: i < 4 }));
+				await ledger.record(entry({ createdAtMs: now - 5 * 60_000 - i * 60_000, escalationSignal: i < 4 ? "repeat_tool_call" : null, wasted: i < 4 }));
 			}
 			// A second model with plenty of failures but a matching baseline is not spiking.
 			for (let i = 0; i < 100; i++) {
-				ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 2 * H - i * 60 * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
+				await ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 2 * H - i * 60 * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
 			}
 			for (let i = 0; i < 10; i++) {
-				ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 5 * 60_000 - i * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
+				await ledger.record(entry({ slug: "x/steady", servedSlug: "x/steady", createdAtMs: now - 5 * 60_000 - i * 60_000, error: i % 2 === 0 ? "upstream_error: 502" : null }));
 			}
 			// Aborted and quota errors are not attributable; digest rows are side calls.
 			for (let i = 0; i < 10; i++) {
-				ledger.record(entry({ slug: "x/aborted", servedSlug: "x/aborted", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "aborted: client closed" }));
-				ledger.record(entry({ slug: "x/digest", servedSlug: "x/digest", requestedModel: "digest", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "upstream_error: 500" }));
+				await ledger.record(entry({ slug: "x/aborted", servedSlug: "x/aborted", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "aborted: client closed" }));
+				await ledger.record(entry({ slug: "x/digest", servedSlug: "x/digest", requestedModel: "digest", createdAtMs: now - 5 * 60_000 - i * 60_000, error: "upstream_error: 500" }));
 			}
-			const spikes = ledger.softFailureSpikes?.(now) ?? [];
+			const spikes = await ledger.softFailureSpikes(now);
 			expect(spikes.map((s) => s.slug)).toEqual(["openai/gpt-5-mini"]);
 			const s = spikes[0]!;
 			expect(s.recentDispatches).toBe(10);
@@ -275,35 +286,39 @@ describe("ledger.softFailureSpikes", () => {
 			expect(s.baselineFailures).toBe(5);
 			expect(s.baselineRate).toBeCloseTo(0.05, 6);
 			// Too few recent dispatches: nothing spikes, however high the rate.
-			expect(ledger.softFailureSpikes?.(now, 3 * 60_000)).toEqual([]);
+			expect(await ledger.softFailureSpikes(now, 3 * 60_000)).toEqual([]);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });
 
 describe("ledger.prune and markWasted", () => {
-	test("prune deletes rows past retention and 0 keeps everything; markWasted flips one row", () => {
-		const db = openDb(":memory:");
+	test("prune deletes rows past retention and 0 keeps everything; markWasted flips one row", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-tokens.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, cfg);
+			const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 			const now = 1_800_000_000_000;
 			const DAY = 86_400_000;
-			for (let i = 0; i < 5; i++) ledger.record(entry({ createdAtMs: now - i * 100 * DAY }));
-			expect(ledger.prune?.(0, now)).toEqual({ deleted: 0, oldestKeptMs: now - 400 * DAY });
-			expect(ledger.recentEntries(10)).toHaveLength(5);
-			db.run("INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, 1, 1), (?, 2, 2)", [now - 400 * DAY, now - DAY]);
-			expect(ledger.prune?.(365, now)?.deleted).toBe(1); // only the 400-day-old row
-			expect((db.query("SELECT COUNT(*) AS n FROM ollama_meter_samples").get() as { n: number }).n).toBe(1);
-			expect(ledger.recentEntries(10)).toHaveLength(4);
-			expect(ledger.prune?.(150, now)?.deleted).toBe(2); // 200 and 300 days old
-			const left = ledger.recentEntries(10);
+			for (let i = 0; i < 5; i++) await ledger.record(entry({ createdAtMs: now - i * 100 * DAY }));
+			expect(await ledger.prune(0, now)).toEqual({ deleted: 0, oldestKeptMs: now - 400 * DAY });
+			expect(await ledger.recentEntries(10)).toHaveLength(5);
+			for (const atMs of [now - 400 * DAY, now - DAY]) {
+				await db.sql`INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (${atMs}, 1, 1)`;
+			}
+			expect((await ledger.prune(365, now))?.deleted).toBe(1); // only the 400-day-old row
+			const samples = await db.one<{ n: unknown }>("SELECT COUNT(*) AS n FROM ollama_meter_samples");
+			expect(num(samples?.n)).toBe(1);
+			expect(await ledger.recentEntries(10)).toHaveLength(4);
+			expect((await ledger.prune(150, now))?.deleted).toBe(2); // 200 and 300 days old
+			const left = await ledger.recentEntries(10);
 			expect(left).toHaveLength(2);
 			expect(left.every((e) => e.wasted === false)).toBe(true);
-			ledger.markWasted?.(left[0]!.id);
-			expect(ledger.recentEntries(10).find((e) => e.id === left[0]!.id)?.wasted).toBe(true);
+			await ledger.markWasted(left[0]!.id);
+			expect((await ledger.recentEntries(10)).find((e) => e.id === left[0]!.id)?.wasted).toBe(true);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });

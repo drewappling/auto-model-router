@@ -18,17 +18,17 @@ import {
 } from "../omp-extension/embed-logic.ts";
 
 describe("resolveEmbedPort", () => {
-	test("returns 0 (let the OS assign a free port) when nothing is configured", () => {
+	test("returns 0 (let the OS assign a free port) when nothing is configured", async () => {
 		expect(resolveEmbedPort(undefined)).toBe(0);
 		expect(resolveEmbedPort("")).toBe(0);
 	});
 
-	test("uses an explicit valid env port verbatim", () => {
+	test("uses an explicit valid env port verbatim", async () => {
 		expect(resolveEmbedPort("8812")).toBe(8812);
 		expect(resolveEmbedPort("0")).toBe(0);
 	});
 
-	test("falls back to 0 on junk or out-of-range values", () => {
+	test("falls back to 0 on junk or out-of-range values", async () => {
 		expect(resolveEmbedPort("notaport")).toBe(0);
 		expect(resolveEmbedPort("-1")).toBe(0);
 		expect(resolveEmbedPort("70000")).toBe(0);
@@ -37,20 +37,20 @@ describe("resolveEmbedPort", () => {
 	// A stable port is what keeps omp's PRE-extension model resolution correct:
 	// it reads models.yml before this extension can bind and rewrite it, so an
 	// ephemeral port leaves that block naming the previous session's dead port.
-	test("uses the configured server.port when no env override is set", () => {
+	test("uses the configured server.port when no env override is set", async () => {
 		expect(resolveEmbedPort(undefined, 8788)).toBe(8788);
 		expect(resolveEmbedPort("", 8788)).toBe(8788);
 	});
 
-	test("the env var wins over the configured port", () => {
+	test("the env var wins over the configured port", async () => {
 		expect(resolveEmbedPort("8812", 8788)).toBe(8812);
 	});
 
-	test("an explicit env 0 wins, so an ephemeral port stays requestable", () => {
+	test("an explicit env 0 wins, so an ephemeral port stays requestable", async () => {
 		expect(resolveEmbedPort("0", 8788)).toBe(0);
 	});
 
-	test("ignores a nonsense configured port rather than binding it", () => {
+	test("ignores a nonsense configured port rather than binding it", async () => {
 		expect(resolveEmbedPort(undefined, 0)).toBe(0);
 		expect(resolveEmbedPort(undefined, -5)).toBe(0);
 		expect(resolveEmbedPort(undefined, 70_000)).toBe(0);
@@ -73,16 +73,16 @@ describe("modelsYmlPort", () => {
           name: Auto (auto-model-router)
 `;
 
-	test("reads the advertised port out of a real block", () => {
+	test("reads the advertised port out of a real block", async () => {
 		expect(modelsYmlPort(REAL)).toBe(58724);
 	});
 
-	test("returns null when our provider block is absent", () => {
+	test("returns null when our provider block is absent", async () => {
 		expect(modelsYmlPort("providers:\n    openrouter:\n      baseUrl: https://openrouter.ai/api/v1\n")).toBeNull();
 		expect(modelsYmlPort("")).toBeNull();
 	});
 
-	test("is not fooled by another provider's baseUrl appearing first", () => {
+	test("is not fooled by another provider's baseUrl appearing first", async () => {
 		const mixed = `providers:
     llama.cpp:
       baseUrl: http://127.0.0.1:8080/v1
@@ -92,7 +92,7 @@ describe("modelsYmlPort", () => {
 		expect(modelsYmlPort(mixed)).toBe(8788);
 	});
 
-	test("returns null when the block carries no parseable url", () => {
+	test("returns null when the block carries no parseable url", async () => {
 		expect(modelsYmlPort("providers:\n    auto-model-router:\n      api: openai-completions\n")).toBeNull();
 	});
 });
@@ -107,14 +107,14 @@ describe("embed port file", () => {
 		if (dir) rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("round-trips the bound port", () => {
+	test("round-trips the bound port", async () => {
 		const p = embedPortPath(dir);
 		expect(p).toBe(join(dir, EMBED_PORT_FILE));
 		writeEmbedPort(p, 45678);
 		expect(readEmbedPort(p)).toBe(45678);
 	});
 
-	test("returns null for a missing or malformed file", () => {
+	test("returns null for a missing or malformed file", async () => {
 		expect(readEmbedPort(embedPortPath(join(dir, "absent")))).toBeNull();
 		writeEmbedPort(embedPortPath(dir), -5);
 		expect(readEmbedPort(embedPortPath(dir))).toBeNull();
@@ -135,7 +135,7 @@ describe("buildProviderConfig", () => {
 		ledger: { fallbackBlend: { inputPerMtok: 0.2, outputPerMtok: 0.8 } },
 	};
 
-	test("builds a provider config against the actual bound port", () => {
+	test("builds a provider config against the actual bound port", async () => {
 		const c: EmbedConfig = buildProviderConfig(45678, base);
 		expect(c.baseUrl).toBe("http://127.0.0.1:45678/v1");
 		expect(c.port).toBe(45678);
@@ -145,41 +145,41 @@ describe("buildProviderConfig", () => {
 		expect(c.models[0]).toMatchObject({ id: "auto", contextWindow: 400_000, maxTokens: 32_000 });
 	});
 
-	test("converts cost to USD-per-million-token and applies cache multipliers", () => {
+	test("converts cost to USD-per-million-token and applies cache multipliers", async () => {
 		const c: EmbedConfig = buildProviderConfig(45678, base);
 		// input 0.2, output 0.8, cacheRead = 0.2*0.1 = 0.02, cacheWrite = 0.2*1.25 = 0.25
 		expect(c.models[0]!.cost).toEqual({ input: 0.2, output: 0.8, cacheRead: 0.02, cacheWrite: 0.25 });
 	});
 
-	test("normalizes a wildcard listen host to loopback", () => {
+	test("normalizes a wildcard listen host to loopback", async () => {
 		const c: EmbedConfig = buildProviderConfig(45678, { ...base, server: { host: "0.0.0.0" } });
 		expect(c.baseUrl).toBe("http://127.0.0.1:45678/v1");
 	});
 
-	test("carries the harness id through when configured", () => {
+	test("carries the harness id through when configured", async () => {
 		const c: EmbedConfig = buildProviderConfig(45678, { ...base, server: { host: "127.0.0.1", harnessId: "prod-a" } });
 		expect(c.harnessId).toBe("prod-a");
 	});
 });
 
 describe("embed constants", () => {
-	test("provider id and dummy key stay stable", () => {
+	test("provider id and dummy key stay stable", async () => {
 		expect(EMBED_PROVIDER_ID).toBe("auto-model-router");
 	});
-	test("port file name is stable", () => {
+	test("port file name is stable", async () => {
 		expect(EMBED_PORT_FILE).toBe("embed.port");
 	});
 });
 
 describe("agentdox scope", () => {
-	test("derives a slug from the workspace basename", () => {
+	test("derives a slug from the workspace basename", async () => {
 		expect(deriveAgentdoxScope("E:/projects/Ashlands/Ashlands")).toBe("ashlands");
 		expect(deriveAgentdoxScope("/home/drew/omp-router")).toBe("omp-router");
 		expect(deriveAgentdoxScope("E:\\projects\\My Game\\")).toBe("my-game");
 		expect(deriveAgentdoxScope("")).toBe("");
 	});
 
-	test("the workspace derivation wins over the scope-agnostic defaultScope", () => {
+	test("the workspace derivation wins over the scope-agnostic defaultScope", async () => {
 		// Regression: one router install serves every project on the machine, so a
 		// global `defaultScope` overriding the derivation made an ashlands session
 		// ship `X-Agentdox-Scope: omp-router` — wrong context injected, turns
@@ -198,7 +198,7 @@ describe("agentdox scope", () => {
 		expect(fallback.agentdoxScope).toBe("pinned");
 	});
 
-	test("no scope header when the bridge is off", () => {
+	test("no scope header when the bridge is off", async () => {
 		const cfg = {
 			server: { host: "127.0.0.1" },
 			profiles: [],
@@ -219,7 +219,7 @@ describe("workspace origin", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	test("a plain repository: the remote from .git/config, also from a subdirectory", () => {
+	test("a plain repository: the remote from .git/config, also from a subdirectory", async () => {
 		const repo = join(root, "repo");
 		mkdirSync(join(repo, ".git"), { recursive: true });
 		writeFileSync(join(repo, ".git", "config"), CONFIG);
@@ -230,7 +230,7 @@ describe("workspace origin", () => {
 		expect(deriveAgentdoxScope(repo)).toBe("repo");
 	});
 
-	test("a worktree: .git is a file naming the git dir, whose shared config is one hop further", () => {
+	test("a worktree: .git is a file naming the git dir, whose shared config is one hop further", async () => {
 		// The main checkout holds the config; the worktree's own dir only points at it.
 		const main = join(root, "main");
 		mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
@@ -249,7 +249,7 @@ describe("workspace origin", () => {
 		expect(deriveWorkspaceOrigin(join(sub, "lib"))).toBe("github.com/org/lib");
 	});
 
-	test("no remote, a local remote, no repository, or nothing at all: no fingerprint, never a throw", () => {
+	test("no remote, a local remote, no repository, or nothing at all: no fingerprint, never a throw", async () => {
 		const bare = join(root, "bare");
 		mkdirSync(join(bare, ".git"), { recursive: true });
 		writeFileSync(join(bare, ".git", "config"), "[core]\n\tbare = false\n");
@@ -278,7 +278,7 @@ describe("workspace origin", () => {
 		expect(deriveWorkspaceOrigin("/x/repo", () => '[remote "upstream"]\n\turl = https://github.com/other/thing.git\n')).toBe("");
 	});
 
-	test("buildProviderConfig carries the origin beside the scope, only where the scope goes", () => {
+	test("buildProviderConfig carries the origin beside the scope, only where the scope goes", async () => {
 		const base = {
 			server: { host: "127.0.0.1" },
 			profiles: [],

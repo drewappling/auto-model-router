@@ -226,16 +226,22 @@ export interface ConversationState {
 	updatedAtMs: number;
 }
 
+/**
+ * Every method is asynchronous because the store may be a shared database
+ * rather than a local file: replicas that cannot see each other's conversation
+ * state re-cold-start prompt caches for turns they did not serve, which at an
+ * observed 93% cache hit rate is a cost regression, not a latency one.
+ */
 export interface ConversationStore {
-	get(key: string): ConversationState | null;
+	get(key: string): Promise<ConversationState | null>;
 	/** Loads existing state or creates a fresh record. */
-	load(key: string): ConversationState;
+	load(key: string): Promise<ConversationState>;
 	/**
 	 * Persists the latest-wins fields. Deliberately does NOT write `spentUsd` or
 	 * `escalations` — those accumulate via `accrue`, and writing back a snapshot
 	 * here would clobber what a concurrent or already-billed dispatch added.
 	 */
-	save(state: ConversationState): void;
+	save(state: ConversationState): Promise<void>;
 	/**
 	 * Adds to the persisted counters, atomically in SQL.
 	 *
@@ -244,9 +250,9 @@ export interface ConversationStore {
 	 * reach the per-conversation budget guard anyway. Requires `load` to have
 	 * created the row.
 	 */
-	accrue(key: string, delta: { spentUsd?: number; escalations?: number }): void;
+	accrue(key: string, delta: { spentUsd?: number; escalations?: number }): Promise<void>;
 	/** Drops records untouched for longer than `maxAgeMs`. */
-	prune(maxAgeMs: number): number;
+	prune(maxAgeMs: number): Promise<number>;
 }
 
 /** Guarded-probe configuration for one dispatch. */

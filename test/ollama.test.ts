@@ -18,7 +18,11 @@ import { bareCloudName, ollamaRateFor } from "../src/catalog/ollama-prices.ts";
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot, CatalogSource } from "../src/catalog/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb } from "../src/util/sqlite.ts";
+import { migrateStore } from "../src/util/schema.ts";
+import { num, openSqlDb } from "../src/util/sql.ts";
 import type { OllamaConfig, RouterConfig } from "../src/config/types.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
@@ -80,20 +84,20 @@ function listings(source: "daemon" | "ollama.com" = "daemon"): OllamaListing[] {
 }
 
 describe("ollama prices", () => {
-	test("bare cloud name strips the daemon decoration", () => {
+	test("bare cloud name strips the daemon decoration", async () => {
 		expect(bareCloudName("glm-5.3-flash:cloud")).toBe("glm-5.3-flash");
 		expect(bareCloudName("deepseek-v4-pro:0813-cloud")).toBe("deepseek-v4-pro:0813");
 		expect(bareCloudName("GPT-OSS:120b")).toBe("gpt-oss:120b");
 	});
 
-	test("tagged rate wins, base rate covers other tags, unknown is null", () => {
+	test("tagged rate wins, base rate covers other tags, unknown is null", async () => {
 		expect(ollamaRateFor("gpt-oss:120b-cloud")?.key).toBe("gpt-oss:120b");
 		expect(ollamaRateFor("deepseek-v4-pro:0813")?.key).toBe("deepseek-v4-pro");
 		expect(ollamaRateFor("mistral-large-3:675b")?.key).toBe("mistral-large-3");
 		expect(ollamaRateFor("mystery-model")).toBeNull();
 	});
 
-	test("config overrides beat the shipped snapshot and can add models", () => {
+	test("config overrides beat the shipped snapshot and can add models", async () => {
 		const o = { "glm-5.3-flash": { input: 0.1, output: 0.2 }, "mystery-model": { input: 1, output: 2 } };
 		expect(ollamaRateFor("glm-5.3-flash:cloud", o)?.rate.input).toBe(0.1);
 		expect(ollamaRateFor("mystery-model:cloud", o)?.rate.output).toBe(2);
@@ -101,7 +105,7 @@ describe("ollama prices", () => {
 });
 
 describe("ollama listing + show parsing", () => {
-	test("daemon records carry context, capabilities and the remote name", () => {
+	test("daemon records carry context, capabilities and the remote name", async () => {
 		const l = parseOllamaListing(DAEMON_TAGS[0], "daemon")!;
 		expect(l.id).toBe("glm-5.3-flash:cloud");
 		expect(l.remoteModel).toBe("glm-5.3-flash");
@@ -112,20 +116,20 @@ describe("ollama listing + show parsing", () => {
 		expect(parseOllamaListing(DAEMON_TAGS[4], "daemon")!.isCloud).toBe(false);
 	});
 
-	test("ollama.com records are all cloud, with the id as the remote name", () => {
+	test("ollama.com records are all cloud, with the id as the remote name", async () => {
 		const l = parseOllamaListing({ name: "glm-5.3-flash", model: "glm-5.3-flash", details: {} }, "ollama.com")!;
 		expect(l.isCloud).toBe(true);
 		expect(l.remoteModel).toBe("glm-5.3-flash");
 		expect(l.contextLength).toBeNull();
 	});
 
-	test("show yields the architecture's context length and capabilities", () => {
+	test("show yields the architecture's context length and capabilities", async () => {
 		const s = parseOllamaShow({ capabilities: ["completion", "tools"], model_info: { "glm5_next.context_length": 1048576, "glm5_next.embedding_length": 4096 } });
 		expect(s.contextLength).toBe(1048576);
 		expect(s.capabilities).toEqual(["completion", "tools"]);
 	});
 
-	test("url helpers", () => {
+	test("url helpers", async () => {
 		expect(isOllamaDotCom("https://ollama.com/v1")).toBe(true);
 		expect(isOllamaDotCom("http://127.0.0.1:11434/v1")).toBe(false);
 		expect(ollamaApiRoot("https://ollama.com/v1/")).toBe("https://ollama.com");
@@ -135,7 +139,7 @@ describe("ollama listing + show parsing", () => {
 });
 
 describe("buildOllamaModels", () => {
-	test("prices, twins, capabilities and context are assembled; unpriced and local models are dropped", () => {
+	test("prices, twins, capabilities and context are assembled; unpriced and local models are dropped", async () => {
 		const models = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg: OLLAMA, log });
 		const slugs = models.map((m) => m.slug).sort();
 		expect(slugs).toEqual(["ollama/deepseek-v4-pro:0813-cloud", "ollama/glm-5.3-flash:cloud", "ollama/gpt-oss:120b-cloud"]);
@@ -164,7 +168,7 @@ describe("buildOllamaModels", () => {
 		expect(ds.quality).toEqual({});
 	});
 
-	test("a model Ollama lists but the price table does not know is priced from its twin", () => {
+	test("a model Ollama lists but the price table does not know is priced from its twin", async () => {
 		// Ollama publishes no prices, so they come from a static table. deepseek-v4.1-flash was
 		// listed by /api/tags and dropped here for want of an entry, so routing never saw it at
 		// all — a model the provider was actively offering. The twin sells the same weights.
@@ -180,19 +184,19 @@ describe("buildOllamaModels", () => {
 		expect(or.price.prompt).toBeGreaterThan(0);
 	});
 
-	test("a pinned twin beats the name match", () => {
+	test("a pinned twin beats the name match", async () => {
 		const cfg: OllamaConfig = { ...OLLAMA, twins: { "deepseek-v4-pro": "moonshotai/kimi-k3" } };
 		const ds = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg, log }).find((m) => m.slug.startsWith("ollama/deepseek"))!;
 		expect(ds.quality.coding).toBe(76.2);
 	});
 
-	test("includeLocal admits a daemon-local model only when priced", () => {
+	test("includeLocal admits a daemon-local model only when priced", async () => {
 		const cfg: OllamaConfig = { ...OLLAMA, includeLocal: true, prices: { "nomic-embed-text": { input: 0, output: 0 } } };
 		const models = buildOllamaModels({ listings: listings(), openrouter: OR_MODELS, cfg, log });
 		expect(models.some((m) => m.slug === "ollama/nomic-embed-text:latest")).toBe(true);
 	});
 
-	test("ollama.com listings with no metadata fall back to the twin's context and capabilities", () => {
+	test("ollama.com listings with no metadata fall back to the twin's context and capabilities", async () => {
 		const l = parseOllamaListing({ name: "glm-5.3-flash", model: "glm-5.3-flash", details: {} }, "ollama.com")!;
 		const [m] = buildOllamaModels({ listings: [l], openrouter: OR_MODELS, cfg: OLLAMA, log });
 		expect(m!.slug).toBe("ollama/glm-5.3-flash");
@@ -253,7 +257,7 @@ describe("createOllamaCatalog", () => {
 });
 
 describe("toOllamaBody", () => {
-	test("strips OpenRouter-only fields, maps reasoning, drops cache_control, requests usage", () => {
+	test("strips OpenRouter-only fields, maps reasoning, drops cache_control, requests usage", async () => {
 		const body = toOllamaBody({
 			model: "ollama/glm-5.3-flash:cloud",
 			models: ["ollama/glm-5.3-flash:cloud", "ollama/gpt-oss:120b-cloud"],
@@ -278,7 +282,7 @@ describe("toOllamaBody", () => {
 		expect(sys[0]).toEqual({ type: "text", text: "sys" });
 	});
 
-	test("reasoning off is simply omitted", () => {
+	test("reasoning off is simply omitted", async () => {
 		const body = toOllamaBody({ model: "ollama/x", reasoning: { enabled: false }, stream: false });
 		expect(body.reasoning_effort).toBeUndefined();
 		expect(body.stream_options).toBeUndefined();
@@ -286,17 +290,17 @@ describe("toOllamaBody", () => {
 });
 
 describe("classifyOllamaStatus", () => {
-	test("402 is quota: retryable and account-level", () => {
+	test("402 is quota: retryable and account-level", async () => {
 		const e = classifyOllamaStatus(402, { error: { message: "out of credits" } });
 		expect(e.kind).toBe("quota");
 		expect(e.retryable).toBe(true);
 	});
-	test("429 is a rate limit; 401 is auth; 404 is model_unavailable", () => {
+	test("429 is a rate limit; 401 is auth; 404 is model_unavailable", async () => {
 		expect(classifyOllamaStatus(429, {}).kind).toBe("rate_limit");
 		expect(classifyOllamaStatus(401, {}).retryable).toBe(false);
 		expect(classifyOllamaStatus(404, {}).kind).toBe("model_unavailable");
 	});
-	test("a 403 about billing is quota, any other 403 is moderation", () => {
+	test("a 403 about billing is quota, any other 403 is moderation", async () => {
 		expect(classifyOllamaStatus(403, { error: "plan limit reached" }).kind).toBe("quota");
 		expect(classifyOllamaStatus(403, { error: "content blocked" }).kind).toBe("moderation");
 	});
@@ -462,14 +466,13 @@ describe("selection over a mixed catalog", () => {
 			tier: "simple",
 			task: "coding",
 			snapshot,
-			ledger: null,
 			cfg: { ...BASE, adaptiveTierFloors: false, ollama: { ...OLLAMA, costBias } },
 			expectedCompletionTokens: 512,
 			warmSlug: null,
 		});
 	}
 
-	test("Ollama models rank alongside OpenRouter ones on the same economics", () => {
+	test("Ollama models rank alongside OpenRouter ones on the same economics", async () => {
 		const { candidates } = build(1);
 		const slugs = candidates.map((c) => c.model.slug);
 		expect(slugs).toContain("ollama/glm-5.3-flash:cloud");
@@ -478,7 +481,7 @@ describe("selection over a mixed catalog", () => {
 		expect(slugs.indexOf("z-ai/glm-5.3-flash")).toBeLessThan(slugs.indexOf("ollama/glm-5.3-flash:cloud"));
 	});
 
-	test("costBias below 1 tilts the ranking toward Ollama and says so", () => {
+	test("costBias below 1 tilts the ranking toward Ollama and says so", async () => {
 		const { candidates } = build(0.25);
 		const slugs = candidates.map((c) => c.model.slug);
 		expect(slugs.indexOf("ollama/glm-5.3-flash:cloud")).toBeLessThan(slugs.indexOf("z-ai/glm-5.3-flash"));
@@ -493,7 +496,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		limits: { monthly: { usage: 0, models: [{ name: "glm-5.3", request_count: 1 }, { name: "nemotron-3-super", request_count: 2 }] } },
 	};
 
-	test("parses the observed payload", () => {
+	test("parses the observed payload", async () => {
 		const u = parseOllamaUsage(PAYLOAD, 5)!;
 		expect(u.monthlyUsedFraction).toBe(0);
 		expect(u.monthlyUsageRaw).toBe(0);
@@ -504,7 +507,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		expect(parseOllamaUsage("nope")).toBeNull();
 	});
 
-	test("infers the usage scale: percent above 1, fraction at or below 1, exactly 1 read as 1%", () => {
+	test("infers the usage scale: percent above 1, fraction at or below 1, exactly 1 read as 1%", async () => {
 		expect(usageFraction(0)).toBe(0);
 		expect(usageFraction(37)).toBeCloseTo(0.37, 6);
 		expect(usageFraction(250)).toBe(1);
@@ -512,7 +515,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		expect(usageFraction(1)).toBeCloseTo(0.01, 6);
 	});
 
-	test("the bias holds under the threshold, switches to list price above it, and stays on when usage is unknown", () => {
+	test("the bias holds under the threshold, switches to list price above it, and stays on when usage is unknown", async () => {
 		const at = (f: number | null) => (f === null ? null : { monthlyUsedFraction: f, monthlyUsageRaw: f, activityCostUsd: null, requestsThisMonth: 0, plan: null, fetchedAtMs: 0 });
 		expect(effectiveOllamaBias(0.1, 0.9, at(0.5))).toBe(0.1);
 		expect(effectiveOllamaBias(0.1, 0.9, at(0.9))).toBe(1);
@@ -582,7 +585,7 @@ describe("ollama plan usage (credit-aware bias)", () => {
 		// Candidate scoring reads the bias off the snapshot, not the config.
 		const req = parseChatRequest({ model: "auto", tools: [{ type: "function", function: { name: "read", description: "Read", parameters: { type: "object", properties: {} } } }], messages: [{ role: "user", content: "rename the helper" }] }, new Headers());
 		const features = extractFeatures(req, 50_000);
-		const rank = (snap: CatalogSnapshot) => buildCandidates({ req, features, tier: "simple", task: "coding", snapshot: snap, ledger: null, cfg: { ...BASE, adaptiveTierFloors: false, ollama: { ...OLLAMA, costBias: 1 } }, expectedCompletionTokens: 512, warmSlug: null }).candidates.map((c) => c.model.slug);
+		const rank = (snap: CatalogSnapshot) => buildCandidates({ req, features, tier: "simple", task: "coding", snapshot: snap, cfg: { ...BASE, adaptiveTierFloors: false, ollama: { ...OLLAMA, costBias: 1 } }, expectedCompletionTokens: 512, warmSlug: null }).candidates.map((c) => c.model.slug);
 		expect(rank(a).indexOf("ollama/glm-5.3-flash:cloud")).toBeLessThan(rank(a).indexOf("z-ai/glm-5.3-flash"));
 
 		used = 0.95; // credits nearly gone: list price
@@ -597,24 +600,24 @@ describe("ollama plan usage (credit-aware bias)", () => {
 describe("ollamaMeter", () => {
 	const usage = (plan: string | null, frac: number | null = 0.104) => ({ monthlyUsedFraction: frac, monthlyUsageRaw: frac, activityCostUsd: 0, requestsThisMonth: 1250, plan, fetchedAtMs: 1 });
 
-	test("a detected plan applies its published allowance: 10.4% of Pro's $60 is the $6.24 ollama.com shows", () => {
+	test("a detected plan applies its published allowance: 10.4% of Pro's $60 is the $6.24 ollama.com shows", async () => {
 		expect(ollamaMeter(usage("pro"), 0)).toEqual({ usedUsd: 6.24, creditsUsd: 60, plan: "pro" });
 		expect(ollamaMeter(usage("max"), 0)).toEqual({ usedUsd: 31.2, creditsUsd: 300, plan: "max" });
 	});
 
-	test("a configured override wins over the detected plan; an unknown plan without one yields no meter", () => {
+	test("a configured override wins over the detected plan; an unknown plan without one yields no meter", async () => {
 		expect(ollamaMeter(usage("pro"), 100)).toEqual({ usedUsd: 10.4, creditsUsd: 100, plan: "pro" });
 		expect(ollamaMeter(usage("team"), 0)).toBeNull();
 		expect(ollamaMeter(usage("team"), 500)?.creditsUsd).toBe(500);
 		expect(ollamaMeter(usage(null), 0)).toBeNull();
 	});
 
-	test("no usage reading yields no meter", () => {
+	test("no usage reading yields no meter", async () => {
 		expect(ollamaMeter(null, 60)).toBeNull();
 		expect(ollamaMeter(usage("pro", null), 60)).toBeNull();
 	});
 
-	test("parseOllamaPlan reads the account payload case-insensitively", () => {
+	test("parseOllamaPlan reads the account payload case-insensitively", async () => {
 		expect(parseOllamaPlan({ ID: "x", Plan: "Pro" })).toBe("pro");
 		expect(parseOllamaPlan({ plan: "max" })).toBe("max");
 		expect(parseOllamaPlan({ Plan: "" })).toBeNull();
@@ -625,7 +628,7 @@ describe("ollamaMeter", () => {
 describe("ollama calibration", () => {
 	const s = (h: number, meterUsd: number, ledgerUsd: number) => ({ atMs: h * 3_600_000, meterUsd, ledgerUsd });
 
-	test("compares the newest reading with the oldest since the last meter reset", () => {
+	test("compares the newest reading with the oldest since the last meter reset", async () => {
 		// Ledger estimated $4 over the span; the meter moved $5 ⇒ estimates run 20% low.
 		const c = calibrationFrom([s(0, 10, 20), s(12, 12.5, 22), s(24, 15, 24)])!;
 		expect(c.factor).toBeCloseTo(1.25, 6);
@@ -637,7 +640,7 @@ describe("ollama calibration", () => {
 		expect(reset.factor).toBeCloseTo(1, 6);
 	});
 
-	test("needs enough metered spend to mean anything, and clamps to 0.5–2×", () => {
+	test("needs enough metered spend to mean anything, and clamps to 0.5–2×", async () => {
 		expect(calibrationFrom([s(0, 1, 1), s(1, 1.03, 1.2)])).toBeNull(); // meter moved less than its resolution
 		expect(calibrationFrom([s(0, 1, 1), s(1, 2, 1.3)])).toBeNull(); // ledger moved less than $0.50
 		expect(calibrationFrom([s(0, 0, 0), s(1, 10, 1)])!.factor).toBe(CALIBRATION_MAX_FACTOR);
@@ -646,14 +649,16 @@ describe("ollama calibration", () => {
 	});
 
 	test("the source records a sample per poll and exposes the calibration", async () => {
-		const db = openDb(":memory:");
+		// The calibration store is on the shim now, so this one needs a real file.
+		const db = openSqlDb(join(tmpdir(), `t-ollama.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+		await migrateStore(db);
 		let ledgerUsd = 1;
 		let frac = 0.1;
 		const fetchImpl = async (url: string): Promise<Response> => {
 			if (url.endsWith("/api/me")) return Response.json({ Plan: "pro" });
 			return Response.json({ limits: { monthly: { usage: frac, models: [] } } });
 		};
-		const src = createOllamaUsageSource({ apiKey: () => "k", pollMs: 5, timeoutMs: 1000, log, fetchImpl, calibration: { db, ledgerUsd: () => ledgerUsd, planCreditsOverrideUsd: 0 } });
+		const src = createOllamaUsageSource({ apiKey: () => "k", pollMs: 5, timeoutMs: 1000, log, fetchImpl, calibration: { db, ledgerUsd: async () => ledgerUsd, planCreditsOverrideUsd: 0 } });
 		await src.get(); // meter $6 (10% of $60), ledger $1
 		expect(src.calibration()).toBeNull(); // one sample
 		await new Promise((r) => setTimeout(r, 20));
@@ -662,7 +667,8 @@ describe("ollama calibration", () => {
 		await src.get();
 		const c = src.calibration()!;
 		expect(c.factor).toBeCloseTo(1.5, 6);
-		expect((db.query("SELECT COUNT(*) n FROM ollama_meter_samples").get() as { n: number }).n).toBe(2);
-		db.close();
+		const samples = await db.one<{ n: unknown }>("SELECT COUNT(*) AS n FROM ollama_meter_samples");
+		expect(num(samples?.n)).toBe(2);
+		await db.close();
 	});
 });

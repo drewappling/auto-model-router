@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { fakeLedger } from "./fakes.ts";
 import { createDisabledBridge } from "../src/context/bridge.ts";
 import type { ContextBridge, ContextResolveInput, TurnRecord } from "../src/context/types.ts";
 import type { CatalogModel, CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
-import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
+import { EMPTY_USAGE, type AsyncLedger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
 import type {
 	ConversationState,
 	ConversationStore,
@@ -14,6 +15,7 @@ import type {
 	Tier,
 } from "../src/router/types.ts";
 import { runTurn } from "../src/server/turn.ts";
+import { BudgetExceededError } from "../src/router/select.ts";
 import { parseMessagesRequest } from "../src/wire/anthropic/messages.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 import { UpstreamError, type DispatchOptions, type UpstreamClient } from "../src/upstream/types.ts";
@@ -241,21 +243,21 @@ function mkRouter(decisions: Decision[]): { router: Router; calls: { attempt: nu
 	return { router, calls };
 }
 
-function mkLedger(): { ledger: Ledger; entries: LedgerEntry[] } {
+function mkLedger(): { ledger: AsyncLedger; entries: LedgerEntry[] } {
 	const entries: LedgerEntry[] = [];
-	const ledger: Ledger = {
-		record: (e) => {
+	const ledger: AsyncLedger = fakeLedger({
+		record: async (e) => {
 			entries.push(e);
 		},
-		conversationSpend: () => 0,
-		spendSince: () => 0,
-		blendedRate: () => null,
-		latency: () => null,
-		trust: () => null,
-		allTrust: () => [],
-		tokenRatio: () => null,
-		recentEntries: () => [],
-	};
+		conversationSpend: async () => 0,
+		spendSince: async () => 0,
+		blendedRate: async () => null,
+		latency: async () => null,
+		trust: async () => null,
+		allTrust: async () => [],
+		tokenRatio: async () => null,
+		recentEntries: async () => [],
+	});
 	return { ledger, entries };
 }
 
@@ -268,8 +270,8 @@ function mkConversations(): {
 	// Mirrors the real store: money accumulates here, NOT through `save`.
 	const accrued = new Map<string, { spentUsd: number; escalations: number }>();
 	const store: ConversationStore = {
-		get: (k) => map.get(k) ?? null,
-		load: (k) => {
+		get: async (k) => map.get(k) ?? null,
+		load: async (k) => {
 			const existing = map.get(k);
 			if (existing) return existing;
 			const fresh: ConversationState = {
@@ -292,16 +294,16 @@ function mkConversations(): {
 			map.set(k, fresh);
 			return fresh;
 		},
-		save: (s) => {
+		save: async (s) => {
 			map.set(s.key, s);
 		},
-		accrue: (k, d) => {
+		accrue: async (k, d) => {
 			const cur = accrued.get(k) ?? { spentUsd: 0, escalations: 0 };
 			cur.spentUsd += d.spentUsd ?? 0;
 			cur.escalations += d.escalations ?? 0;
 			accrued.set(k, cur);
 		},
-		prune: () => 0,
+		prune: async () => 0,
 	};
 	return { store, map, accrued };
 }
@@ -480,6 +482,36 @@ describe("runTurn", () => {
 		expect(entries[0]!.error).toContain("auth");
 	});
 
+	test("a budget refusal answers 402 budget_exceeded, not a 500", async () => {
+		// `reject` mode is a refusal the router MEANS. Reported as a 500 it reads
+		// as "the router broke" — and a team front door relaying it sends a
+		// capped deployment looking for a crash. Anything else from `route()` is
+		// still an internal failure.
+		const refusing: Router = { route: () => Promise.reject(new BudgetExceededError("24h spend $0.10 > per-day budget $0.05")) };
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [] }]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router: refusing, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toEqual([{ status: 402, code: "budget_exceeded", message: "24h spend $0.10 > per-day budget $0.05" }]);
+		expect(finishes).toHaveLength(0);
+		expect(entries).toHaveLength(0); // refused before dispatch: no turn to record
+	});
+
+	test("an unexpected routing failure is still a 500", async () => {
+		const broken: Router = { route: () => Promise.reject(new Error("catalog exhausted")) };
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [] }]);
+		const { ledger } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router: broken, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toEqual([{ status: 500, code: "router_error", message: "catalog exhausted" }]);
+	});
+
 	test("a 429 before commit fails over to a different model in the same tier", async () => {
 		const { router, calls } = mkRouter([
 			mkDecision("trivial", "cheap/model", { escalateTo: "simple" }),
@@ -627,7 +659,7 @@ describe("agentdox write-back sees the shape of the turn", () => {
 					records.push(rec);
 				},
 				flush: () => Promise.resolve(),
-				pruneBlocks: () => 0,
+				pruneBlocks: async () => 0,
 				close: () => {},
 			},
 		};
@@ -706,7 +738,7 @@ describe("agentdox injection sees the shape of the turn", () => {
 				},
 				recordTurn: () => {},
 				flush: () => Promise.resolve(),
-				pruneBlocks: () => 0,
+				pruneBlocks: async () => 0,
 				close: () => {},
 			},
 		};
@@ -736,7 +768,7 @@ describe("agentdox injection sees the shape of the turn", () => {
 
 		expect(errors).toHaveLength(0);
 		expect(resolves).toHaveLength(0);
-		expect(store.load(req.conversationKey).contextVersion).toBeNull();
+		expect((await store.load(req.conversationKey)).contextVersion).toBeNull();
 	});
 
 	test("an agent turn with tools is injected", async () => {
@@ -748,7 +780,7 @@ describe("agentdox injection sees the shape of the turn", () => {
 
 		expect(errors).toHaveLength(0);
 		expect(resolves).toHaveLength(1);
-		expect(store.load(req.conversationKey).contextVersion).toBe("v1");
+		expect((await store.load(req.conversationKey)).contextVersion).toBe("v1");
 	});
 
 	test("the layer headers and the harness id reach resolve, and the harness id reaches the record", async () => {
@@ -769,7 +801,7 @@ describe("agentdox injection sees the shape of the turn", () => {
 				records.push(rec);
 			},
 			flush: () => Promise.resolve(),
-			pruneBlocks: () => 0,
+			pruneBlocks: async () => 0,
 			close: () => {},
 		};
 		const req: NormRequest = { ...mkReq(), harnessId: "u_ada", agentdoxScope: "proj", agentdoxGroup: "group.g1", agentdoxPersonal: "proj.u.u_ada", tools: [AGENT_TOOL] };

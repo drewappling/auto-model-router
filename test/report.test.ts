@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
+import { migrateStore } from "../src/util/schema.ts";
+import type { AsyncLedger } from "../src/cost/types.ts";
 import { buildUsageReport, renderUsageReport } from "../src/cost/report.ts";
 import type { LedgerEntry } from "../src/cost/types.ts";
-import { openDb } from "../src/util/sqlite.ts";
+import { openSqlDb, type SqlDb } from "../src/util/sql.ts";
 
 /**
  * `buildUsageReport` is what `/router report`, the `report` CLI and
@@ -55,21 +60,24 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 	} as LedgerEntry;
 }
 
-function seeded() {
+async function seeded(): Promise<{ db: SqlDb; ledger: AsyncLedger }> {
 	const cfg = structuredClone(DEFAULT_CONFIG);
-	cfg.ledger.path = ":memory:";
-	const db = openDb(":memory:");
-	const ledger = createLedger(db, cfg);
-	return { db, ledger };
+	// A file rather than `:memory:`: the report reads through its own handle on
+	// the store, which an in-memory database cannot share.
+	const path = join(tmpdir(), `report-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+	cfg.ledger.path = path;
+	const db = openSqlDb(path);
+	await migrateStore(db);
+	return { db, ledger: createSqlLedger(db, cfg, { findModel: () => null }) };
 }
 
 describe("buildUsageReport", () => {
-	test("totals, providers, models and tiers over a mixed window", () => {
-		const { db, ledger } = seeded();
+	test("totals, providers, models and tiers over a mixed window", async () => {
+		const { db, ledger } = await seeded();
 		// Two OpenRouter turns on one model (one with a warm cache), one Ollama
 		// turn served by a different slug than decided, one escalation, one error.
-		ledger.record(entry({ conversationKey: "a", turn: 1, reportedUsd: 0.01 }));
-		ledger.record(
+		await ledger.record(entry({ conversationKey: "a", turn: 1, reportedUsd: 0.01 }));
+		await ledger.record(
 			entry({
 				conversationKey: "a",
 				turn: 2,
@@ -77,7 +85,7 @@ describe("buildUsageReport", () => {
 				usage: { promptTokens: 1000, cachedTokens: 800, cacheWriteTokens: 0, completionTokens: 100, reasoningTokens: 0, images: 0 },
 			}),
 		);
-		ledger.record(
+		await ledger.record(
 			entry({
 				conversationKey: "b",
 				slug: "ollama/glm-5.3-flash",
@@ -89,10 +97,10 @@ describe("buildUsageReport", () => {
 				ttftMs: 100,
 			}),
 		);
-		ledger.record(entry({ conversationKey: "c", tier: "hard", escalationSignal: "refusal", wasted: true, reportedUsd: 0.002 }));
-		ledger.record(entry({ conversationKey: "c", tier: "hard", error: "request aborted", reportedUsd: 0, ttftMs: null }));
+		await ledger.record(entry({ conversationKey: "c", tier: "hard", escalationSignal: "refusal", wasted: true, reportedUsd: 0.002 }));
+		await ledger.record(entry({ conversationKey: "c", tier: "hard", error: "request aborted", reportedUsd: 0, ttftMs: null }));
 
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		expect(r.totals.dispatches).toBe(5);
 		expect(r.totals.conversations).toBe(3);
 		// 0.01 + 0.005 + 0.02 (predicted: no reported) + 0.002 + 0
@@ -129,54 +137,54 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
-	test("counts a model switch only between consecutive kept rows of one conversation", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ conversationKey: "a", turn: 1, slug: "x/one", createdAtMs: NOW - 3 * HOUR }));
-		ledger.record(entry({ conversationKey: "a", turn: 2, slug: "x/two", createdAtMs: NOW - 2 * HOUR }));
-		ledger.record(entry({ conversationKey: "a", turn: 3, slug: "x/two", createdAtMs: NOW - 1 * HOUR }));
+	test("counts a model switch only between consecutive kept rows of one conversation", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ conversationKey: "a", turn: 1, slug: "x/one", createdAtMs: NOW - 3 * HOUR }));
+		await ledger.record(entry({ conversationKey: "a", turn: 2, slug: "x/two", createdAtMs: NOW - 2 * HOUR }));
+		await ledger.record(entry({ conversationKey: "a", turn: 3, slug: "x/two", createdAtMs: NOW - 1 * HOUR }));
 		// A wasted probe on another slug is not a switch.
-		ledger.record(entry({ conversationKey: "a", turn: 3, slug: "x/three", wasted: true, createdAtMs: NOW - 1 * HOUR + 1 }));
+		await ledger.record(entry({ conversationKey: "a", turn: 3, slug: "x/three", wasted: true, createdAtMs: NOW - 1 * HOUR + 1 }));
 		// A different conversation starting on another model is not a switch either.
-		ledger.record(entry({ conversationKey: "b", turn: 1, slug: "x/three", createdAtMs: NOW - HOUR }));
-		const r = buildUsageReport(db, { windowDays: 1, nowMs: NOW });
+		await ledger.record(entry({ conversationKey: "b", turn: 1, slug: "x/three", createdAtMs: NOW - HOUR }));
+		const r = await buildUsageReport(db, { windowDays: 1, nowMs: NOW });
 		expect(r.totals.modelSwitches).toBe(1);
 		db.close();
 	});
 
-	test("window and harness scope exclude rows", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ harnessId: "omp", createdAtMs: NOW - HOUR }));
-		ledger.record(entry({ harnessId: "hermes", createdAtMs: NOW - HOUR }));
-		ledger.record(entry({ harnessId: "omp", createdAtMs: NOW - 10 * 24 * HOUR }));
-		expect(buildUsageReport(db, { windowDays: 7, nowMs: NOW }).totals.dispatches).toBe(2);
-		expect(buildUsageReport(db, { windowDays: 30, nowMs: NOW }).totals.dispatches).toBe(3);
-		const scoped = buildUsageReport(db, { windowDays: 30, harnessId: "omp", nowMs: NOW });
+	test("window and harness scope exclude rows", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ harnessId: "omp", createdAtMs: NOW - HOUR }));
+		await ledger.record(entry({ harnessId: "hermes", createdAtMs: NOW - HOUR }));
+		await ledger.record(entry({ harnessId: "omp", createdAtMs: NOW - 10 * 24 * HOUR }));
+		expect((await buildUsageReport(db, { windowDays: 7, nowMs: NOW })).totals.dispatches).toBe(2);
+		expect((await buildUsageReport(db, { windowDays: 30, nowMs: NOW })).totals.dispatches).toBe(3);
+		const scoped = await buildUsageReport(db, { windowDays: 30, harnessId: "omp", nowMs: NOW });
 		expect(scoped.totals.dispatches).toBe(2);
 		expect(scoped.harnessId).toBe("omp");
 		db.close();
 	});
 
-	test("a comma-separated harness list reports the union (a team group)", () => {
-		const { db, ledger } = seeded();
+	test("a comma-separated harness list reports the union (a team group)", async () => {
+		const { db, ledger } = await seeded();
 		try {
-			ledger.record(entry({ harnessId: "u_a", reportedUsd: 1 }));
-			ledger.record(entry({ harnessId: "u_b", reportedUsd: 2 }));
-			ledger.record(entry({ harnessId: "u_c", reportedUsd: 4 }));
-			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_a,u_b" }).totals.spendUsd).toBeCloseTo(3, 6);
-			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: " u_c , u_a " }).totals.spendUsd).toBeCloseTo(5, 6);
-			expect(buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_b" }).totals.spendUsd).toBeCloseTo(2, 6);
+			await ledger.record(entry({ harnessId: "u_a", reportedUsd: 1 }));
+			await ledger.record(entry({ harnessId: "u_b", reportedUsd: 2 }));
+			await ledger.record(entry({ harnessId: "u_c", reportedUsd: 4 }));
+			expect((await buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_a,u_b" })).totals.spendUsd).toBeCloseTo(3, 6);
+			expect((await buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: " u_c , u_a " })).totals.spendUsd).toBeCloseTo(5, 6);
+			expect((await buildUsageReport(db, { windowDays: 1, nowMs: NOW, harnessId: "u_b" })).totals.spendUsd).toBeCloseTo(2, 6);
 		} finally {
 			db.close();
 		}
 	});
 
-	test("prompt anatomy averages the recorded byte shares", () => {
-		const { db, ledger } = seeded();
+	test("prompt anatomy averages the recorded byte shares", async () => {
+		const { db, ledger } = await seeded();
 		const feat = (tool: number, older: number, stale: number) => ({ toolSchemaBytes: 1000, anatomy: { messages: 30, systemBytes: 1000, userBytes: 500, assistantBytes: 500, toolBytes: tool, olderHalfBytes: older, staleToolBytes: stale } });
-		ledger.record(entry({ features: feat(8000, 5000, 4000) }));
-		ledger.record(entry({ features: feat(6000, 4000, 2000) }));
-		ledger.record(entry({ features: null })); // pre-anatomy row: ignored
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		await ledger.record(entry({ features: feat(8000, 5000, 4000) }));
+		await ledger.record(entry({ features: feat(6000, 4000, 2000) }));
+		await ledger.record(entry({ features: null })); // pre-anatomy row: ignored
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		const a = r.anatomy!;
 		expect(a.rows).toBe(2);
 		// mean bytes: system 1000, user 500, assistant 500, tool 7000 ⇒ total 9000
@@ -189,10 +197,10 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
-	test("baselines price the window on one model with its own cache hit rate", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ reportedUsd: 0.5, usage: { promptTokens: 100_000, cachedTokens: 80_000, cacheWriteTokens: 0, completionTokens: 1_000, reasoningTokens: 0, images: 0 } }));
-		const r = buildUsageReport(db, {
+	test("baselines price the window on one model with its own cache hit rate", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ reportedUsd: 0.5, usage: { promptTokens: 100_000, cachedTokens: 80_000, cacheWriteTokens: 0, completionTokens: 1_000, reasoningTokens: 0, images: 0 } }));
+		const r = await buildUsageReport(db, {
 			windowDays: 7,
 			nowMs: NOW,
 			baselines: [
@@ -211,21 +219,21 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
-	test("subagent turns are counted with their spend", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ reportedUsd: 0.01, features: { isSubagent: true } }));
-		ledger.record(entry({ reportedUsd: 0.03, features: { isSubagent: false } }));
-		ledger.record(entry({ reportedUsd: 0.06 }));
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+	test("subagent turns are counted with their spend", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ reportedUsd: 0.01, features: { isSubagent: true } }));
+		await ledger.record(entry({ reportedUsd: 0.03, features: { isSubagent: false } }));
+		await ledger.record(entry({ reportedUsd: 0.06 }));
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		expect(r.totals.subagentDispatches).toBe(1);
 		expect(r.totals.subagentSpendUsd).toBeCloseTo(0.01, 6);
 		expect(renderUsageReport(r)).toContain("subagents: 1 dispatches, $0.0100 (10% of spend)");
 		db.close();
 	});
 
-	test("empty ledger yields zeroed totals and null speeds", () => {
-		const { db } = seeded();
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+	test("empty ledger yields zeroed totals and null speeds", async () => {
+		const { db } = await seeded();
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		expect(r.totals).toEqual({
 			dispatches: 0,
 			conversations: 0,
@@ -254,11 +262,11 @@ describe("buildUsageReport", () => {
 		db.close();
 	});
 
-	test("speed ignores errored and non-streamed rows", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ ttftMs: null }));
-		ledger.record(entry({ error: "boom" }));
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+	test("speed ignores errored and non-streamed rows", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ ttftMs: null }));
+		await ledger.record(entry({ error: "boom" }));
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		expect(r.providers[0]!.avgTtftMs).toBeNull();
 		expect(r.providers[0]!.tokensPerSec).toBeNull();
 		db.close();
@@ -267,10 +275,10 @@ describe("buildUsageReport", () => {
 
 describe("renderUsageReport", () => {
 	test("router-estimated cache counts render as an estimate", async () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ slug: "ollama/glm", servedSlug: "ollama/glm", usage: { promptTokens: 1000, cachedTokens: 900, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0, cachedEstimated: true } }));
-		ledger.record(entry({ usage: { promptTokens: 1000, cachedTokens: 500, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0 } }));
-		const r = buildUsageReport(db, { windowDays: 7, nowMs: NOW });
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ slug: "ollama/glm", servedSlug: "ollama/glm", usage: { promptTokens: 1000, cachedTokens: 900, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0, cachedEstimated: true } }));
+		await ledger.record(entry({ usage: { promptTokens: 1000, cachedTokens: 500, cacheWriteTokens: 0, completionTokens: 10, reasoningTokens: 0, images: 0 } }));
+		const r = await buildUsageReport(db, { windowDays: 7, nowMs: NOW });
 		expect(r.totals.cacheEstimated).toBe(true);
 		expect(r.providers.find((p) => p.key === "ollama")!.cacheEstimated).toBe(true);
 		expect(r.providers.find((p) => p.key === "openrouter")!.cacheEstimated).toBe(false);
@@ -281,11 +289,11 @@ describe("renderUsageReport", () => {
 		db.close();
 	});
 
-	test("renders every section as plain fixed-width text", () => {
-		const { db, ledger } = seeded();
-		ledger.record(entry({ reportedUsd: 1.25, createdAtMs: NOW - HOUR }));
-		ledger.record(entry({ slug: "ollama/kimi", servedSlug: "ollama/kimi", tier: "hard", reportedUsd: 0.5, createdAtMs: NOW - 30 * HOUR }));
-		const text = renderUsageReport(buildUsageReport(db, { windowDays: 7, nowMs: NOW }));
+	test("renders every section as plain fixed-width text", async () => {
+		const { db, ledger } = await seeded();
+		await ledger.record(entry({ reportedUsd: 1.25, createdAtMs: NOW - HOUR }));
+		await ledger.record(entry({ slug: "ollama/kimi", servedSlug: "ollama/kimi", tier: "hard", reportedUsd: 0.5, createdAtMs: NOW - 30 * HOUR }));
+		const text = renderUsageReport(await buildUsageReport(db, { windowDays: 7, nowMs: NOW }));
 		expect(text).toContain("last 7d");
 		expect(text).toContain("spend $1.75 over 2 dispatches");
 		expect(text).toContain("providers");
@@ -299,35 +307,35 @@ describe("renderUsageReport", () => {
 		db.close();
 	});
 
-	test("caps the model table and says so", () => {
-		const { db, ledger } = seeded();
-		for (let i = 0; i < 5; i++) ledger.record(entry({ slug: `v/m${i}`, servedSlug: `v/m${i}` }));
-		const text = renderUsageReport(buildUsageReport(db, { windowDays: 7, nowMs: NOW }), { maxModels: 2 });
+	test("caps the model table and says so", async () => {
+		const { db, ledger } = await seeded();
+		for (let i = 0; i < 5; i++) await ledger.record(entry({ slug: `v/m${i}`, servedSlug: `v/m${i}` }));
+		const text = renderUsageReport(await buildUsageReport(db, { windowDays: 7, nowMs: NOW }), { maxModels: 2 });
 		expect(text).toContain("models (top 2 of 5 by spend)");
 		db.close();
 	});
 });
 
 describe("digest re-runs and forecast accuracy", () => {
-	test("wasted digest rows count as re-runs; forecast error is judged on clean kept rows only", () => {
-		const { db, ledger } = seeded();
+	test("wasted digest rows count as re-runs; forecast error is judged on clean kept rows only", async () => {
+		const { db, ledger } = await seeded();
 		try {
-			ledger.record(entry({ requestedModel: "digest", conversationKey: "d1", reportedUsd: 0.001, predictedUsd: 0.001 }));
-			ledger.record(entry({ requestedModel: "digest", conversationKey: "d2", reportedUsd: 0.001, predictedUsd: 0.001, wasted: true }));
+			await ledger.record(entry({ requestedModel: "digest", conversationKey: "d1", reportedUsd: 0.001, predictedUsd: 0.001 }));
+			await ledger.record(entry({ requestedModel: "digest", conversationKey: "d2", reportedUsd: 0.001, predictedUsd: 0.001, wasted: true }));
 			// Two clean turns: one predicted double, one predicted half.
-			ledger.record(entry({ predictedUsd: 0.02, reportedUsd: 0.01 }));
-			ledger.record(entry({ predictedUsd: 0.005, reportedUsd: 0.01 }));
+			await ledger.record(entry({ predictedUsd: 0.02, reportedUsd: 0.01 }));
+			await ledger.record(entry({ predictedUsd: 0.005, reportedUsd: 0.01 }));
 			// Excluded from the forecast judgement: wasted, errored, no reported cost.
-			ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, wasted: true }));
-			ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, error: "upstream_error: 500" }));
-			ledger.record(entry({ predictedUsd: 1, reportedUsd: null }));
-			const t = buildUsageReport(db, { windowDays: 1, nowMs: NOW }).totals;
+			await ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, wasted: true }));
+			await ledger.record(entry({ predictedUsd: 1, reportedUsd: 0.01, error: "upstream_error: 500" }));
+			await ledger.record(entry({ predictedUsd: 1, reportedUsd: null }));
+			const t = (await buildUsageReport(db, { windowDays: 1, nowMs: NOW })).totals;
 			expect(t.digests).toBe(2);
 			expect(t.digestReruns).toBe(1);
 			expect(t.forecastSamples).toBe(2);
 			expect(t.forecastMeanError).toBeCloseTo((1 + 0.5) / 2, 6);
 			expect(t.forecastOverShare).toBeCloseTo(0.5, 6);
-			const text = renderUsageReport(buildUsageReport(db, { windowDays: 1, nowMs: NOW }));
+			const text = renderUsageReport(await buildUsageReport(db, { windowDays: 1, nowMs: NOW }));
 			expect(text).toContain("re-run rate 50% (1 fetched again in full)");
 			expect(text).toContain("forecast: mean error 75% of reported cost over 2 turns · 50% over-predicted");
 		} finally {

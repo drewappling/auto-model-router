@@ -1,10 +1,11 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { createProviders } from "./providers.ts";
 import { createBridgeFromConfig } from "../context/index.ts";
 import { createFeedbackStore, type Verdict } from "../cost/feedback.ts";
-import { createLedger } from "../cost/ledger.ts";
+import { createSqlLedger } from "../cost/ledger-sql.ts";
 import { createRetentionRunner } from "../cost/retention.ts";
 import { redactionRulesFor } from "../config/redaction.ts";
 import { createSessionOverrides } from "./overrides.ts";
@@ -27,11 +28,11 @@ import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/rep
 import { decisionEntries, exportCsv, exportRows, feedbackView, harnessScopeParam, spendUsdSince } from "../cost/views.ts";
 import { anthropicErrorResponse, countAnthropicTokens, createMessagesWire } from "../wire/anthropic/messages.ts";
 import { buildDailySummary, createKv, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews, type SummaryOllama } from "../cost/summary.ts";
-import type { Ledger, ModelTrust } from "../cost/types.ts";
+import type { AsyncLedger, ModelTrust } from "../cost/types.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import { UpstreamError } from "../upstream/types.ts";
-import { apiKeySource, ollamaKeySource } from "../config/load.ts";
+import { apiKeySource, ollamaKeySource, routerHome } from "../config/load.ts";
 import { ollamaMeter } from "../upstream/ollama-usage.ts";
 import { routerConfigPath } from "../cli/config-cmd.ts";
 import { applyConfigPatch, touched } from "../config/apply.ts";
@@ -40,6 +41,8 @@ import { PINNED_CONFIG_PATHS, watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
 import { openDb } from "../util/sqlite.ts";
+import { dialectOf, openSqlDb } from "../util/sql.ts";
+import { migrateStore } from "../util/schema.ts";
 import { WireErrorException, renderErrorEnvelope } from "../wire/openai/errors.ts";
 import { renderModelList } from "../wire/openai/models.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
@@ -110,14 +113,14 @@ export interface RouterStats {
  * computed over a bounded tail of recent entries; the headline spend numbers
  * use `spendSince`, which is exact.
  */
-export function computeStats(ledger: Ledger, opts?: { windowDays?: number; nowMs?: number }): RouterStats {
+export async function computeStats(ledger: AsyncLedger, opts?: { windowDays?: number; nowMs?: number }): Promise<RouterStats> {
 	const nowMs = opts?.nowMs ?? Date.now();
 	const windowDays = opts?.windowDays;
 	const cutoffMs = windowDays === undefined ? 0 : nowMs - windowDays * 86_400_000;
 
 	// 100k turns is operational eternity for a single-operator router; the cap
 	// only bounds memory on this read, never what the ledger retains.
-	const entries = ledger.recentEntries(100_000).filter((e) => e.createdAtMs >= cutoffMs);
+	const entries = (await ledger.recentEntries(100_000)).filter((e) => e.createdAtMs >= cutoffMs);
 
 	const dayStart = new Date(nowMs);
 	dayStart.setHours(0, 0, 0, 0);
@@ -157,16 +160,16 @@ export function computeStats(ledger: Ledger, opts?: { windowDays?: number; nowMs
 	return {
 		generatedAtMs: nowMs,
 		windowDays: windowDays ?? null,
-		spendTodayUsd: ledger.spendSince(dayStart.getTime()),
-		spend7dUsd: ledger.spendSince(nowMs - 7 * 86_400_000),
-		spendAllTimeUsd: ledger.spendSince(0),
+		spendTodayUsd: await ledger.spendSince(dayStart.getTime()),
+		spend7dUsd: await ledger.spendSince(nowMs - 7 * 86_400_000),
+		spendAllTimeUsd: await ledger.spendSince(0),
 		windowSpendUsd,
 		requests: entries.length,
 		escalations,
 		escalationRate: entries.length > 0 ? escalations / entries.length : 0,
 		meanPredictionError: errorSamples > 0 ? errorSum / errorSamples : null,
 		perModel: rows,
-		trust: ledger.allTrust(),
+		trust: await ledger.allTrust(),
 	};
 }
 
@@ -250,16 +253,47 @@ function clampDays(raw: string | null, dflt: number): number {
 export function startServer(cfg: RouterConfig): StartedServer {
 	const log = createLogger(cfg.logLevel);
 
-	if (cfg.ledger.path !== ":memory:") mkdirSync(dirname(cfg.ledger.path), { recursive: true });
-	const db = openDb(cfg.ledger.path);
-	const ledger = createLedger(db, cfg);
-	const providers = createProviders(cfg, db, log);
+	// `:memory:` names a store that cannot be shared: a second handle gets its
+	// OWN empty database, so the ledger views would query a table that does not
+	// exist there. Resolve it to a private file instead — still discarded, still
+	// isolated per server, but one store that both handles agree on.
+	const memoryStore = cfg.ledger.path === ":memory:" ? mkdtempSync(join(tmpdir(), "amr-mem-")) : null;
+	// The config is NOT rewritten: a caller that asked for `:memory:` still
+	// reads `:memory:` back, and `reconfigure` refuses a ledger-path change by
+	// comparing against what it was given.
+	const storePath = memoryStore === null ? cfg.ledger.path : join(memoryStore, "router.db");
+	// Two stores, chosen by what the data is for:
+	//   - the SHARED store (`ledger.path`, SQLite file or Postgres URL) holds
+	//     what a second replica must see the same copy of: the turn rows a cap
+	//     counts, conversation routing memory, context blocks.
+	//   - the LOCAL store is always a SQLite file and holds only caches — the
+	//     catalog payload, benchmark feeds, the once-a-day summary marker.
+	//     Sharing a cache buys contention and nothing else, and its one durable
+	//     output (`local_scores`) belongs to the machine that measured it.
+	// On SQLite they are the same file, which is what every existing install
+	// already has.
+	const postgres = dialectOf(storePath) === "postgres";
+	const cachePath = postgres ? join(routerHome(), "cache.db") : storePath;
+	mkdirSync(dirname(cachePath), { recursive: true });
+	// `openDb` is the migration path for a SQLite file: nineteen versions, in
+	// order, on whatever an older release left behind.
+	const db = openDb(cachePath);
+	const sqlDb = openSqlDb(storePath);
+	// A Postgres store has no bootstrap of its own to run synchronously, so the
+	// shape is created on the way up and every entry point waits for it once.
+	// Resolved already on SQLite, where `openDb` just did it.
+	const storeReady = postgres ? migrateStore(sqlDb) : Promise.resolve();
+	// The ledger reads and writes through the engine-agnostic handle. `findModel`
+	// closes over the catalog built just below: a shared store has no catalog
+	// cache of its own to price a row from.
+	const ledger = createSqlLedger(sqlDb, cfg, { findModel: (slug: string) => catalog.find(slug) });
+	const providers = createProviders(cfg, db, sqlDb, log);
 	const { upstream, catalog, ollama, ollamaServing, ollamaUsage, ollamaCostScale } = providers;
-	const conversations = createConversationStore(db);
+	const conversations = createConversationStore(sqlDb);
 	const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
-	const context = createBridgeFromConfig(cfg, db);
+	const context = createBridgeFromConfig(cfg, sqlDb);
 	const overrides = createSessionOverrides();
-	const feedback = createFeedbackStore(db);
+	const feedback = createFeedbackStore(sqlDb);
 	const kv = createKv(db);
 	/**
 	 * Background local-benchmark runs. In memory and not persisted: a run is an explicit,
@@ -341,9 +375,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	// run a whole-ledger delete more often than that. It reads the window live,
 	// so a hot reload that lowers it applies on the next tick.
 	const retention = createRetentionRunner({ ledger, retentionDays: () => cfg.ledger.retentionDays });
-	const retain = (): void => {
+	const retain = async (): Promise<void> => {
+		await storeReady;
 		try {
-			const result = retention.maybeRun();
+			const result = await retention.maybeRun();
 			if (result !== null && result.deleted > 0) {
 				log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
 			}
@@ -355,8 +390,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	// One housekeeping timer for all three tables. `unref`'d so it never holds
 	// the process open.
 	const pruneTimer = setInterval(() => {
+		// Fire and forget, with both halves guarded: a housekeeping failure must
+		// never become an unhandled rejection that takes the process down.
+		void (async () => {
+		await storeReady;
 		try {
-			const dropped = conversations.prune(cfg.ledger.conversationTtlMs);
+			const dropped = await conversations.prune(cfg.ledger.conversationTtlMs);
 			if (dropped > 0) log.debug("pruned stale conversations", { dropped });
 		} catch (err) {
 			log.warn("conversation prune failed", { error: err instanceof Error ? err.message : String(err) });
@@ -366,18 +405,21 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			// block of that age has no future reader. Nothing else reclaims these:
 			// blocks are content-addressed and shared, so they accumulated for the
 			// life of the install (measured: 220 rows / 2.7 MB, 68 unreferenced).
-			const dropped = context.pruneBlocks(cfg.context.maxStalenessMs);
+			const dropped = await context.pruneBlocks(cfg.context.maxStalenessMs);
 			if (dropped > 0) log.debug("pruned unreferenced context blocks", { dropped });
 		} catch (err) {
 			log.warn("context block prune failed", { error: err instanceof Error ? err.message : String(err) });
 		}
-		retain();
+			await retain();
+		})();
 	}, 60_000);
 	pruneTimer.unref();
 
 	// Once shortly after boot, so a lowered window takes effect without waiting
 	// out an hour; the runner's own floor governs everything after that.
-	setTimeout(retain, 5_000).unref();
+	// `void`: a boot-time prune failure is logged inside `retain`, and an
+	// unhandled rejection here would take the process down.
+	setTimeout(() => void retain(), 5_000).unref();
 
 	// Periodically refetch the (key-scoped) catalog in the background so
 	// guardrail/preference changes are picked up without needing traffic and a
@@ -483,6 +525,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 		// SECONDS (max 255), so convert from the ms upstream timeout and cap.
 		idleTimeout: Math.min(Math.ceil(cfg.openrouter.timeoutMs / 1000), 255),
 		async fetch(req: Request): Promise<Response> {
+			// One await on the first request of a Postgres deployment, already
+			// resolved on SQLite: no route may read a table the bootstrap has
+			// not created yet.
+			await storeReady;
 			// Reject requests whose Host header does not name a loopback address
 			// when the server is bound to loopback. This blunts DNS rebinding: a
 			// malicious page resolving a host to 127.0.0.1 sends its own domain as
@@ -523,17 +569,19 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				}
 				if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
 					try {
-						return json({ input_tokens: countAnthropicTokens(await req.json(), cfg.anthropic.models, ledger) });
+						return json({
+							input_tokens: countAnthropicTokens(await req.json(), cfg.anthropic.models, await ledger.tokenRatio("anthropic")),
+						});
 					} catch (err) {
 						if (err instanceof WireErrorException) return anthropicErrorResponse(err.wireError);
 						return anthropicErrorResponse({ status: 400, code: "invalid_json", message: err instanceof Error ? err.message : "request body is not valid JSON" });
 					}
 				}
 				if (req.method === "GET" && url.pathname === "/v1/models") {
-					return json(renderModelList(cfg, ledger.blendedRate(cfg.ledger.blendWindowDays)));
+					return json(renderModelList(cfg, await ledger.blendedRate(cfg.ledger.blendWindowDays)));
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/stats") {
-					return json(computeStats(ledger));
+					return json(await computeStats(ledger));
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/catalog") {
 					// The catalog as data, judged under `?policy=` (the X-Omp-Policy
@@ -576,15 +624,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					if (!Number.isFinite(since)) return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "sinceMs required" });
 					// `scope` narrows to one agentdox context scope: a project's own spend.
 					const contextScope = url.searchParams.get("scope") ?? "";
-					return json({ sinceMs: since, usd: spendUsdSince(db, since, harnessScopeParam(url.searchParams.get("harness")), contextScope), ...(contextScope === "" ? {} : { scope: contextScope }) });
+					return json({ sinceMs: since, usd: await spendUsdSince(sqlDb, since, harnessScopeParam(url.searchParams.get("harness")), contextScope), ...(contextScope === "" ? {} : { scope: contextScope }) });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/feedback") {
 					const days = clampDays(url.searchParams.get("days"), 30);
-					return json({ days, ...feedbackView(db, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness"))) });
+					return json({ days, ...await feedbackView(sqlDb, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness"))) });
 				}
 				if (req.method === "GET" && url.pathname === "/v1/router/export") {
 					const days = clampDays(url.searchParams.get("days"), 30);
-					const rows = exportRows(db, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness")));
+					const rows = await exportRows(sqlDb, Date.now() - days * 86_400_000, harnessScopeParam(url.searchParams.get("harness")));
 					if (url.searchParams.get("format") === "json") return json({ days, rows });
 					return new Response(exportCsv(rows), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="auto-model-router-export-${new Date().toISOString().slice(0, 10)}.csv"` } });
 				}
@@ -593,7 +641,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					// optional harness scope (the X-Omp-Harness header value).
 					const windowDays = clampDays(url.searchParams.get("days"), 7);
 					const harnessId = url.searchParams.get("harness") ?? "";
-					const report = buildUsageReport(db, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) });
+					const report = await buildUsageReport(sqlDb, { windowDays, harnessId, baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)) });
 					// ?format=text: the rendered report for harnesses without a renderer of their own (the Hermes plugin).
 					if (url.searchParams.get("format") === "text") return new Response(renderUsageReport(report), { headers: { "content-type": "text/plain; charset=utf-8" } });
 					return json(report);
@@ -627,13 +675,13 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					if (auto && !cfg.report.dailySummary) return json({ due: false, reason: "report.dailySummary is off", summary: null });
 					if (auto && !summaryDue(kv, harnessId)) return json({ due: false, reason: "posted in the last 20h", summary: null });
 					const meter = ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd);
-					const runway = ollamaRunway(meter, ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1);
+					const runway = ollamaRunway(meter, await ledger.providerSpendSince("ollama/", Date.now() - 7 * 86_400_000), ollamaUsage.calibration()?.factor ?? 1);
 					const ollamaSummary: SummaryOllama | null =
 						!cfg.ollama.enabled || meter === null ? null : { plan: meter.plan ?? null, usedUsd: meter.usedUsd, creditsUsd: meter.creditsUsd, runwayDays: runway?.days ?? null };
-					const summary = buildDailySummary(db, {
+					const summary = await buildDailySummary(sqlDb, {
 						harnessId,
 						baselines: baselinePrices(cfg.report.baselines, (s) => catalog.find(s)),
-						spikes: ledger.softFailureSpikes?.() ?? [],
+						spikes: await ledger.softFailureSpikes(),
 						ollama: ollamaSummary,
 					});
 					if (auto && !summaryHasNews(summary)) return json({ due: false, reason: "nothing to report", summary: null });
@@ -651,7 +699,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const sinceRaw = Number.parseInt(url.searchParams.get("since") ?? "", 10);
 					const daysRaw = url.searchParams.get("days");
 					const sinceMs = Number.isFinite(sinceRaw) ? sinceRaw : daysRaw === null ? 0 : Date.now() - clampDays(daysRaw, 30) * 86_400_000;
-					const entries = decisionEntries(db, {
+					const entries = await decisionEntries(sqlDb, {
 						sinceMs,
 						harness: harnessScopeParam(url.searchParams.get("harness")),
 						limit,
@@ -717,7 +765,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					// ledger file by design, so this route is the only way it can act
 					// on its own retention policy — and the once-an-hour floor is the
 					// runner's, not the caller's, so calling it in a loop is harmless.
-					const result = retention.runNow();
+					const result = await retention.runNow();
 					if (result.deleted > 0) log.info("pruned ledger rows past retention", { deleted: result.deleted, retentionDays: cfg.ledger.retentionDays });
 					return json({ ...result, retentionDays: cfg.ledger.retentionDays });
 				}
@@ -853,10 +901,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					}
 					const target =
 						typeof body?.ledgerId === "string"
-							? (ledger.recentEntries(1_000).find((e) => e.id === body.ledgerId) ?? null)
-							: (ledger.latestForSession?.(session) ?? null);
+							? ((await ledger.recentEntries(1_000)).find((e) => e.id === body.ledgerId) ?? null)
+							: ((await ledger.latestForSession(session)) ?? null);
 					if (target === null) return wireErrorResponse({ status: 404, code: "not_found", message: "no routed turn for that session yet" });
-					const id = feedback.record({
+					const id = await feedback.record({
 						ledgerId: target.id,
 						ompSessionId: session,
 						slug: target.servedSlug ?? target.slug,
@@ -904,12 +952,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 										meter: ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd),
 										// Ledger vs meter, and how long the credits last at the recent burn.
 										calibration: ollamaUsage.calibration(),
-										runway: ollamaRunway(ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd), ledger.providerSpendSince?.("ollama/", Date.now() - 7 * 86_400_000) ?? 0, ollamaUsage.calibration()?.factor ?? 1),
+										runway: ollamaRunway(ollamaMeter(ollamaUsage.peek(), cfg.ollama.planCreditsUsd), await ledger.providerSpendSince("ollama/", Date.now() - 7 * 86_400_000), ollamaUsage.calibration()?.factor ?? 1),
 										costBias: { configured: cfg.ollama.costBias, effective: catalog.ollamaBias?.() ?? cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage },
 									},
 						// Models failing well above their own baseline in the last hour.
 						// Visibility only: nothing routes around a spike.
-						softFailures: { recentMs: 3_600_000, baselineDays: 7, spikes: ledger.softFailureSpikes?.() ?? [] },
+						softFailures: { recentMs: 3_600_000, baselineDays: 7, spikes: await ledger.softFailureSpikes() },
 						catalog: snap === null
 							? null
 							: {
@@ -1000,7 +1048,19 @@ export function startServer(cfg: RouterConfig): StartedServer {
 			// Drain queued agentdox write-backs before the DB closes under them.
 			context.close();
 			await context.flush();
+			// Both handles on the store, or Windows keeps the file locked and a
+			// caller that deletes its temp directory gets EBUSY.
+			await sqlDb.close();
 			db.close();
+			if (memoryStore !== null) {
+				// A `:memory:` ledger promised nothing durable, so its stand-in file
+				// goes with the server. Best-effort: Windows may still hold the WAL.
+				try {
+					rmSync(memoryStore, { recursive: true, force: true });
+				} catch {
+					/* the OS reclaims a temp directory soon enough */
+				}
+			}
 		},
 	};
 }

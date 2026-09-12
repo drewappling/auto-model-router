@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { fakeLedger } from "./fakes.ts";
+import type { ModelLatency } from "../src/cost/types.ts";
+import { prefetchTurnReads } from "../src/router/index.ts";
+import type { AsyncLedger } from "../src/cost/types.ts";
 
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { ProfileConfig, RouterConfig } from "../src/config/types.ts";
-import type { Ledger } from "../src/cost/types.ts";
 import { extractFeatures } from "../src/router/features.ts";
 import { scoreHeuristic } from "../src/router/classify.ts";
 import { latencyWeightFor } from "../src/router/candidates.ts";
@@ -74,13 +77,14 @@ function state(over: Partial<ConversationState> = {}): ConversationState {
 	};
 }
 
-function run(opts: {
+
+async function run(opts: {
 	userText?: string;
 	promptTokens?: number;
 	cfg?: RouterConfig;
 	st?: ConversationState;
 	tier?: Tier;
-	ledger?: Ledger | null;
+	ledger?: AsyncLedger | null;
 	harnessId?: string;
 	maxTokens?: number;
 }) {
@@ -90,23 +94,28 @@ function run(opts: {
 	const features = extractFeatures(req, opts.promptTokens ?? 4000);
 	const heuristic = scoreHeuristic(features, cfg);
 	const classification = opts.tier === undefined ? heuristic : { ...heuristic, tier: opts.tier };
+	const finalReq = opts.harnessId === undefined ? req : { ...req, harnessId: opts.harnessId };
+	// `select` takes the ledger's answers as data; the fakes below are read
+	// through the same prefetch the router uses, so the tests exercise the real
+	// path rather than a second one.
+	const reads = await prefetchTurnReads(opts.ledger ?? null, finalReq, PROFILE, cfg, SNAPSHOT, classification.task);
 	return select({
-		req: opts.harnessId === undefined ? req : { ...req, harnessId: opts.harnessId },
+		req: finalReq,
 		features,
 		classification,
 		profile: PROFILE,
 		state: opts.st ?? state(),
 		snapshot: SNAPSHOT,
-		ledger: opts.ledger === undefined ? null : opts.ledger,
+		reads,
 		cfg,
 		nowMs: Date.now(),
 	});
 }
 
 describe("hard exclusions", () => {
-	test("never selects a meta-router, floating alias, batch endpoint, or cloaked model", () => {
+	test("never selects a meta-router, floating alias, batch endpoint, or cloaked model", async () => {
 		for (const tier of ["trivial", "simple", "moderate", "hard"] as Tier[]) {
-			const d = run({ tier });
+			const d = await run({ tier });
 			expect(d.slug.startsWith("openrouter/")).toBe(false);
 			expect(d.slug.startsWith("~")).toBe(false);
 			expect(d.slug.endsWith(":batch")).toBe(false);
@@ -119,23 +128,23 @@ describe("hard exclusions", () => {
 		}
 	});
 
-	test("only offers tool-capable models when the request offers tools", () => {
+	test("only offers tool-capable models when the request offers tools", async () => {
 		for (const tier of ["trivial", "simple", "moderate", "hard"] as Tier[]) {
-			const d = run({ tier });
+			const d = await run({ tier });
 			for (const c of d.considered) expect(c.model.supportsTools).toBe(true);
 		}
 	});
 
-	test("excludes free models by default", () => {
-		const d = run({ tier: "trivial" });
+	test("excludes free models by default", async () => {
+		const d = await run({ tier: "trivial" });
 		for (const c of d.considered) expect(c.model.isFree).toBe(false);
 	});
 });
 
 describe("quality floor", () => {
-	test("an unscored model never satisfies a tier with a floor above zero", () => {
+	test("an unscored model never satisfies a tier with a floor above zero", async () => {
 		for (const tier of ["simple", "moderate", "hard"] as Tier[]) {
-			const d = run({ tier });
+			const d = await run({ tier });
 			for (const c of d.considered) {
 				const q = c.model.quality;
 				const unscored = q.coding === undefined && q.agentic === undefined && q.intelligence === undefined;
@@ -144,15 +153,15 @@ describe("quality floor", () => {
 		}
 	});
 
-	test("unscored models are eligible in the trivial tier, whose floor is zero", () => {
-		const d = run({ tier: "trivial" });
+	test("unscored models are eligible in the trivial tier, whose floor is zero", async () => {
+		const d = await run({ tier: "trivial" });
 		expect(BASE.tiers.trivial.minQuality).toBe(0);
 		expect(d.considered.length).toBeGreaterThan(0);
 	});
 
-	test("a higher tier selects a higher-quality model than a lower tier", () => {
-		const cheap = run({ tier: "trivial" });
-		const dear = run({ tier: "hard" });
+	test("a higher tier selects a higher-quality model than a lower tier", async () => {
+		const cheap = await run({ tier: "trivial" });
+		const dear = await run({ tier: "hard" });
 		const cheapModel = MODELS.find((m) => m.slug === cheap.slug);
 		const dearModel = MODELS.find((m) => m.slug === dear.slug);
 		expect(cheapModel).toBeDefined();
@@ -162,17 +171,17 @@ describe("quality floor", () => {
 });
 
 describe("context window", () => {
-	test("rejects models whose context cannot hold the prompt", () => {
+	test("rejects models whose context cannot hold the prompt", async () => {
 		// Far larger than the small-context models in the catalog can take.
-		const d = run({ tier: "trivial", promptTokens: 300_000 });
+		const d = await run({ tier: "trivial", promptTokens: 300_000 });
 		expect(d.rejected.some((r) => r.reason === "context_too_small")).toBe(true);
 		const chosen = MODELS.find((m) => m.slug === d.slug);
 		expect(chosen).toBeDefined();
 		expect(chosen?.contextLength ?? 0).toBeGreaterThan(300_000);
 	});
 
-	test("applies headroom so a token-estimate error cannot overflow the window", () => {
-		const d = run({ tier: "trivial", promptTokens: 100_000 });
+	test("applies headroom so a token-estimate error cannot overflow the window", async () => {
+		const d = await run({ tier: "trivial", promptTokens: 100_000 });
 		const chosen = MODELS.find((m) => m.slug === d.slug);
 		expect(chosen?.contextLength ?? 0).toBeGreaterThanOrEqual(100_000 * BASE.filters.contextHeadroom);
 	});
@@ -183,9 +192,9 @@ describe("cache-aware switching", () => {
 	// choice against a better option, or the switch logic is never exercised.
 	const warmSlug = "x-ai/grok-4.6";
 
-	test("keeps the warm model when switching does not clear the margin", () => {
+	test("keeps the warm model when switching does not clear the margin", async () => {
 		const cfg: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, switchMargin: 1e6 } };
-		const d = run({
+		const d = await run({
 			tier: "hard",
 			promptTokens: 80_000,
 			cfg,
@@ -201,8 +210,8 @@ describe("cache-aware switching", () => {
 		expect(d.sticky).toBe(true);
 	});
 
-	test("abandons a warm cache whose TTL has expired", () => {
-		const d = run({
+	test("abandons a warm cache whose TTL has expired", async () => {
+		const d = await run({
 			tier: "hard",
 			promptTokens: 80_000,
 			st: state({
@@ -219,7 +228,7 @@ describe("cache-aware switching", () => {
 });
 
 describe("budget guard", () => {
-	test("downgrades when the cold forecast breaches the per-turn cap", () => {
+	test("downgrades when the cold forecast breaches the per-turn cap", async () => {
 		// A hard-tier turn at this size forecasts ~$0.02 cold, while cheaper
 		// tiers land well under a cent, so a $0.005 cap is breachable AND
 		// satisfiable further down.
@@ -227,57 +236,57 @@ describe("budget guard", () => {
 			...BASE,
 			budget: { ...BASE.budget, perTurnUsd: 0.005, onExceeded: "downgrade" },
 		};
-		const d = run({ tier: "hard", promptTokens: 50_000, cfg });
+		const d = await run({ tier: "hard", promptTokens: 50_000, cfg });
 		expect(d.budgetDowngraded).toBe(true);
 		expect(d.forecast.coldUsd).toBeLessThanOrEqual(0.005);
 	});
 
-	test("throws in downgrade mode when no candidate at any tier fits", () => {
+	test("throws in downgrade mode when no candidate at any tier fits", async () => {
 		// Failing loudly beats silently spending past an impossible cap.
 		const cfg: RouterConfig = {
 			...BASE,
 			budget: { ...BASE.budget, perTurnUsd: 1e-9, onExceeded: "downgrade" },
 		};
-		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg })).toThrow(BudgetExceededError);
+		await expect(run({ tier: "hard", promptTokens: 50_000, cfg })).rejects.toThrow(BudgetExceededError);
 	});
 
-	test("rejects outright when configured to", () => {
+	test("rejects outright when configured to", async () => {
 		const cfg: RouterConfig = {
 			...BASE,
 			budget: { ...BASE.budget, perTurnUsd: 1e-9, onExceeded: "reject" },
 		};
-		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg })).toThrow(BudgetExceededError);
+		await expect(run({ tier: "hard", promptTokens: 50_000, cfg })).rejects.toThrow(BudgetExceededError);
 	});
 
-	test("a satisfiable budget does not downgrade", () => {
+	test("a satisfiable budget does not downgrade", async () => {
 		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perTurnUsd: 100, onExceeded: "reject" } };
-		const d = run({ tier: "moderate", promptTokens: 5000, cfg });
+		const d = await run({ tier: "moderate", promptTokens: 5000, cfg });
 		expect(d.budgetDowngraded).toBe(false);
 	});
 
-	test("scopes the daily budget to the requesting harness", () => {
+	test("scopes the daily budget to the requesting harness", async () => {
 		// Harness A has already spent the whole daily cap; harness B has spent
 		// nothing. A request from B must NOT be budget-blocked by A's spend.
 		const spendByHarness: Record<string, number> = { "harness-a": 1.0 };
-		const ledger: Ledger = {
-			record: () => {},
-			conversationSpend: () => 0,
-			spendSince: (_sinceMs, harnessId) => (harnessId === undefined ? 1.0 : spendByHarness[harnessId] ?? 0),
-			blendedRate: () => null,
-		latency: () => null,
-			trust: () => null,
-			allTrust: () => [],
-			tokenRatio: () => null,
-			recentEntries: () => [],
-		};
+		const ledger: AsyncLedger = fakeLedger({
+			record: async () => {},
+			conversationSpend: async () => 0,
+			spendSince: async (_sinceMs, harnessId) => (harnessId === undefined ? 1.0 : spendByHarness[harnessId] ?? 0),
+			blendedRate: async () => null,
+		latency: async () => null,
+			trust: async () => null,
+			allTrust: async () => [],
+			tokenRatio: async () => null,
+			recentEntries: async () => [],
+		});
 		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perDayUsd: 0.5, onExceeded: "reject" } };
 
 		// Harness A is over its daily cap → rejected.
-		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-a" })).toThrow(
+		await expect(run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-a" })).rejects.toThrow(
 			BudgetExceededError,
 		);
 		// Harness B has spent nothing → not blocked by A's spend.
-		const d = run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-b" });
+		const d = await run({ tier: "hard", promptTokens: 50_000, cfg, ledger, harnessId: "harness-b" });
 		expect(d.budgetDowngraded).toBe(false);
 	});
 });
@@ -286,68 +295,48 @@ describe("per-harness trust scoping", () => {
 	// When filters.trustScopedByHarness is on, trust is read from the requesting
 	// harness's own ledger rows, so one harness's flaky-model demotion does not
 	// leak into another's routing. Off (default), trust is shared.
-	const untrustedLedger = (): Ledger => ({
-		record: () => {},
-		conversationSpend: () => 0,
-		spendSince: () => 0,
-		blendedRate: () => null,
-		latency: () => null,
-		trust: (_slug, harnessId) => {
-			// Harness A has burned the model; harness B has never tried it.
-			if (harnessId === "harness-a") {
-				return { slug: "x", attempts: 40, escalations: 30, errors: 30, successRate: 0.1, meanCostError: 0.2 };
-			}
-			return null; // harness B / shared → unmeasured
-		},
-		allTrust: () => [],
-		tokenRatio: () => null,
-		recentEntries: () => [],
-	});
-
-	test("scoped trust passes the harness id into the ledger trust query", () => {
+	test("scoped trust passes the harness id into the ledger trust query", async () => {
 		// The feature's contract is that the router's trust lookup is scoped to
-		// the requesting harness when enabled. Assert the wiring directly rather
-		// than via a post-rescue `rejected` reason, which tier-rescue relaxes.
+		// the requesting harness when enabled. The lookup is the prefetch, so
+		// assert the harness id arrives there.
 		let queriedWith: string | undefined;
-		const ledger: Ledger = {
-			...untrustedLedger(),
-			trust: (_slug, harnessId) => {
+		const ledger: AsyncLedger = fakeLedger({
+			signals: async (slugs, harnessId) => {
 				queriedWith = harnessId;
-				return null;
+				return new Map(slugs.map((slug) => [slug, { trust: null, latency: null }]));
 			},
-		};
+		});
 		const cfg: RouterConfig = {
 			...BASE,
 			filters: { ...BASE.filters, trustScopedByHarness: true },
 		};
-		run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
+		await run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
 		expect(queriedWith).toBe("harness-a");
 	});
 
-	test("shared trust (default) reads the whole ledger, not per-harness", () => {
+	test("shared trust (default) reads the whole ledger, not per-harness", async () => {
 		// With scoping off, the trust lookup must NOT carry the harness id, so
 		// harness A's flaky history is visible globally (shared reliability).
 		let queriedWith: string | undefined;
-		const ledger: Ledger = {
-			...untrustedLedger(),
-			trust: (_slug, harnessId) => {
+		const ledger: AsyncLedger = fakeLedger({
+			signals: async (slugs, harnessId) => {
 				queriedWith = harnessId;
-				return null;
+				return new Map(slugs.map((slug) => [slug, { trust: null, latency: null }]));
 			},
-		};
+		});
 		const cfg: RouterConfig = {
 			...BASE,
 			filters: { ...BASE.filters, trustScopedByHarness: false },
 		};
-		run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
+		await run({ tier: "simple", cfg, ledger, harnessId: "harness-a" });
 		// The trust lookup must NOT carry the harness id when scoping is off.
 		expect(queriedWith).toBeUndefined();
 	});
 });
 
 describe("decision shape", () => {
-	test("clamps max tokens to the chosen model's published ceiling", () => {
-		const d = run({ tier: "moderate" });
+	test("clamps max tokens to the chosen model's published ceiling", async () => {
+		const d = await run({ tier: "moderate" });
 		const chosen = MODELS.find((m) => m.slug === d.slug);
 		const ceiling = chosen?.maxCompletionTokens;
 		if (ceiling !== undefined && d.maxTokens !== undefined) {
@@ -355,7 +344,7 @@ describe("decision shape", () => {
 		}
 	});
 
-	test("a reasoning model gets the completion floor; a direct one keeps the caller's cap", () => {
+	test("a reasoning model gets the completion floor; a direct one keeps the caller's cap", async () => {
 		const usable = (m: (typeof MODELS)[number]): boolean => m.supportsTools && m.contextLength >= 32_000 && (m.maxCompletionTokens ?? 100_000) >= 4096;
 		const thinker = MODELS.find((m) => usable(m) && m.supportsReasoning);
 		const direct = MODELS.find((m) => usable(m) && !m.supportsReasoning && !m.reasoningMandatory);
@@ -365,29 +354,29 @@ describe("decision shape", () => {
 
 		// omp asks for a dozen tokens for a title; a reasoning model would spend them thinking
 		// and return nothing, so the dispatch is raised.
-		const raised = run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 12 });
+		const raised = await run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 12 });
 		expect(raised.slug).toBe(thinker!.slug);
 		expect(raised.maxTokens).toBe(512);
 		expect(raised.reasons.some((r) => r.includes("reasons before it answers"))).toBe(true);
 
 		// A model that answers directly is untouched: its cap is the caller's.
-		const kept = run({ tier: "trivial", cfg: withFloor(direct!.slug, 512), maxTokens: 12 });
+		const kept = await run({ tier: "trivial", cfg: withFloor(direct!.slug, 512), maxTokens: 12 });
 		expect(kept.slug).toBe(direct!.slug);
 		expect(kept.maxTokens).toBe(12);
 
 		// The floor never raises past what the caller already asked for, and 0 disables it.
-		expect(run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 4000 }).maxTokens).toBe(4000);
-		expect(run({ tier: "trivial", cfg: withFloor(thinker!.slug, 0), maxTokens: 12 }).maxTokens).toBe(12);
+		expect((await run({ tier: "trivial", cfg: withFloor(thinker!.slug, 512), maxTokens: 4000 })).maxTokens).toBe(4000);
+		expect((await run({ tier: "trivial", cfg: withFloor(thinker!.slug, 0), maxTokens: 12 })).maxTokens).toBe(12);
 	});
 
-	test("plans a probe for cheap tiers and leaves the top tier unprobed", () => {
-		expect(run({ tier: "trivial" }).probe.enabled).toBe(true);
+	test("plans a probe for cheap tiers and leaves the top tier unprobed", async () => {
+		expect((await run({ tier: "trivial" })).probe.enabled).toBe(true);
 		// Nothing above `hard` to escalate into, so probing it would only add latency.
-		expect(run({ tier: "hard" }).probe.enabled).toBe(false);
+		expect((await run({ tier: "hard" })).probe.enabled).toBe(false);
 	});
 
-	test("carries the session id, features, and a reasoning trail", () => {
-		const d = run({ tier: "simple" });
+	test("carries the session id, features, and a reasoning trail", async () => {
+		const d = await run({ tier: "simple" });
 		expect(d.sessionId.startsWith("omp-")).toBe(true);
 		// `d.reasons` holds decision-level notes — a widening, a hysteresis hold — and is
 		// legitimately empty when a tier serves the turn without incident. The trail that is
@@ -397,7 +386,7 @@ describe("decision shape", () => {
 		expect(d.considered.length).toBeGreaterThan(0);
 	});
 
-	test("respects a profile that caps the tier", () => {
+	test("respects a profile that caps the tier", async () => {
 		const req = request("redesign the whole architecture and explain the race condition root cause");
 		const features = extractFeatures(req, 4000);
 		const d = select({
@@ -407,7 +396,6 @@ describe("decision shape", () => {
 			profile: { ...PROFILE, id: "auto-cheap", maxTier: "simple" },
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: BASE,
 			nowMs: Date.now(),
 		});
@@ -431,10 +419,11 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 		keyScoped: true,
 	};
 
-	function runConstrained(ledger: Ledger | null = null) {
+	async function runConstrained(ledger: AsyncLedger | null = null) {
 		const req = request("refactor the service layer and explain the cache coherence contract");
 		const features = extractFeatures(req, 4000);
 		const heuristic = scoreHeuristic(features, BASE);
+		const reads = await prefetchTurnReads(ledger, req, PROFILE, BASE, constrained, heuristic.task);
 		return select({
 			req,
 			features,
@@ -442,47 +431,35 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: constrained,
-			ledger,
+			reads,
 			cfg: BASE,
 			nowMs: Date.now(),
 		});
 	}
 
 	/** Every model is probed-and-failed: below the trust floor at every tier. */
-	function untrustedLedger(): Ledger {
-		return {
-			record: () => {},
-			conversationSpend: () => 0,
-			spendSince: () => 0,
-			blendedRate: () => null,
-		latency: () => null,
-			trust: (slug) => ({
-				slug,
-				attempts: 40,
-				escalations: 30,
-				errors: 30,
-				successRate: 0.1,
-				meanCostError: 0.2,
-			}),
-			allTrust: () => [],
-			tokenRatio: () => null,
-			recentEntries: () => [],
-		};
+	function untrustedLedger(): AsyncLedger {
+		const burned = (slug: string) => ({ slug, attempts: 40, escalations: 30, errors: 30, successRate: 0.1, meanCostError: 0.2 });
+		return fakeLedger({
+			trust: async (slug) => burned(slug),
+			// Candidate scoring reads `signals`, which is what the prefetch fills.
+			signals: async (slugs) => new Map(slugs.map((slug) => [slug, { trust: burned(slug), latency: null }])),
+		});
 	}
 
-	test("rescues a model instead of throwing when no strict tier admits the catalog", () => {
-		const d = runConstrained(untrustedLedger());
+	test("rescues a model instead of throwing when no strict tier admits the catalog", async () => {
+		const d = await runConstrained(untrustedLedger());
 		// It must pick one of the available models, not throw `catalog exhausted`.
 		expect(constrained.models.some((m) => m.slug === d.slug)).toBe(true);
 	});
 
-	test("records the rescue in the reasoning trail", () => {
-		const d = runConstrained(untrustedLedger());
+	test("records the rescue in the reasoning trail", async () => {
+		const d = await runConstrained(untrustedLedger());
 		expect(d.reasons.some((r) => r.startsWith("tier rescue:"))).toBe(true);
 	});
 
-	test("the rescue chooses the cheapest available model when quality is secondary", () => {
-		const d = runConstrained(untrustedLedger());
+	test("the rescue chooses the cheapest available model when quality is secondary", async () => {
+		const d = await runConstrained(untrustedLedger());
 		const chosen = MODELS.find((m) => m.slug === d.slug);
 		expect(chosen).toBeDefined();
 		// Price ceilings are relaxed first; the cheapest surviving model wins.
@@ -490,17 +467,17 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 		expect(d.slug).toBe(cheapest.slug);
 	});
 
-	test("a guardrail that leaves every model below the trust bar is rescued by relaxing it", () => {
+	test("a guardrail that leaves every model below the trust bar is rescued by relaxing it", async () => {
 		// Reproduces the real failure: a tiny guardrail catalog whose models are
 		// all marked untrusted (probed and failed). The trust floor (minTrust 0.7
 		// over minTrustSamples 12) excludes them at EVERY tier, so strict widening
 		// finds nothing; the rescue relaxes trust and picks a model.
-		const d = runConstrained(untrustedLedger());
+		const d = await runConstrained(untrustedLedger());
 		expect(constrained.models.some((m) => m.slug === d.slug)).toBe(true);
 		expect(d.reasons.some((r) => r.startsWith("tier rescue:"))).toBe(true);
 	});
 
-	test("still throws when the catalog is empty after relaxing all economic constraints", () => {
+	test("still throws when the catalog is empty after relaxing all economic constraints", async () => {
 		const empty: CatalogSnapshot = { models: [], fetchedAtMs: Date.now(), keyScoped: true };
 		const req = request("anything");
 		const features = extractFeatures(req, 4000);
@@ -513,7 +490,6 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 				profile: PROFILE,
 				state: state(),
 				snapshot: empty,
-				ledger: null,
 				cfg: BASE,
 				nowMs: Date.now(),
 			}),
@@ -522,7 +498,7 @@ describe("tier rescue under a guardrail-constrained catalog", () => {
 });
 
 describe("task-type routing", () => {
-	test("a vision task only considers image-capable models", () => {
+	test("a vision task only considers image-capable models", async () => {
 		// Force the vision task and a tier; every considered candidate must
 		// support image input.
 		const req = request("describe this image");
@@ -535,7 +511,6 @@ describe("task-type routing", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: BASE,
 			nowMs: Date.now(),
 		});
@@ -543,7 +518,7 @@ describe("task-type routing", () => {
 		for (const c of d.considered) expect(c.model.inputModalities.includes("image")).toBe(true);
 	});
 
-	test("the task config's quality floor overrides the tier floor when higher", () => {
+	test("the task config's quality floor overrides the tier floor when higher", async () => {
 		// A coding task with a high minQuality must not admit models below it,
 		// even in a tier whose own floor is lower.
 		const cfg: RouterConfig = {
@@ -560,7 +535,6 @@ describe("task-type routing", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg,
 			nowMs: Date.now(),
 		});
@@ -576,23 +550,18 @@ describe("task-type routing", () => {
 });
 
 describe("latency scoring", () => {
-	function ledgerWithLatency(bySlug: Record<string, { ttftMs: number; samples: number; tokensPerSec?: number }>): Ledger {
-		return {
-			record: () => {},
-			conversationSpend: () => 0,
-			spendSince: () => 0,
-			blendedRate: () => null,
-			trust: () => null,
-			allTrust: () => [],
-			latency: (slug) => {
-				const v = bySlug[slug];
-				// Default throughput is fast, so these cases isolate the TTFT axis
-				// unless a test sets tokensPerSec explicitly.
-				return v === undefined ? null : { slug, samples: v.samples, ttftMs: v.ttftMs, tokensPerSec: v.tokensPerSec ?? 1000 };
-			},
-			tokenRatio: () => null,
-			recentEntries: () => [],
+	function ledgerWithLatency(bySlug: Record<string, { ttftMs: number; samples: number; tokensPerSec?: number }>): AsyncLedger {
+		const latencyOf = (slug: string): ModelLatency | null => {
+			const v = bySlug[slug];
+			// Default throughput is fast, so these cases isolate the TTFT axis
+			// unless a test sets tokensPerSec explicitly.
+			return v === undefined ? null : { slug, samples: v.samples, ttftMs: v.ttftMs, tokensPerSec: v.tokensPerSec ?? 1000 };
 		};
+		return fakeLedger({
+			latency: async (slug) => latencyOf(slug),
+			// Scoring reads latency out of the prefetched signals.
+			signals: async (slugs) => new Map(slugs.map((slug) => [slug, { trust: null, latency: latencyOf(slug) }])),
+		});
 	}
 
 	const withWeight = (latencyWeight: number): RouterConfig => ({
@@ -600,30 +569,30 @@ describe("latency scoring", () => {
 		filters: { ...BASE.filters, latencyWeight, latencyReferenceMs: 5000, latencyMinSamples: 20 },
 	});
 
-	test("penalises a chronically slow model out of the top slot", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("penalises a chronically slow model out of the top slot", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
-		const d = run({ tier: "simple", cfg: withWeight(2), ledger });
+		const d = await run({ tier: "simple", cfg: withWeight(2), ledger });
 		expect(d.slug).not.toBe(slow);
 	});
 
-	test("latencyWeight 0 disables the penalty", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("latencyWeight 0 disables the penalty", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
-		expect(run({ tier: "simple", cfg: withWeight(0), ledger }).slug).toBe(slow);
+		expect((await run({ tier: "simple", cfg: withWeight(0), ledger })).slug).toBe(slow);
 	});
 
-	test("a model with too few samples is not penalised", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("a model with too few samples is not penalised", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 5 } });
-		expect(run({ tier: "simple", cfg: withWeight(2), ledger }).slug).toBe(slow);
+		expect((await run({ tier: "simple", cfg: withWeight(2), ledger })).slug).toBe(slow);
 	});
 
-	test("penalises a model that starts fast but streams slowly", () => {
+	test("penalises a model that starts fast but streams slowly", async () => {
 		// The case TTFT-only scoring misses: quick first token, slow body.
-		const slow = run({ tier: "simple" }).slug;
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 1500, samples: 50, tokensPerSec: 12 } });
-		const d = run({ tier: "simple", cfg: withWeight(2), ledger });
+		const d = await run({ tier: "simple", cfg: withWeight(2), ledger });
 		expect(d.slug).not.toBe(slow);
 	});
 
@@ -632,24 +601,24 @@ describe("latency scoring", () => {
 		filters: { ...BASE.filters, latencyWeight, latencyReferenceMs: 5000, latencyMinSamples: 20, maxExpectedWaitMs },
 	});
 
-	test("ceiling hard-drops a proven-slow model the penalty cannot, even at weight 0", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("ceiling hard-drops a proven-slow model the penalty cannot, even at weight 0", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
 		// latencyWeight 0 → the multiplier is inert; only the hard ceiling can act.
-		const d = run({ tier: "simple", cfg: withCeiling(20_000), ledger });
+		const d = await run({ tier: "simple", cfg: withCeiling(20_000), ledger });
 		expect(d.slug).not.toBe(slow);
 	});
 
-	test("ceiling spares an under-sampled slow model (cold-start grace)", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("ceiling spares an under-sampled slow model (cold-start grace)", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 5 } });
-		expect(run({ tier: "simple", cfg: withCeiling(20_000), ledger }).slug).toBe(slow);
+		expect((await run({ tier: "simple", cfg: withCeiling(20_000), ledger })).slug).toBe(slow);
 	});
 
-	test("ceiling unset ⇒ no latency gate (proven-slow model still wins on price)", () => {
-		const slow = run({ tier: "simple" }).slug;
+	test("ceiling unset ⇒ no latency gate (proven-slow model still wins on price)", async () => {
+		const slow = (await run({ tier: "simple" })).slug;
 		const ledger = ledgerWithLatency({ [slow]: { ttftMs: 60_000, samples: 50 } });
-		expect(run({ tier: "simple", cfg: withWeight(0), ledger }).slug).toBe(slow);
+		expect((await run({ tier: "simple", cfg: withWeight(0), ledger })).slug).toBe(slow);
 	});
 });
 
@@ -688,7 +657,7 @@ describe("context compaction", () => {
 		);
 	}
 
-	test("an over-budget turn produces a compaction plan and records savings", () => {
+	test("an over-budget turn produces a compaction plan and records savings", async () => {
 		const req = loopReq();
 		const features = extractFeatures(req, 5_000); // over budgetTokens=1000
 		const d = select({
@@ -698,7 +667,6 @@ describe("context compaction", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: COMPACT_CFG,
 			nowMs: Date.now(),
 		});
@@ -707,7 +675,7 @@ describe("context compaction", () => {
 		expect(d.reasons.some((r) => r.startsWith("compaction:"))).toBe(true);
 	});
 
-	test("a small turn is left untouched", () => {
+	test("a small turn is left untouched", async () => {
 		const req = loopReq();
 		const features = extractFeatures(req, 500); // under budgetTokens=1000
 		const d = select({
@@ -717,7 +685,6 @@ describe("context compaction", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: COMPACT_CFG,
 			nowMs: Date.now(),
 		});
@@ -725,7 +692,7 @@ describe("context compaction", () => {
 		expect(d.promptTokensSaved).toBe(0);
 	});
 
-	test("a carried plan is re-applied even when the turn is now under budget", () => {
+	test("a carried plan is re-applied even when the turn is now under budget", async () => {
 		// The prompt cache is a byte-prefix cache: dropping an edit that was
 		// already dispatched rewrites history the upstream had cached, and
 		// re-sends the tokens the edit saved. So a carried plan survives a turn
@@ -739,7 +706,6 @@ describe("context compaction", () => {
 			profile: PROFILE,
 			state: state(),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: COMPACT_CFG,
 			nowMs: Date.now(),
 		});
@@ -753,7 +719,6 @@ describe("context compaction", () => {
 			profile: PROFILE,
 			state: state({ compactionPlan: first.compactionPlan }),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: COMPACT_CFG,
 			nowMs: Date.now(),
 		});
@@ -761,7 +726,7 @@ describe("context compaction", () => {
 		expect(second.promptTokensSaved).toBeGreaterThan(0);
 	});
 
-	test("floorRatio below 1 compacts strictly past the budget so the plan holds longer", () => {
+	test("floorRatio below 1 compacts strictly past the budget so the plan holds longer", async () => {
 		// Each plan change rewrites cached prompt bytes, so compaction overshoots
 		// deliberately: eliding more now buys byte-stable turns later.
 		const req = parseChatRequest(
@@ -791,7 +756,6 @@ describe("context compaction", () => {
 				profile: PROFILE,
 				state: state(),
 				snapshot: SNAPSHOT,
-				ledger: null,
 				cfg: { ...COMPACT_CFG, compaction: { ...COMPACT_CFG.compaction, floorRatio } },
 				nowMs: Date.now(),
 			});
@@ -830,10 +794,10 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 	function decide(req: NormRequest, breakHold: boolean) {
 		const cfg: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, breakHoldOnMechanical: breakHold } };
 		const features = extractFeatures(req, 4_000);
-		return { d: select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: held, snapshot: SNAPSHOT, ledger: null, cfg, nowMs: Date.now() }), features };
+		return { d: select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: held, snapshot: SNAPSHOT, cfg, nowMs: Date.now() }), features };
 	}
 
-	test("off by default, so a hold still pins the tier", () => {
+	test("off by default, so a hold still pins the tier", async () => {
 		expect(DEFAULT_CONFIG.hysteresis.breakHoldOnMechanical).toBe(false); // SHIPPED default, not the live config.yml (machine-dependent)
 		const { d, features } = decide(continuation(), false);
 		expect(features.isToolResultContinuation).toBe(true);
@@ -841,14 +805,14 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 		expect(d.classification.source).toBe("sticky");
 	});
 
-	test("on, a mechanical continuation escapes the hold", () => {
+	test("on, a mechanical continuation escapes the hold", async () => {
 		const { d } = decide(continuation(), true);
 		expect(d.tier).not.toBe("hard");
 		expect(d.classification.source).not.toBe("sticky");
 		expect(d.reasons.some((r) => /hold hard broken/.test(r))).toBe(true);
 	});
 
-	test("a NON-mechanical turn still gets the hold, so flap protection survives", () => {
+	test("a NON-mechanical turn still gets the hold, so flap protection survives", async () => {
 		// This is the case hysteresis exists for: fresh user work mid-conversation
 		// must not bounce the model and cold-start its cache.
 		const { d, features } = decide(request("now refactor the retry helper"), true);
@@ -857,7 +821,7 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 		expect(d.classification.source).toBe("sticky");
 	});
 
-	test("the downgrade clamp still applies, so quality steps rather than falls", () => {
+	test("the downgrade clamp still applies, so quality steps rather than falls", async () => {
 		const cfg: RouterConfig = {
 			...BASE,
 			hysteresis: { ...BASE.hysteresis, breakHoldOnMechanical: true, maxDowngradePerTurn: 1 },
@@ -872,7 +836,6 @@ describe("hysteresis.breakHoldOnMechanical", () => {
 			profile: PROFILE,
 			state: held,
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg,
 			nowMs: Date.now(),
 		});
@@ -928,25 +891,24 @@ describe("hysteresis.switchHorizonTurns (review 2026-09-05 §4)", () => {
 			profile: PROFILE,
 			state: state({ currentSlug: "test/warm-dear", currentTier: "moderate", cacheWarmSlug: "test/warm-dear", cacheWarmAtMs: Date.now(), lastPromptTokens: promptTokens }),
 			snapshot: snap,
-			ledger: null,
 			cfg,
 			nowMs: Date.now(),
 		});
 	}
 
-	test("the ranked winner is the cheaper cold model", () => {
+	test("the ranked winner is the cheaper cold model", async () => {
 		const d = decide(1);
 		expect(d.considered[0]!.model.slug).toBe("test/winner");
 	});
 
-	test("a one-turn horizon keeps the dear model warm (the shipped behaviour)", () => {
+	test("a one-turn horizon keeps the dear model warm (the shipped behaviour)", async () => {
 		const d = decide(1);
 		expect(d.slug).toBe("test/warm-dear");
 		expect(d.sticky).toBe(true);
 		expect(d.reasons.some((r) => r.startsWith("cache: keeping warm test/warm-dear"))).toBe(true);
 	});
 
-	test("amortised over a run of turns, the switch is taken", () => {
+	test("amortised over a run of turns, the switch is taken", async () => {
 		const d = decide(8);
 		expect(d.slug).toBe("test/winner");
 		expect(d.sticky).toBe(false);
@@ -990,17 +952,17 @@ describe("compaction.replanGrowthRatio (review 2026-09-05 §7)", () => {
 	}
 	function decide(req: NormRequest, cfg: RouterConfig, st: ConversationState, promptTokens: number) {
 		const features = extractFeatures(req, promptTokens);
-		return select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: st, snapshot: SNAPSHOT, ledger: null, cfg, nowMs: Date.now() });
+		return select({ req, features, classification: scoreHeuristic(features, cfg), profile: PROFILE, state: st, snapshot: SNAPSHOT, cfg, nowMs: Date.now() });
 	}
 
-	test("the plan records the compacted size it was made at", () => {
+	test("the plan records the compacted size it was made at", async () => {
 		const first = decide(turn(2), cfgWith(1), state(), 4_000);
 		expect(first.compactionPlan.length).toBe(1);
 		expect(first.compactionPlanTokens).toBe(4_000 - first.promptTokensSaved);
 		expect(first.compactionSavedBytes).toBeGreaterThan(0);
 	});
 
-	test("at 1 (shipped) a newly eligible result is compacted on the very next turn", () => {
+	test("at 1 (shipped) a newly eligible result is compacted on the very next turn", async () => {
 		const first = decide(turn(2), cfgWith(1), state(), 4_000);
 		const carried = state({ compactionPlan: first.compactionPlan, compactionPlanTokens: first.compactionPlanTokens });
 		// One more round: the prompt grew ~25%, one more result aged out.
@@ -1009,7 +971,7 @@ describe("compaction.replanGrowthRatio (review 2026-09-05 §7)", () => {
 		expect(second.reasons.some((r) => r.includes("(1 carried, 1 new)"))).toBe(true);
 	});
 
-	test("above 1, an existing plan holds until the compacted prompt has grown by the ratio", () => {
+	test("above 1, an existing plan holds until the compacted prompt has grown by the ratio", async () => {
 		const first = decide(turn(2), cfgWith(2), state(), 4_000);
 		const carried = state({ compactionPlan: first.compactionPlan, compactionPlanTokens: first.compactionPlanTokens });
 		// The raw prompt grew 25% and the COMPACTED prompt ~60% (the carried
@@ -1032,9 +994,11 @@ describe("hysteresis.confirmUpgradesBelowConfidence", () => {
 	// A low-confidence heuristic upgrade from a warm model waits one turn.
 	// Measured: 65 of 67 moderate→hard upgrades in a week bounced back within
 	// 3 turns, each paying a cold hard-tier read of a ~120k prompt.
-	const warmSlug = run({ tier: "moderate" }).slug;
-	function upgrade(opts: { confidence?: number; source?: "heuristic" | "escalation"; st?: Partial<ConversationState>; cfg?: RouterConfig; lastToolFailed?: boolean }) {
+	// Resolved per test: a describe body cannot await.
+	const warmSlugOf = async (): Promise<string> => (await run({ tier: "moderate" })).slug;
+	async function upgrade(opts: { confidence?: number; source?: "heuristic" | "escalation"; st?: Partial<ConversationState>; cfg?: RouterConfig; lastToolFailed?: boolean }) {
 		const cfg = opts.cfg ?? BASE;
+		const warmSlug = await warmSlugOf();
 		const req = request("now rework the whole scheduler");
 		const base = extractFeatures(req, 120_000);
 		const features = opts.lastToolFailed === true ? { ...base, lastToolFailed: true } : base;
@@ -1046,47 +1010,47 @@ describe("hysteresis.confirmUpgradesBelowConfidence", () => {
 			profile: PROFILE,
 			state: state({ turn: 4, currentTier: "moderate", currentSlug: warmSlug, cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 110_000, ...opts.st }),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg,
 			nowMs: Date.now(),
 		});
 	}
 
-	test("a low-confidence upgrade from a warm model is deferred to the held tier", () => {
-		const d = upgrade({});
+	test("a low-confidence upgrade from a warm model is deferred to the held tier", async () => {
+		const d = await upgrade({});
 		expect(d.tier).toBe("moderate");
 		expect(d.upgradeDeferred).toBe("hard");
 		expect(d.reasons.some((r) => r.includes("upgrade moderate → hard deferred one turn"))).toBe(true);
 	});
 
-	test("a second consecutive upgrade classification confirms it", () => {
-		const d = upgrade({ st: { upgradeDeferredTier: "hard" } });
+	test("a second consecutive upgrade classification confirms it", async () => {
+		const d = await upgrade({ st: { upgradeDeferredTier: "hard" } });
 		expect(d.tier).toBe("hard");
 		expect(d.upgradeDeferred).toBeNull();
 		expect(d.reasons.some((r) => r.includes("upgrade moderate → hard confirmed"))).toBe(true);
 	});
 
-	test("confident classifications, cold caches, escalations, failing tools and the off switch all upgrade at once", () => {
-		expect(upgrade({ confidence: 0.9 }).tier).toBe("hard");
-		expect(upgrade({ st: { cacheWarmAtMs: Date.now() - 3_600_000 } }).tier).toBe("hard");
-		expect(upgrade({ source: "escalation" }).tier).toBe("hard");
-		expect(upgrade({ lastToolFailed: true }).tier).toBe("hard");
+	test("confident classifications, cold caches, escalations, failing tools and the off switch all upgrade at once", async () => {
+		expect((await upgrade({ confidence: 0.9 })).tier).toBe("hard");
+		expect((await upgrade({ st: { cacheWarmAtMs: Date.now() - 3_600_000 } })).tier).toBe("hard");
+		expect((await upgrade({ source: "escalation" })).tier).toBe("hard");
+		expect((await upgrade({ lastToolFailed: true })).tier).toBe("hard");
 		const off: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, confirmUpgradesBelowConfidence: 0 } };
-		expect(upgrade({ cfg: off }).tier).toBe("hard");
-		for (const d of [upgrade({ confidence: 0.9 }), upgrade({ source: "escalation" })]) expect(d.upgradeDeferred).toBeNull();
+		expect((await upgrade({ cfg: off })).tier).toBe("hard");
+		for (const d of [await upgrade({ confidence: 0.9 }), await upgrade({ source: "escalation" })]) expect(d.upgradeDeferred).toBeNull();
 	});
 
-	test("a downgrade or a same-tier turn is never deferred", () => {
-		const d = run({ tier: "simple", st: state({ turn: 4, currentTier: "moderate", currentSlug: warmSlug, cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now() }) });
+	test("a downgrade or a same-tier turn is never deferred", async () => {
+		const warmSlug = await warmSlugOf();
+		const d = await run({ tier: "simple", st: state({ turn: 4, currentTier: "moderate", currentSlug: warmSlug, cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now() }) });
 		expect(d.upgradeDeferred).toBeNull();
 	});
 });
 
 describe("recorded forecast is the expected price, not the cold worst case", () => {
 	const warmSlug = "x-ai/grok-4.6";
-	test("a warm stay prices the previous prompt as cache reads; coldUsd keeps the cold figure", () => {
+	test("a warm stay prices the previous prompt as cache reads; coldUsd keeps the cold figure", async () => {
 		const cfg: RouterConfig = { ...BASE, hysteresis: { ...BASE.hysteresis, switchMargin: 1e6 } };
-		const d = run({
+		const d = await run({
 			tier: "hard",
 			promptTokens: 80_000,
 			cfg,
@@ -1099,8 +1063,8 @@ describe("recorded forecast is the expected price, not the cold worst case", () 
 		expect(d.forecast.breakdown.cacheRead).toBeGreaterThan(0);
 	});
 
-	test("a cold turn records the cold price", () => {
-		const d = run({ tier: "hard", promptTokens: 80_000 });
+	test("a cold turn records the cold price", async () => {
+		const d = await run({ tier: "hard", promptTokens: 80_000 });
 		expect(d.forecast.assumedCacheHitRate).toBe(0);
 		expect(d.forecast.expectedUsd).toBeLessThanOrEqual(d.forecast.coldUsd);
 	});
@@ -1108,22 +1072,18 @@ describe("recorded forecast is the expected price, not the cold worst case", () 
 
 describe("cache reliability in the stay/switch comparison", () => {
 	const warmSlug = "x-ai/grok-4.6";
-	function ledgerWithReliability(rate: number | null, samples = 50): Ledger {
-		return {
-			record: () => {},
-			conversationSpend: () => 0,
-			spendSince: () => 0,
-			blendedRate: () => null,
-			trust: () => null,
-			allTrust: () => [],
-			latency: () => null,
-			tokenRatio: () => null,
-			recentEntries: () => [],
-			cacheReliability: (slug) => (rate === null || slug !== warmSlug ? null : { slug, samples, hitRate: rate }),
-		};
+	function ledgerWithReliability(rate: number | null, samples = 50): AsyncLedger {
+		return fakeLedger({
+			// Only the warm model has a measured rate; everything else is unmeasured,
+			// which is what the stay/switch comparison treats as "assume reliable".
+			cacheReliability: async (slugs) =>
+				rate === null
+					? new Map()
+					: new Map(slugs.filter((s) => s === warmSlug).map((slug) => [slug, { slug, samples, hitRate: rate }])),
+		});
 	}
-	const stayCostOf = (ledger: Ledger, cfg: RouterConfig = BASE): number => {
-		const d = run({
+	const stayCostOf = async (ledger: AsyncLedger, cfg: RouterConfig = BASE): Promise<number> => {
+		const d = await run({
 			tier: "hard",
 			promptTokens: 80_000,
 			cfg,
@@ -1135,23 +1095,23 @@ describe("cache reliability in the stay/switch comparison", () => {
 		return Number(m[1]);
 	};
 
-	test("an unreliable cache prices staying at the fresh rate, a reliable one at the cached rate", () => {
-		const reliable = stayCostOf(ledgerWithReliability(1));
-		const flaky = stayCostOf(ledgerWithReliability(0));
-		const unknown = stayCostOf(ledgerWithReliability(null));
+	test("an unreliable cache prices staying at the fresh rate, a reliable one at the cached rate", async () => {
+		const reliable = await stayCostOf(ledgerWithReliability(1));
+		const flaky = await stayCostOf(ledgerWithReliability(0));
+		const unknown = await stayCostOf(ledgerWithReliability(null));
 		expect(flaky).toBeGreaterThan(reliable);
 		expect(unknown).toBeCloseTo(reliable, 6);
 	});
 
-	test("too few samples, or the feature off, assume a reliable cache", () => {
-		const reliable = stayCostOf(ledgerWithReliability(1));
-		expect(stayCostOf(ledgerWithReliability(0, 3))).toBeCloseTo(reliable, 6);
+	test("too few samples, or the feature off, assume a reliable cache", async () => {
+		const reliable = await stayCostOf(ledgerWithReliability(1));
+		expect(await stayCostOf(ledgerWithReliability(0, 3))).toBeCloseTo(reliable, 6);
 		const off: RouterConfig = { ...BASE, filters: { ...BASE.filters, cacheReliabilityMinSamples: 0 } };
-		expect(stayCostOf(ledgerWithReliability(0), off)).toBeCloseTo(reliable, 6);
+		expect(await stayCostOf(ledgerWithReliability(0), off)).toBeCloseTo(reliable, 6);
 	});
 
-	test("the reason names the measured hit rate", () => {
-		const d = run({
+	test("the reason names the measured hit rate", async () => {
+		const d = await run({
 			tier: "hard",
 			promptTokens: 80_000,
 			ledger: ledgerWithReliability(0.5, 40),
@@ -1162,9 +1122,9 @@ describe("cache reliability in the stay/switch comparison", () => {
 });
 
 describe("session pin (forceSlug)", () => {
-	test("a pinned catalog model wins over ranking and the warm model; an unknown pin is ignored with a reason", () => {
-		const warmSlug = run({ tier: "moderate" }).slug;
-		const pinSlug = run({ tier: "hard" }).slug; // a real, differently-ranked model
+	test("a pinned catalog model wins over ranking and the warm model; an unknown pin is ignored with a reason", async () => {
+		const warmSlug = (await run({ tier: "moderate" })).slug;
+		const pinSlug = (await run({ tier: "hard" })).slug; // a real, differently-ranked model
 		const req = request("tidy the retry helper");
 		const features = extractFeatures(req, 50_000);
 		const base = {
@@ -1174,7 +1134,6 @@ describe("session pin (forceSlug)", () => {
 			profile: PROFILE,
 			state: state({ currentSlug: warmSlug, currentTier: "moderate", cacheWarmSlug: warmSlug, cacheWarmAtMs: Date.now(), lastPromptTokens: 50_000 }),
 			snapshot: SNAPSHOT,
-			ledger: null,
 			cfg: { ...BASE, hysteresis: { ...BASE.hysteresis, switchMargin: 1e6 } },
 			nowMs: Date.now(),
 		};
@@ -1189,7 +1148,7 @@ describe("session pin (forceSlug)", () => {
 });
 
 describe("budget.perMonthUsd pacing", () => {
-	test("monthPace spreads what is left over the days left, today included", () => {
+	test("monthPace spreads what is left over the days left, today included", async () => {
 		const sep7 = Date.UTC(2026, 8, 7, 12);
 		expect(monthStartMs(sep7)).toBe(Date.UTC(2026, 8, 1));
 		const p = monthPace(sep7, 60, 30);
@@ -1199,28 +1158,28 @@ describe("budget.perMonthUsd pacing", () => {
 		expect(monthPace(Date.UTC(2026, 8, 30, 12), 60, 0).daysLeft).toBe(1);
 	});
 
-	test("a month running ahead of pace tightens the daily cap and says so", () => {
-		const ledger: Ledger = {
-			record: () => {},
-			conversationSpend: () => 0,
-			spendSince: (sinceMs) => (sinceMs <= monthStartMs(Date.now()) + 1 ? 59.99 : 0), // month-to-date $59.99, last 24h $0
-			blendedRate: () => null,
-			trust: () => null,
-			allTrust: () => [],
-			latency: () => null,
-			tokenRatio: () => null,
-			recentEntries: () => [],
-		};
+	test("a month running ahead of pace tightens the daily cap and says so", async () => {
+		const ledger: AsyncLedger = fakeLedger({
+			record: async () => {},
+			conversationSpend: async () => 0,
+			spendSince: async (sinceMs) => (sinceMs <= monthStartMs(Date.now()) + 1 ? 59.99 : 0), // month-to-date $59.99, last 24h $0
+			blendedRate: async () => null,
+			trust: async () => null,
+			allTrust: async () => [],
+			latency: async () => null,
+			tokenRatio: async () => null,
+			recentEntries: async () => [],
+		});
 		const cfg: RouterConfig = { ...BASE, budget: { ...BASE.budget, perMonthUsd: 60, onExceeded: "reject" } };
-		expect(() => run({ tier: "hard", promptTokens: 50_000, cfg, ledger })).toThrow(/month pacing: \$59\.99 of \$60 spent/);
+		await expect(run({ tier: "hard", promptTokens: 50_000, cfg, ledger })).rejects.toThrow(/month pacing: \$59\.99 of \$60 spent/);
 		// Under pace: the cap is generous and nothing breaches.
-		const easy: Ledger = { ...ledger, spendSince: () => 1 };
-		expect(run({ tier: "hard", promptTokens: 50_000, cfg, ledger: easy }).budgetDowngraded).toBe(false);
+		const easy: AsyncLedger = { ...ledger, spendSince: async () => 1 };
+		expect((await run({ tier: "hard", promptTokens: 50_000, cfg, ledger: easy })).budgetDowngraded).toBe(false);
 	});
 });
 
 describe("filters.latencyWeightContinuation", () => {
-	test("applies only to tool-result continuations, and only when set", () => {
+	test("applies only to tool-result continuations, and only when set", async () => {
 		const f = { ...BASE.filters, latencyWeight: 0.75 };
 		expect(latencyWeightFor(f, false)).toBe(0.75);
 		expect(latencyWeightFor(f, true)).toBe(0.75);

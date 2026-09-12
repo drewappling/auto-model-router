@@ -719,7 +719,16 @@ export interface ProfileConfig {
 }
 
 export interface LedgerConfig {
-	/** SQLite path. Defaults to `$AUTO_MODEL_ROUTER_HOME/router.db`. */
+	/**
+	 * Where the ledger lives: a SQLite path (default
+	 * `$AUTO_MODEL_ROUTER_HOME/router.db`), or a `postgres://` URL for a store
+	 * two replicas share. The shared store holds what correctness depends on
+	 * being one copy — the turn rows a cap is counted from, conversation
+	 * routing memory, and the context blocks. The local caches (catalog
+	 * payloads, benchmark feeds, the summary marker) stay in a SQLite file
+	 * beside the config either way: a cache is a per-process convenience, and
+	 * sharing one would only add contention.
+	 */
 	path: string;
 	/** Window for the blended rate published to omp, days. */
 	blendWindowDays: number;

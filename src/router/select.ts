@@ -9,7 +9,7 @@
 import type { CatalogSnapshot } from "../catalog/types.ts";
 import type { ProfileConfig, RouterConfig } from "../config/types.ts";
 import { forecast, priceAt } from "../cost/forecast.ts";
-import type { Ledger } from "../cost/types.ts";
+import type { LedgerSignals, ModelCacheReliability } from "../cost/types.ts";
 import { explorationDraw } from "./explore.ts";
 import type { CompactionEdit, NormRequest, ReasoningLevel } from "../wire/types.ts";
 import { compactedBytes, planCompaction, validatePlan, type CompactionResult } from "./compaction.ts";
@@ -35,7 +35,6 @@ export interface SelectArgs {
 	profile: ProfileConfig;
 	state: ConversationState;
 	snapshot: CatalogSnapshot;
-	ledger: Ledger | null;
 	cfg: RouterConfig;
 	nowMs: number;
 	/**
@@ -49,6 +48,30 @@ export interface SelectArgs {
 	 * stay/switch comparison. Ignored when the catalog has no such model.
 	 */
 	forceSlug?: string;
+	/** Ledger reads already performed for this turn; see TurnReads. */
+	reads?: TurnReads;
+}
+
+/**
+ * Every ledger read a turn needs, fetched BEFORE selection.
+ *
+ * `select` is synchronous on purpose — it is a pure ranking function, and
+ * `explain` depends on being able to run it without side effects. A ledger on
+ * Postgres cannot be read synchronously, so the reads move up to `route`,
+ * which is already async, and arrive here as data. Absent ⇒ read through the
+ * absent reads degrade to no signals rather than reaching for the store.
+ */
+export interface TurnReads {
+	/** Trust and latency per candidate slug; one batch query per signal kind. */
+	signals?: Map<string, LedgerSignals>;
+	/** Observed warm-cache hit rate per slug. */
+	cacheReliability?: Map<string, ModelCacheReliability>;
+	/** What an escalated retry bills per prompt token; null ⇒ the term is inert. */
+	escalationUsdPerPromptToken?: number | null;
+	/** Spend since the start of the UTC month, scoped as the filters say. */
+	monthSpendUsd?: number;
+	/** Spend over the rolling 24h, scoped as the filters say. */
+	daySpendUsd?: number;
 }
 
 /**
@@ -67,7 +90,6 @@ export class BudgetExceededError extends Error {
 // Mid-range completion assumption for forecasts. Long generations amortize
 // into prompt-dominated cost anyway; precision here does not move rankings.
 const EXPECTED_COMPLETION_TOKENS = 1024;
-const DAY_MS = 86_400_000;
 
 /**
  * Authors known to accept replayed assistant reasoning over chat completions:
@@ -129,7 +151,7 @@ export function monthPace(nowMs: number, perMonthUsd: number, spentUsd: number):
 }
 
 export function select(args: SelectArgs): Decision {
-	const { req, features, classification, profile, state, snapshot, ledger, cfg, nowMs } = args;
+	const { req, features, classification, profile, state, snapshot, cfg, nowMs } = args;
 	const reasons: string[] = [];
 	const minI = tierIdx(profile.minTier);
 	const maxI = tierIdx(profile.maxTier);
@@ -351,29 +373,23 @@ export function select(args: SelectArgs): Decision {
 	const warmSlug = cacheWarm ? state.cacheWarmSlug : null;
 	// Expected cache hit for a model: its observed rate once enough warm-expected
 	// samples exist (filters.cacheReliabilityMinSamples), else a reliable 1.
+	const reads = args.reads;
 	const cacheHitExpectation = (slug: string): { rate: number; measured: boolean; samples: number } => {
 		const min = cfg.filters.cacheReliabilityMinSamples;
-		const rel = min > 0 ? (ledger?.cacheReliability?.(slug) ?? null) : null;
+		const rel = min > 0 ? (reads?.cacheReliability?.get(slug) ?? null) : null;
 		if (rel === null || rel.samples < min) return { rate: 1, measured: false, samples: rel?.samples ?? 0 };
 		return { rate: rel.hitRate, measured: true, samples: rel.samples };
 	};
-	// Pre-fetch trust/latency signals for all candidate slugs in one batch
-	// query per signal kind, instead of per-model individual lookups.
-	const candidateSignals =
-		ledger !== null && snapshot.models.length > 0
-			? ledger.signals?.(
-					snapshot.models.map((m) => m.slug),
-					cfg.filters.trustScopedByHarness ? req.harnessId : undefined,
-					cfg.filters.feedbackByTask ? classification.task : undefined,
-				)
-			: undefined;
+	// Trust and latency for every candidate, fetched by `route` before this ran.
+	// There is no fallback read here on purpose: selection is synchronous and the
+	// store may be a shared database, so a missing prefetch must degrade to
+	// "no signals" rather than silently reach for a handle it cannot await.
+	const candidateSignals = reads?.signals;
 	// What an escalated retry has actually been billing per prompt token, for
 	// the escalation-cost term in candidate scoring. Read once per turn; null
 	// (term inert) when the weight is 0 or the ledger has too few samples.
 	const escalationUsdPerPromptToken =
-		cfg.filters.escalationCostWeight > 0
-			? (ledger?.escalationCost?.(cfg.ledger.blendWindowDays)?.usdPerPromptToken ?? null)
-			: null;
+		cfg.filters.escalationCostWeight > 0 ? (reads?.escalationUsdPerPromptToken ?? null) : null;
 	// A pinned slug is admitted the way a config pin is: into the tier's pin
 	// list for this call only, so the quality floor cannot keep it out.
 	const pinSlug = args.forceSlug !== undefined && snapshot.models.some((m) => m.slug === args.forceSlug) ? args.forceSlug : undefined;
@@ -386,7 +402,6 @@ export function select(args: SelectArgs): Decision {
 			tier: t,
 			task: classification.task,
 			snapshot,
-			ledger,
 			cfg: buildCfg,
 			expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 			warmSlug,
@@ -515,13 +530,15 @@ export function select(args: SelectArgs): Decision {
 	// left, becomes a daily ceiling that tightens as the month runs ahead.
 	let paceNote = "";
 	if (budget.perMonthUsd !== undefined) {
-		const pace = monthPace(nowMs, budget.perMonthUsd, ledger?.spendSince(monthStartMs(nowMs), req.harnessId) ?? 0);
+		const monthSpend = reads?.monthSpendUsd ?? 0;
+		const pace = monthPace(nowMs, budget.perMonthUsd, monthSpend);
 		if (budget.perDayUsd === undefined || pace.dailyCapUsd < budget.perDayUsd) {
 			budget.perDayUsd = pace.dailyCapUsd;
 			paceNote = ` (month pacing: $${pace.spentUsd.toFixed(2)} of $${budget.perMonthUsd} spent, $${pace.dailyCapUsd.toFixed(2)}/day for ${pace.daysLeft} more days)`;
 		}
 	}
-	const daySpend = budget.perDayUsd !== undefined ? (ledger?.spendSince(nowMs - DAY_MS, req.harnessId) ?? 0) : 0;
+	const daySpend =
+		budget.perDayUsd !== undefined ? (reads?.daySpendUsd ?? 0) : 0;
 	const breach = (c: Candidate): string | null => {
 		if (budget.perTurnUsd !== undefined && c.forecast.coldUsd > budget.perTurnUsd) {
 			return `cold forecast $${c.forecast.coldUsd.toFixed(4)} > per-turn budget $${budget.perTurnUsd}`;

@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { migrateStore } from "../src/util/schema.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import type { LedgerEntry } from "../src/cost/types.ts";
-import { openDb } from "../src/util/sqlite.ts";
 
 /**
  * `filters.trustWindowDays` bounds the per-slug trust aggregate, which otherwise
@@ -66,69 +70,70 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 }
 
 /** Old rows: half of them failures. Recent rows: all clean. */
-function seed(windowDays: number) {
+async function seed(windowDays: number) {
 	const cfg = cfgWith(windowDays);
-	const db = openDb(":memory:");
-	const ledger = createLedger(db, cfg);
+	const db = openSqlDb(join(tmpdir(), `t-trust-window.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
+	const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 	const now = Date.now();
 	for (let i = 0; i < 10; i++) {
-		ledger.record(
+		await ledger.record(
 			entry({
 				createdAtMs: now - 30 * DAY,
 				...(i % 2 === 0 ? { error: "server_error: boom", errorKind: "server_error" } : {}),
 			}),
 		);
 	}
-	for (let i = 0; i < 10; i++) ledger.record(entry({ createdAtMs: now - 1 * DAY }));
+	for (let i = 0; i < 10; i++) await ledger.record(entry({ createdAtMs: now - 1 * DAY }));
 	return { db, ledger, cfg };
 }
 
 describe("filters.trustWindowDays", () => {
-	test("0 means all-time: every row counts", () => {
-		const { db, ledger } = seed(0);
-		const trust = ledger.trust("vendor/model");
+	test("0 means all-time: every row counts", async () => {
+		const { db, ledger } = await seed(0);
+		const trust = await ledger.trust("vendor/model");
 		expect(trust?.attempts).toBe(20);
 		expect(trust?.errors).toBe(5);
-		db.close();
+		await db.close();
 	});
 
-	test("a window excludes rows older than it", () => {
-		const { db, ledger } = seed(7);
-		const trust = ledger.trust("vendor/model");
+	test("a window excludes rows older than it", async () => {
+		const { db, ledger } = await seed(7);
+		const trust = await ledger.trust("vendor/model");
 		// Only the 10 recent, clean rows remain.
 		expect(trust?.attempts).toBe(10);
 		expect(trust?.errors).toBe(0);
-		db.close();
+		await db.close();
 	});
 
-	test("the window moves the success rate, which is why it is opt-in", () => {
-		const all = seed(0);
-		const windowed = seed(7);
-		const allTrust = all.ledger.trust("vendor/model");
-		const winTrust = windowed.ledger.trust("vendor/model");
+	test("the window moves the success rate, which is why it is opt-in", async () => {
+		const all = await seed(0);
+		const windowed = await seed(7);
+		const allTrust = await all.ledger.trust("vendor/model");
+		const winTrust = await windowed.ledger.trust("vendor/model");
 		expect(allTrust?.successRate).toBeLessThan(winTrust?.successRate ?? 0);
-		all.db.close();
-		windowed.db.close();
+		await all.db.close();
+		await windowed.db.close();
 	});
 
-	test("is read per call, so a hot-reloaded edit takes effect immediately", () => {
-		const { db, ledger, cfg } = seed(0);
-		expect(ledger.trust("vendor/model")?.attempts).toBe(20);
+	test("is read per call, so a hot-reloaded edit takes effect immediately", async () => {
+		const { db, ledger, cfg } = await seed(0);
+		expect((await ledger.trust("vendor/model"))?.attempts).toBe(20);
 		// Hot reload mutates the shared config object in place.
 		cfg.filters.trustWindowDays = 7;
-		expect(ledger.trust("vendor/model")?.attempts).toBe(10);
-		db.close();
+		expect((await ledger.trust("vendor/model"))?.attempts).toBe(10);
+		await db.close();
 	});
 
-	test("allTrust honours the same window", () => {
-		const { db, ledger } = seed(7);
-		const rows = ledger.allTrust();
+	test("allTrust honours the same window", async () => {
+		const { db, ledger } = await seed(7);
+		const rows = await ledger.allTrust();
 		expect(rows).toHaveLength(1);
 		expect(rows[0]?.attempts).toBe(10);
-		db.close();
+		await db.close();
 	});
 
-	test("ships disabled, so the default install is unchanged", () => {
+	test("ships disabled, so the default install is unchanged", async () => {
 		// DEFAULT_CONFIG, not loadConfig: loadConfig reads the machine's real
 		// config.yml, which has broken this suite before.
 		expect(DEFAULT_CONFIG.filters.trustWindowDays).toBe(0);

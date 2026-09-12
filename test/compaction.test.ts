@@ -34,12 +34,12 @@ const PAD: NormMessage[] = [asst("z1", "bash", '{"command":"ls"}'), toolMsg("z1"
 const big = (marker: string): string => `${marker}:${"x".repeat(200)}`;
 
 describe("planCompaction", () => {
-	test("is a no-op when disabled", () => {
+	test("is a no-op when disabled", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		expect(planCompaction(msgs, { ...CFG, enabled: false }, 0, 10_000).edits).toEqual([]);
 	});
 
-	test("truncates a large stale tool result, protecting recent turns", () => {
+	test("truncates a large stale tool result, protecting recent turns", async () => {
 		const msgs = [
 			user("go"),
 			asst("c1", "read", '{"path":"a.ts"}'),
@@ -54,7 +54,7 @@ describe("planCompaction", () => {
 		expect(edits[0]?.mode).toBe("truncate");
 	});
 
-	test("collapses byte-identical duplicate results, keeping the last", () => {
+	test("collapses byte-identical duplicate results, keeping the last", async () => {
 		const msgs = [
 			user("go"),
 			asst("c1", "read", '{"path":"a.ts"}'),
@@ -69,7 +69,7 @@ describe("planCompaction", () => {
 		expect(edits[0]?.mode).toBe("stub");
 	});
 
-	test("elides a read superseded by a newer call to the same resource", () => {
+	test("elides a read superseded by a newer call to the same resource", async () => {
 		const msgs = [
 			user("go"),
 			asst("c1", "read", '{"path":"a.ts"}'),
@@ -83,7 +83,7 @@ describe("planCompaction", () => {
 		expect(edits[0]?.mode).toBe("stub");
 	});
 
-	test("different resources are not superseded", () => {
+	test("different resources are not superseded", async () => {
 		const msgs = [
 			user("go"),
 			asst("c1", "read", '{"path":"a.ts"}'),
@@ -95,7 +95,7 @@ describe("planCompaction", () => {
 		expect(planCompaction(msgs, CFG, 10_000, 10_000).edits).toEqual([]);
 	});
 
-	test("is deterministic and idempotent on stable input", () => {
+	test("is deterministic and idempotent on stable input", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("OLD")), ...PAD];
 		const a = planCompaction(msgs, CFG, 1, 10_000);
 		const b = planCompaction(msgs, CFG, 1, 10_000);
@@ -106,7 +106,7 @@ describe("planCompaction", () => {
 	// bytes for the rest of the conversation, and every later edit lands AFTER
 	// it. Anything else rewrites already-cached history and forces a full
 	// re-read of the prefix on the next turn.
-	test("the edit set only ever extends forward as the conversation grows", () => {
+	test("the edit set only ever extends forward as the conversation grows", async () => {
 		// Sizes GROW with age-descending order (newest results are the biggest), so
 		// a size-ordered planner selects newest-first and its later additions move
 		// BACKWARD into already-cached history. Equal-sized results would make
@@ -154,7 +154,7 @@ describe("renderUpstreamBody applies compaction", () => {
 		stripAssistantReasoning: false,
 	};
 
-	test("truncates content in place with a recoverable breadcrumb, preserving pairing", () => {
+	test("truncates content in place with a recoverable breadcrumb, preserving pairing", async () => {
 		const raw = [
 			{ role: "user", content: "go" },
 			{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
@@ -173,7 +173,7 @@ describe("renderUpstreamBody applies compaction", () => {
 		expect(content as string).toEndWith("TAIL");
 	});
 
-	test("stub replaces the whole content with a breadcrumb", () => {
+	test("stub replaces the whole content with a breadcrumb", async () => {
 		const raw = [
 			{ role: "user", content: "go" },
 			{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
@@ -191,20 +191,20 @@ describe("plan byte-stability across turns", () => {
 	// invalidates everything after it. So an edit, once dispatched, must be
 	// re-emitted identically on every later turn — which means the planner has
 	// to be told what it already did rather than re-deriving it.
-	test("edits carry their original byte length for persistence", () => {
+	test("edits carry their original byte length for persistence", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
 		expect(edits).toHaveLength(1);
 		expect(edits[0]?.bytes).toBe(Buffer.byteLength(big("A")));
 	});
 
-	test("validatePlan keeps edits whose target is byte-identical and role-correct", () => {
+	test("validatePlan keeps edits whose target is byte-identical and role-correct", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
 		expect(validatePlan(edits, msgs)).toEqual(edits);
 	});
 
-	test("validatePlan drops edits when history changed under them", () => {
+	test("validatePlan drops edits when history changed under them", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
 		// Client re-wrote history: the tool result is a different length now.
@@ -212,14 +212,14 @@ describe("plan byte-stability across turns", () => {
 		expect(validatePlan(edits, rewritten)).toEqual([]);
 	});
 
-	test("validatePlan drops edits that fall off the message array", () => {
+	test("validatePlan drops edits that fall off the message array", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
 		// Conversation compacted away client-side: index 2 no longer exists.
 		expect(validatePlan(edits, [user("go"), ...PAD.slice(1)])).toEqual([]);
 	});
 
-	test("a carried plan produces identical edits to a fresh plan over the same bytes", () => {
+	test("a carried plan produces identical edits to a fresh plan over the same bytes", async () => {
 		// Determinism contract: re-planning over unchanged bytes re-derives the
 		// persisted plan, so the merge in select.ts is a no-op, not a rewrite.
 		const msgs = [
@@ -235,7 +235,7 @@ describe("plan byte-stability across turns", () => {
 		expect(again.edits).toEqual(first.edits);
 	});
 
-	test("a carried edit is re-emitted verbatim even when nothing new is eligible", () => {
+	test("a carried edit is re-emitted verbatim even when nothing new is eligible", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const carried = planCompaction(msgs, CFG, 1, 10_000).edits;
 		// Target already met, so a stateless planner would emit nothing at all.
@@ -244,7 +244,7 @@ describe("plan byte-stability across turns", () => {
 		expect(next.savedBytes).toBeGreaterThan(0);
 	});
 
-	test("carried savings count toward the target, so the planner only adds what is still needed", () => {
+	test("carried savings count toward the target, so the planner only adds what is still needed", async () => {
 		const msgs = [
 			user("go"),
 			asst("c1", "read", '{"path":"a.ts"}'),
@@ -262,7 +262,7 @@ describe("plan byte-stability across turns", () => {
 		expect(next.edits.map((e) => e.index)).toEqual(carried.map((e) => e.index));
 	});
 
-	test("a carried edit is never re-planned into a different shape", () => {
+	test("a carried edit is never re-planned into a different shape", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		// Carried as a stub; a fresh plan would have chosen truncate.
 		const carried = [{ index: 2, mode: "stub" as const, keepHead: 0, keepTail: 0, note: "carried", bytes: Buffer.byteLength(big("A")) }];
@@ -276,7 +276,7 @@ describe("summarising compaction (edit.digest)", () => {
 	const MUT = { slug: "x/y", fallbacks: [], sessionId: "s", cacheBreakpointMessageIndices: [], reasoning: undefined, maxTokens: undefined, stripAssistantReasoning: false };
 	const DIGEST = "[digest: read output 208 bytes → 40 chars by cheap/model. Full output: re-run read {}]\nA: two hundred x's.";
 
-	test("a digested edit replaces the content with the digest, whatever its mode", () => {
+	test("a digested edit replaces the content with the digest, whatever its mode", async () => {
 		const raw = [
 			{ role: "user", content: "go" },
 			{ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
@@ -289,13 +289,13 @@ describe("summarising compaction (edit.digest)", () => {
 		}
 	});
 
-	test("compactedBytes sizes a digested edit by its digest, never above the original", () => {
+	test("compactedBytes sizes a digested edit by its digest, never above the original", async () => {
 		const plain = { index: 2, mode: "truncate" as const, keepHead: 10, keepTail: 10, note: "n", bytes: 5_000 };
 		expect(compactedBytes(5_000, { ...plain, digest: DIGEST })).toBe(Buffer.byteLength(DIGEST));
 		expect(compactedBytes(5_000, { ...plain, digest: "y".repeat(9_000) })).toBe(5_000);
 	});
 
-	test("the digest survives validation and a re-plan, so the bytes stay stable", () => {
+	test("the digest survives validation and a re-plan, so the bytes stay stable", async () => {
 		const msgs = [user("go"), asst("c1", "read", '{"path":"a.ts"}'), toolMsg("c1", "read", big("A")), ...PAD];
 		const { edits } = planCompaction(msgs, CFG, 1, 10_000);
 		const digested = edits.map((e) => ({ ...e, digest: DIGEST }));

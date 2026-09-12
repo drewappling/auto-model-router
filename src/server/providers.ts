@@ -5,6 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { num, type SqlDb } from "../util/sql.ts";
 import { createCompositeCatalog } from "../catalog/composite.ts";
 import { createStaticCatalogSource } from "../catalog/static-catalog.ts";
 import { createAnthropicClient } from "../upstream/anthropic.ts";
@@ -15,7 +16,6 @@ import type { CatalogSnapshot, CatalogSource } from "../catalog/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createMultiUpstream } from "../upstream/multi.ts";
 import { createOllamaClient, type OllamaClient } from "../upstream/ollama.ts";
-import { createLedger } from "../cost/ledger.ts";
 import { setKnownUpstreamIds } from "../cost/report.ts";
 import { createOllamaUsageSource, type OllamaUsageSource } from "../upstream/ollama-usage.ts";
 import { createOpenRouterClient } from "../upstream/openrouter.ts";
@@ -39,7 +39,13 @@ export interface Providers {
 	namedServing(): string[];
 }
 
-export function createProviders(cfg: RouterConfig, db: Database, log: Logger = createLogger(cfg.logLevel)): Providers {
+export function createProviders(
+	cfg: RouterConfig,
+	db: Database,
+	/** The engine-agnostic handle on the same store, for the calibration samples. */
+	sqlDb: SqlDb,
+	log: Logger = createLogger(cfg.logLevel),
+): Providers {
 	const openrouter = createOpenRouterClient(cfg);
 	const openrouterCatalog = createCatalog(cfg, openrouter, db);
 	// Ollama Cloud is a second upstream ranked in the same catalog: `ollama/…`
@@ -51,7 +57,15 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 	const ollamaServing = (): boolean => cfg.ollama.enabled && ollama.available();
 	// Plan usage lives on ollama.com whichever base URL dispatches; it needs the
 	// key, so the daemon path without `/login ollama-cloud` keeps a static bias.
-	const ledgerForCalibration = createLedger(db, cfg);
+	// Only the ledger's Ollama total is needed, so this reads through the shim
+	// rather than constructing a second full ledger.
+	const ollamaLedgerUsd = async (): Promise<number> => {
+		const row = await sqlDb.one<{ total: unknown }>(
+			"SELECT COALESCE(SUM(COALESCE(reported_usd, predicted_usd)), 0) AS total FROM ledger WHERE COALESCE(served_slug, slug) LIKE $prefix",
+			{ prefix: "ollama/%" },
+		);
+		return num(row?.total);
+	};
 	const ollamaUsage = createOllamaUsageSource({
 		apiKey: () => cfg.ollama.apiKey,
 		pollMs: cfg.ollama.usagePollMs,
@@ -59,7 +73,7 @@ export function createProviders(cfg: RouterConfig, db: Database, log: Logger = c
 		log,
 		// Each poll records the meter beside the ledger's Ollama total, so the
 		// estimate can be scaled to what ollama.com actually bills.
-		calibration: { db, ledgerUsd: () => ledgerForCalibration.providerSpendSince?.("ollama/", 0) ?? 0, planCreditsOverrideUsd: cfg.ollama.planCreditsUsd },
+		calibration: { db: sqlDb, ledgerUsd: ollamaLedgerUsd, planCreditsOverrideUsd: cfg.ollama.planCreditsUsd },
 	});
 	// Named upstreams (OpenAI, Azure, Anthropic, vLLM…): a client per id, built when
 	// first needed and kept — its breaker state must survive config reloads — while

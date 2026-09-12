@@ -12,7 +12,7 @@ import type { StreamEvent, TurnSummary, UpstreamChunk } from "../src/wire/types.
 const HEADERS = new Headers({ "X-Omp-Harness": "codex" });
 
 describe("responsesToChatBody", () => {
-	test("instructions, messages, function calls and their outputs become chat messages", () => {
+	test("instructions, messages, function calls and their outputs become chat messages", async () => {
 		const chat = responsesToChatBody({
 			model: "auto",
 			instructions: "Be terse.",
@@ -59,7 +59,7 @@ describe("responsesToChatBody", () => {
 		for (const k of ["instructions", "input", "store", "include", "prompt_cache_key", "max_output_tokens"]) expect(k in chat).toBe(false);
 	});
 
-	test("a string input is one user message; images survive; previous_response_id is refused", () => {
+	test("a string input is one user message; images survive; previous_response_id is refused", async () => {
 		expect(responsesToChatBody({ model: "auto", input: "hi" }).messages).toEqual([{ role: "user", content: "hi" }]);
 		const withImage = responsesToChatBody({ model: "auto", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "what is this" }, { type: "input_image", image_url: "data:image/png;base64,AAAA" }] }] });
 		expect(withImage.messages).toEqual([{ role: "user", content: [{ type: "text", text: "what is this" }, { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] }]);
@@ -67,7 +67,7 @@ describe("responsesToChatBody", () => {
 		expect(() => responsesToChatBody({ model: "auto", input: [] })).toThrow(WireErrorException);
 	});
 
-	test("Codex identity is read from the body when the headers carry none", () => {
+	test("Codex identity is read from the body when the headers carry none", async () => {
 		const meta = (agent: string) => JSON.stringify({ session_id: "t1", thread_id: "t1", agent_name: agent, turn_id: "u1" });
 		const body = { model: "auto", input: "x", prompt_cache_key: "t1", client_metadata: { thread_id: "t1", session_id: "t1", "x-codex-turn-metadata": meta("/root") } };
 		const main = parseResponsesRequest(body, HEADERS);
@@ -81,7 +81,7 @@ describe("responsesToChatBody", () => {
 		expect(identityHeadersFromBody({ model: "auto", input: "x", client_metadata: { "x-codex-turn-metadata": "not json" } }, HEADERS).get("x-omp-subagent")).toBeNull();
 	});
 
-	test("parseResponsesRequest yields a routed request tagged with the wire", () => {
+	test("parseResponsesRequest yields a routed request tagged with the wire", async () => {
 		const req = parseResponsesRequest({ model: "auto-model-router/auto-cheap", input: "hello", stream: false }, HEADERS);
 		expect(req.protocol).toBe("openai-responses");
 		expect(req.requestedModel).toBe("auto-cheap");

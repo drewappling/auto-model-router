@@ -283,66 +283,47 @@ export interface SoftFailureSpike {
 	baselineRate: number;
 }
 
-export interface Ledger {
-	record(entry: LedgerEntry): void;
-	/** Total reported (or predicted, when reported is null) spend for a conversation. */
-	conversationSpend(conversationKey: string): number;
-	/**
-	 * Total spend since a wall-clock instant. When `harnessId` is non-empty,
-	 * scoped to that harness only; empty ⇒ all harnesses (global).
-	 */
-	spendSince(sinceMs: number, harnessId?: string): number;
-	blendedRate(windowDays: number): BlendedRate | null;
-	/**
-	 * Per-model reliability over the ledger, optionally scoped to a harness.
-	 * `task` (with `filters.feedbackByTask`) counts only verdicts given on
-	 * turns of that task type, plus verdicts on turns with no recorded task.
-	 */
-	trust(slug: string, harnessId?: string, task?: string): ModelTrust | null;
-	allTrust(): ModelTrust[];
-	/**
-	 * Per-model responsiveness (mean TTFT + completion throughput), optionally
-	 * scoped to a harness. Null until `filters.latencyMinSamples` streamed samples
-	 * exist. TTFT isolates start latency from answer length; throughput captures
-	 * how fast the body streams once it starts.
-	 */
-	latency(slug: string, harnessId?: string): ModelLatency | null;
-	/** Batch trust and latency for one candidate set; one query per signal kind. Optional — callers can fall back to per-slug calls. */
-	signals?(slugs: readonly string[], harnessId?: string, task?: string): Map<string, LedgerSignals>;
-	/**
-	 * What an escalated retry actually bills per prompt token, measured over
-	 * the last `windowDays` of attempt > 0 rows. Null until enough escalated
-	 * attempts exist to measure. Optional so fakes need not implement it; the
-	 * escalation-cost term in candidate scoring is inert without it.
-	 */
-	escalationCost?(windowDays: number): EscalationCost | null;
-	/**
-	 * Observed cache hit rate when a warm cache was expected (see
-	 * ModelCacheReliability). Null until any sample exists. Optional so fakes
-	 * need not implement it; the stay/switch comparison assumes a reliable
-	 * cache without it.
-	 */
-	cacheReliability?(slug: string): ModelCacheReliability | null;
-	/** Observed chars-per-token ratio for a tokenizer family; null until calibrated. */
-	tokenRatio(tokenizer: string): number | null;
-	recentEntries(limit: number): LedgerEntry[];
-	/** Spend since an instant on slugs with a prefix (`ollama/`), for provider-level reconciliation. Optional. */
-	providerSpendSince?(slugPrefix: string, sinceMs: number): number;
-	/**
-	 * Models whose soft-failure rate over the last `recentMs` is a spike against
-	 * their own rate over the preceding `baselineMs`. Optional; visibility only.
-	 */
-	softFailureSpikes?(nowMs?: number, recentMs?: number, baselineMs?: number): SoftFailureSpike[];
-	/** Newest kept (non-wasted) entry for an omp session, for /router why and feedback. Optional so fakes need not implement it. */
-	latestForSession?(ompSessionId: string): LedgerEntry | null;
-	/** Newest entries for an omp session, newest first. Optional. */
-	entriesForSession?(ompSessionId: string, limit: number): LedgerEntry[];
-	/**
-	 * Deletes ledger rows past the retention window, and the feedback keyed to
-	 * them (`null` or 0 ⇒ nothing is deleted). Optional so fakes need not
-	 * implement it.
-	 */
-	prune?(retentionDays: number | null, nowMs?: number): PruneResult;
-	/** Marks one row wasted after the fact (a digest the agent went back on). Optional. */
-	markWasted?(id: string): void;
+/**
+ * The turn's ledger reads, asynchronously. A local SQLite ledger satisfies this
+ * trivially (its reads are already synchronous); a Postgres-backed one cannot
+ * be read from inside `select`, so this is the seam the router prefetches
+ * through. One implementation per storage engine, and the routing core never
+ * learns which it is talking to.
+ */
+export interface LedgerReader {
+	signals(slugs: readonly string[], harnessId?: string, task?: string): Promise<Map<string, LedgerSignals>>;
+	/** Warm-cache hit rates for the slugs a turn may choose between. */
+	cacheReliability(slugs: readonly string[]): Promise<Map<string, ModelCacheReliability>>;
+	escalationCost(windowDays: number): Promise<EscalationCost | null>;
+	spendSince(sinceMs: number, harnessId?: string): Promise<number>;
+}
+
+
+/**
+ * The ledger. One interface, one implementation (`ledger-sql.ts`), either
+ * engine underneath.
+ *
+ * Every method is a promise because the store may be a shared database rather
+ * than a local file, and a Postgres read cannot be made synchronous. Nothing
+ * is optional: a caller made to guess which half of an interface it holds is
+ * how a signal silently goes missing, and test doubles get their omissions
+ * filled by `test/fakes.ts` instead. `LedgerReader` stays the narrow seam the
+ * turn path prefetches through; this is the full surface the server and the
+ * reports use.
+ */
+export interface AsyncLedger extends LedgerReader {
+	record(entry: LedgerEntry): Promise<void>;
+	conversationSpend(conversationKey: string): Promise<number>;
+	blendedRate(windowDays: number): Promise<BlendedRate | null>;
+	trust(slug: string, harnessId?: string, task?: string): Promise<ModelTrust | null>;
+	allTrust(): Promise<ModelTrust[]>;
+	latency(slug: string, harnessId?: string): Promise<ModelLatency | null>;
+	tokenRatio(tokenizer: string): Promise<number | null>;
+	recentEntries(limit: number): Promise<LedgerEntry[]>;
+	providerSpendSince(slugPrefix: string, sinceMs: number): Promise<number>;
+	softFailureSpikes(nowMs?: number, recentMs?: number, baselineMs?: number): Promise<SoftFailureSpike[]>;
+	latestForSession(ompSessionId: string): Promise<LedgerEntry | null>;
+	entriesForSession(ompSessionId: string, limit: number): Promise<LedgerEntry[]>;
+	prune(retentionDays: number | null, nowMs?: number): Promise<PruneResult>;
+	markWasted(id: string): Promise<void>;
 }

@@ -103,7 +103,6 @@ function run(opts: {
 		profile: opts.profile ?? PROFILE,
 		state: opts.st ?? state(),
 		snapshot: SNAPSHOT,
-		ledger: null,
 		cfg,
 		nowMs: NOW,
 		...(opts.excludeSlugs === undefined ? {} : { excludeSlugs: opts.excludeSlugs }),
@@ -113,14 +112,14 @@ function run(opts: {
 const ALWAYS = { simple: 1, moderate: 1, hard: 1 };
 
 describe("exploration is opt-in", () => {
-	test("never fires under the shipped defaults", () => {
+	test("never fires under the shipped defaults", async () => {
 		expect(BASE.exploration.enabled).toBe(false);
 		for (const tier of ["simple", "moderate", "hard"] as Tier[]) {
 			expect(run({ tier }).explored).toBeNull();
 		}
 	});
 
-	test("enabled with no rates configured still never fires", () => {
+	test("enabled with no rates configured still never fires", async () => {
 		const cfg = withExploration({ enabled: true, rates: {} });
 		for (const tier of ["simple", "moderate", "hard"] as Tier[]) {
 			expect(run({ tier, cfg }).explored).toBeNull();
@@ -129,20 +128,20 @@ describe("exploration is opt-in", () => {
 });
 
 describe("per-tier rates", () => {
-	test("each tier is governed by its own rate, not one global one", () => {
+	test("each tier is governed by its own rate, not one global one", async () => {
 		const cfg = withExploration({ enabled: true, rates: { simple: 0, moderate: 0, hard: 1 } });
 		expect(run({ tier: "simple", cfg }).explored).toBeNull();
 		expect(run({ tier: "moderate", cfg }).explored).toBeNull();
 		expect(run({ tier: "hard", cfg }).explored).toEqual({ from: "hard", to: "moderate" });
 	});
 
-	test("a tier absent from the rates map is never explored", () => {
+	test("a tier absent from the rates map is never explored", async () => {
 		const cfg = withExploration({ enabled: true, rates: { hard: 1 } });
 		expect(run({ tier: "moderate", cfg }).explored).toBeNull();
 		expect(run({ tier: "hard", cfg }).explored).not.toBeNull();
 	});
 
-	test("the shipped defaults weight expensive tiers far above cheap ones", () => {
+	test("the shipped defaults weight expensive tiers far above cheap ones", async () => {
 		const r = BASE.exploration.rates;
 		expect(r.hard ?? 0).toBeGreaterThan(r.simple ?? 0);
 		expect(r.moderate ?? 0).toBeGreaterThan(r.simple ?? 0);
@@ -152,19 +151,19 @@ describe("per-tier rates", () => {
 describe("exploration drops exactly one tier", () => {
 	const cfg = withExploration({ enabled: true, rates: ALWAYS });
 
-	test("moderate explores down to simple", () => {
+	test("moderate explores down to simple", async () => {
 		expect(run({ tier: "moderate", cfg }).explored).toEqual({ from: "moderate", to: "simple" });
 	});
 
-	test("hard explores down to moderate, never further", () => {
+	test("hard explores down to moderate, never further", async () => {
 		expect(run({ tier: "hard", cfg }).explored).toEqual({ from: "hard", to: "moderate" });
 	});
 
-	test("trivial is the floor and cannot be explored below", () => {
+	test("trivial is the floor and cannot be explored below", async () => {
 		expect(run({ tier: "trivial", cfg }).explored).toBeNull();
 	});
 
-	test("the decision trail says so out loud", () => {
+	test("the decision trail says so out loud", async () => {
 		expect(run({ tier: "moderate", cfg }).reasons.some((r) => r.startsWith("exploration:"))).toBe(true);
 	});
 });
@@ -172,11 +171,11 @@ describe("exploration drops exactly one tier", () => {
 describe("hysteresis holds are explored only once the cache is cold", () => {
 	const cfg = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "cold-cache" });
 
-	test("a held tier with a WARM cache is left alone", () => {
+	test("a held tier with a WARM cache is left alone", async () => {
 		expect(run({ tier: "simple", cfg, st: heldState("hard", "warm") }).explored).toBeNull();
 	});
 
-	test("a held tier with a COLD cache is explorable", () => {
+	test("a held tier with a COLD cache is explorable", async () => {
 		// This is the population that carries most of the spend: turns that
 		// reach hard by hold rather than by classification.
 		expect(run({ tier: "simple", cfg, st: heldState("hard", "cold") }).explored).toEqual({
@@ -185,18 +184,18 @@ describe("hysteresis holds are explored only once the cache is cold", () => {
 		});
 	});
 
-	test("the reason names the hold and the cache state, for later analysis", () => {
+	test("the reason names the hold and the cache state, for later analysis", async () => {
 		const d = run({ tier: "simple", cfg, st: heldState("hard", "cold") });
 		expect(d.reasons.some((r) => r.includes("held tier (cold cache)"))).toBe(true);
 	});
 
-	test("stickyPolicy never leaves holds alone entirely", () => {
+	test("stickyPolicy never leaves holds alone entirely", async () => {
 		const off = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "never" });
 		expect(run({ tier: "simple", cfg: off, st: heldState("hard", "cold") }).explored).toBeNull();
 		expect(run({ tier: "simple", cfg: off, st: heldState("hard", "warm") }).explored).toBeNull();
 	});
 
-	test("stickyPolicy always reaches held turns even with a live cache", () => {
+	test("stickyPolicy always reaches held turns even with a live cache", async () => {
 		// The only setting that samples the population carrying most of the
 		// spend, at the price of a forfeited cache read.
 		const always = withExploration({ enabled: true, rates: ALWAYS, stickyPolicy: "always" });
@@ -215,16 +214,16 @@ describe("hysteresis holds are explored only once the cache is cold", () => {
 describe("exploration respects the remaining guards", () => {
 	const cfg = withExploration({ enabled: true, rates: ALWAYS });
 
-	test("never routes below the profile floor", () => {
+	test("never routes below the profile floor", async () => {
 		const floored: ProfileConfig = { ...PROFILE, minTier: "moderate" };
 		expect(run({ tier: "moderate", cfg, profile: floored }).explored).toBeNull();
 	});
 
-	test("skips forced escalations, which already proved the cheap tier failed", () => {
+	test("skips forced escalations, which already proved the cheap tier failed", async () => {
 		expect(run({ tier: "moderate", cfg, source: "escalation" }).explored).toBeNull();
 	});
 
-	test("skips failover retries so a second confound is not introduced", () => {
+	test("skips failover retries so a second confound is not introduced", async () => {
 		expect(run({ tier: "moderate", cfg, excludeSlugs: ["vendor/broken"] }).explored).toBeNull();
 	});
 });
@@ -232,7 +231,7 @@ describe("exploration respects the remaining guards", () => {
 describe("exploration is deterministic", () => {
 	const cfg = withExploration({ enabled: true, rates: { simple: 0.5, moderate: 0.5, hard: 0.5 } });
 
-	test("the same turn always draws the same way, so explain can replay it", () => {
+	test("the same turn always draws the same way, so explain can replay it", async () => {
 		for (const text of ["alpha task", "beta task", "gamma task"]) {
 			const first = run({ userText: text, tier: "moderate", cfg });
 			for (let i = 0; i < 5; i++) {
@@ -241,7 +240,7 @@ describe("exploration is deterministic", () => {
 		}
 	});
 
-	test("the draw honours the configured rate across many turns", () => {
+	test("the draw honours the configured rate across many turns", async () => {
 		const cfg25 = withExploration({ enabled: true, rates: { moderate: 0.25 } });
 		let explored = 0;
 		const N = 400;

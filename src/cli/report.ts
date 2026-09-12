@@ -10,6 +10,7 @@ import { loadConfig } from "../config/load.ts";
 import { createCatalog } from "../catalog/openrouter-catalog.ts";
 import { baselinePrices, buildUsageReport, renderUsageReport } from "../cost/report.ts";
 import { openDb } from "../util/sqlite.ts";
+import { openSqlDb } from "../util/sql.ts";
 import { configOpts, flagInt, flagString, type CliArgs } from "./args.ts";
 
 export async function reportCommand(args: CliArgs): Promise<void> {
@@ -28,15 +29,19 @@ export async function reportCommand(args: CliArgs): Promise<void> {
 	}
 
 	const db = openDb(cfg.ledger.path);
+	// The catalog cache is read through the bun:sqlite handle; the report reads
+	// through the engine-agnostic one. Same store, two readers.
+	const sdb = openSqlDb(cfg.ledger.path);
 	try {
 		// Baseline prices from the cached catalog: no network for a report.
 		const dead = { dispatch: () => Promise.reject(new Error("offline")), complete: () => Promise.reject(new Error("offline")), fetchModels: () => Promise.reject(new Error("offline")), fetchModelsForUser: () => Promise.reject(new Error("offline")) };
 		const snapshot = createCatalog(cfg, dead, db).peek();
 		const baselines = baselinePrices(cfg.report.baselines, (s) => snapshot?.models.find((m) => m.slug === s));
-		const report = buildUsageReport(db, { windowDays: days, harnessId, baselines });
+		const report = await buildUsageReport(sdb, { windowDays: days, harnessId, baselines });
 		if (args.flags.has("json")) console.log(JSON.stringify(report, null, 2));
 		else console.log(renderUsageReport(report));
 	} finally {
+		await sdb.close();
 		db.close();
 	}
 }

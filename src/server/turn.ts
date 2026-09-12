@@ -14,7 +14,7 @@ import type { ContextBridge } from "../context/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { estimateUnreportedCache } from "../cost/cache-estimate.ts";
 import { computeCost } from "../cost/forecast.ts";
-import { EMPTY_USAGE, type Ledger, type UsageCounts } from "../cost/types.ts";
+import { EMPTY_USAGE, type AsyncLedger, type UsageCounts } from "../cost/types.ts";
 import { createProbe, type Probe } from "../router/escalate.ts";
 import { resolveHoldTurns } from "../router/explore.ts";
 import { adjustPendingEstimate } from "../tokens/estimate.ts";
@@ -65,7 +65,7 @@ export interface TurnDeps {
 	config: RouterConfig;
 	router: Router;
 	upstream: UpstreamClient;
-	ledger: Ledger;
+	ledger: AsyncLedger;
 	conversations: ConversationStore;
 	catalog: CatalogSource;
 	/** agentdox bridge. The disabled bridge makes every call here a no-op. */
@@ -84,6 +84,17 @@ class SinkError extends Error {
 		super(cause instanceof Error ? cause.message : String(cause));
 		this.name = "SinkError";
 	}
+}
+
+/**
+ * A deliberate refusal from `route()` — `BudgetExceededError` today — reports
+ * the status and code it chose. Anything else is an internal failure and gets
+ * a 500, so a new throw never silently becomes a 4xx.
+ */
+function routerRefusal(err: unknown): { status: number; code: string } | null {
+	if (!(err instanceof Error) || !("status" in err) || !("code" in err)) return null;
+	const { status, code } = err as Error & { status: unknown; code: unknown };
+	return typeof status === "number" && typeof code === "string" ? { status, code } : null;
 }
 
 /** Latest user text, used to bias agentdox relevance ranking and as the recorded turn. */
@@ -122,7 +133,7 @@ export async function runTurn(
 ): Promise<void> {
 	const { config, router, upstream, ledger, conversations, context: bridge } = deps;
 	const log = createLogger(config.logLevel);
-	const state = conversations.load(req.conversationKey);
+	const state = await conversations.load(req.conversationKey);
 	const turnNumber = state.turn + 1;
 	// Digest quality signal: the calls the agent just made, matched against
 	// recent digests of this session (a re-run of a digested read means the
@@ -131,7 +142,9 @@ export async function runTurn(
 		for (let i = req.messages.length - 1; i >= 0; i--) {
 			const m = req.messages[i];
 			if (m === undefined || m.role !== "assistant") continue;
-			if (m.toolCalls.length > 0) deps.digester.noteToolCalls(req.ompSessionId, m.toolCalls.map((c) => ({ name: c.name, argsJson: c.argsJson })));
+			if (m.toolCalls.length > 0) {
+				await deps.digester.noteToolCalls(req.ompSessionId, m.toolCalls.map((c) => ({ name: c.name, argsJson: c.argsJson })));
+			}
 			break;
 		}
 	}
@@ -191,7 +204,17 @@ export async function runTurn(
 				}
 				decision = await router.route(req, opts);
 			} catch (err) {
-				await sink.error({ status: 500, code: "router_error", message: err instanceof Error ? err.message : String(err) });
+				// A refusal the router MEANS carries its own status and code — a
+				// budget cap in `reject` mode is a 402 `budget_exceeded`, not an
+				// internal failure. Reported as a 500 it reads to the caller (and
+				// to a team front door relaying it) as "the router broke", which
+				// sent a capped deployment looking for a crash.
+				const refusal = routerRefusal(err);
+				await sink.error({
+					status: refusal?.status ?? 500,
+					code: refusal?.code ?? "router_error",
+					message: err instanceof Error ? err.message : String(err),
+				});
 				return;
 			}
 		}
@@ -314,7 +337,7 @@ export async function runTurn(
 				generationId = await dispatch.generationId().catch(() => null);
 			}
 			const priceModel = deps.catalog.find(servedSlug ?? decision.slug);
-			ledger.record({
+			await ledger.record({
 				id: crypto.randomUUID(),
 				createdAtMs: Date.now(),
 				conversationKey: req.conversationKey,
@@ -364,7 +387,7 @@ export async function runTurn(
 			// the committed path used to reach the state update below, so aborted
 			// dispatches (30% of real spend on live data) stayed invisible to the
 			// per-conversation budget guard.
-			conversations.accrue(req.conversationKey, { spentUsd: reportedUsd ?? decision.forecast.expectedUsd });
+			await conversations.accrue(req.conversationKey, { spentUsd: reportedUsd ?? decision.forecast.expectedUsd });
 		};
 
 		// Same-tier failover: re-route with every failed slug excluded and accept
@@ -641,7 +664,7 @@ export async function runTurn(
 		state.currentTier = decision.tier;
 		// Escalations accumulate in SQL for the same reason spend does: `save`
 		// below no longer writes this column, so a snapshot cannot clobber it.
-		conversations.accrue(req.conversationKey, { escalations });
+		await conversations.accrue(req.conversationKey, { escalations });
 		// Hysteresis window. Only re-arm when the served tier actually changed
 		// (or this turn escalated). Re-arming on EVERY turn — even a trivial one
 		// served by a held hard model — extends the lock forever: the classifier
@@ -672,7 +695,7 @@ export async function runTurn(
 			state.cacheWarmAtMs = Date.now();
 		}
 		state.updatedAtMs = Date.now();
-		conversations.save(state);
+		await conversations.save(state);
 
 		// Record the settled turn into agentdox, attributed to the model that
 		// actually served it. Queued and never awaited: the transcript is an

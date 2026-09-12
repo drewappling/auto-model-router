@@ -43,19 +43,19 @@ function loop(turns: number): NormRequest {
 }
 
 describe("planCacheBreakpoints", () => {
-	test("marks the tail so the next turn can read this turn's whole prompt", () => {
+	test("marks the tail so the next turn can read this turn's whole prompt", async () => {
 		const req = loop(12);
 		const picks = planCacheBreakpoints(req, MODEL, cfg());
 		expect(picks).toContain(req.messages.length - 1);
 	});
 
-	test("marks the system prefix", () => {
+	test("marks the system prefix", async () => {
 		const req = loop(12);
 		const picks = planCacheBreakpoints(req, MODEL, cfg());
 		expect(picks).toContain(0);
 	});
 
-	test("mid-history boundaries are stable as the conversation grows", () => {
+	test("mid-history boundaries are stable as the conversation grows", async () => {
 		// Uncapped so the comparison is about placement, not slot eviction.
 		const uncapped = cfg({ maxBreakpoints: 64, milestoneTokens: 4_000 });
 		const mid = (turns: number): number[] => {
@@ -72,7 +72,7 @@ describe("planCacheBreakpoints", () => {
 		}
 	});
 
-	test("boundaries are spaced by the milestone size, not by message position", () => {
+	test("boundaries are spaced by the milestone size, not by message position", async () => {
 		const req = loop(30);
 		const tail = req.messages.length - 1;
 		const coarse = planCacheBreakpoints(req, MODEL, cfg({ maxBreakpoints: 64, milestoneTokens: 20_000 })).filter(
@@ -84,13 +84,13 @@ describe("planCacheBreakpoints", () => {
 		expect(fine.length).toBeGreaterThan(coarse.length);
 	});
 
-	test("keeps the system prefix and the tail when slots are scarce", () => {
+	test("keeps the system prefix and the tail when slots are scarce", async () => {
 		const req = loop(30);
 		const picks = planCacheBreakpoints(req, MODEL, cfg({ maxBreakpoints: 2, milestoneTokens: 4_000 }));
 		expect(picks).toEqual([0, req.messages.length - 1]);
 	});
 
-	test("milestones follow post-compaction sizes", () => {
+	test("milestones follow post-compaction sizes", async () => {
 		const req = loop(30);
 		const tail = req.messages.length - 1;
 		const plan = planCompaction(req.messages, { ...BASE.compaction, enabled: true }, req.promptBytes * 0.3, req.promptBytes);
@@ -103,7 +103,7 @@ describe("planCacheBreakpoints", () => {
 		expect(Math.min(...compacted)).toBeGreaterThan(Math.min(...raw));
 	});
 
-	test("injects nothing below the minimum prompt size, or when disabled", () => {
+	test("injects nothing below the minimum prompt size, or when disabled", async () => {
 		const small = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers());
 		expect(planCacheBreakpoints(small, MODEL, cfg())).toEqual([]);
 		expect(planCacheBreakpoints(loop(12), MODEL, cfg({ injectBreakpoints: false }))).toEqual([]);

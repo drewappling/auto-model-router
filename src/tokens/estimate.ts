@@ -6,7 +6,6 @@
  * `token_calibration` per tokenizer family on measurement.
  */
 
-import type { Ledger } from "../cost/types.ts";
 import type { NormRequest } from "../wire/types.ts";
 
 /** Chars-per-token when nothing better is known. Conservative-ish for mixed prose+code. */
@@ -39,9 +38,20 @@ function familyKey(tokenizer: string): string {
 	return tokenizer.trim().toLowerCase();
 }
 
-export function estimateTokens(bytes: number, tokenizer: string, ledger: Ledger | null): number {
-	const ratio = ledger?.tokenRatio(tokenizer) ?? FAMILY_BYTES_PER_TOKEN[familyKey(tokenizer)] ?? DEFAULT_BYTES_PER_TOKEN;
-	return Math.max(0, Math.ceil(bytes / ratio));
+/**
+ * A measured bytes-per-token ratio for a tokenizer family, or null when the
+ * ledger has too few samples to have calibrated one.
+ *
+ * Passed as a VALUE rather than read from the ledger here: estimation runs
+ * inside synchronous code (the Anthropic token counter, candidate scoring), and
+ * the ledger may be a shared database that cannot be read synchronously. The
+ * caller fetches the one ratio it needs before estimating.
+ */
+export type TokenRatio = number | null;
+
+export function estimateTokens(bytes: number, tokenizer: string, ratio: TokenRatio): number {
+	const perToken = ratio ?? FAMILY_BYTES_PER_TOKEN[familyKey(tokenizer)] ?? DEFAULT_BYTES_PER_TOKEN;
+	return Math.max(0, Math.ceil(bytes / perToken));
 }
 
 /**
@@ -53,10 +63,10 @@ export function estimateTokens(bytes: number, tokenizer: string, ledger: Ledger 
 const PENDING_CAP = 1024;
 const pendingEstimates = new Map<string, { tokenizer: string; bytes: number }>();
 
-export function estimatePromptTokens(req: NormRequest, tokenizer: string, ledger: Ledger | null): number {
+export function estimatePromptTokens(req: NormRequest, tokenizer: string, ratio: TokenRatio): number {
 	let images = 0;
 	for (const message of req.messages) images += message.images;
-	const tokens = estimateTokens(req.promptBytes, tokenizer, ledger) + images * IMAGE_TOKEN_ALLOWANCE;
+	const tokens = estimateTokens(req.promptBytes, tokenizer, ratio) + images * IMAGE_TOKEN_ALLOWANCE;
 	if (pendingEstimates.size >= PENDING_CAP && !pendingEstimates.has(req.conversationKey)) {
 		// Map iteration order is insertion order: drop the eldest.
 		const eldest = pendingEstimates.keys().next();

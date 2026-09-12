@@ -12,6 +12,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import type { SqlDb } from "../util/sql.ts";
 import { TIER_ORDER } from "../router/types.ts";
 import { buildUsageReport, harnessFilter, type BaselinePrice, type BaselineRow, type UsageReport } from "./report.ts";
 import type { SoftFailureSpike } from "./types.ts";
@@ -88,13 +89,15 @@ function windowOf(r: UsageReport): SummaryWindow {
 }
 
 /** Counts tier moves up and down between consecutive kept turns of each conversation since `sinceMs`. */
-export function countTierChanges(db: Database, sinceMs: number, harnessId: string): { up: number; down: number } {
+export async function countTierChanges(db: SqlDb, sinceMs: number, harnessId: string): Promise<{ up: number; down: number }> {
 	const hf = harnessFilter(harnessId);
 	const where = ["created_at_ms >= $since", ...hf.sql].join(" AND ");
 	const bind = { $since: sinceMs, ...hf.bind };
-	const seq = db
-		.query(`SELECT conversation_key AS ck, tier FROM ledger WHERE ${where} AND wasted = 0 AND requested_model <> 'digest' ORDER BY conversation_key, created_at_ms`)
-		.all(bind) as { ck: string; tier: string }[];
+	const seq = await db.query<{ ck: string; tier: string }>(
+		`SELECT conversation_key AS ck, tier FROM ledger WHERE ${where} AND wasted = 0 AND requested_model <> 'digest'
+		 ORDER BY conversation_key, created_at_ms`,
+		bind,
+	);
 	let up = 0;
 	let down = 0;
 	for (let i = 1; i < seq.length; i++) {
@@ -110,8 +113,8 @@ export function countTierChanges(db: Database, sinceMs: number, harnessId: strin
 	return { up, down };
 }
 
-export function buildDailySummary(
-	db: Database,
+export async function buildDailySummary(
+	db: SqlDb,
 	opts: {
 		harnessId?: string;
 		nowMs?: number;
@@ -119,12 +122,14 @@ export function buildDailySummary(
 		spikes?: readonly SoftFailureSpike[];
 		ollama?: SummaryOllama | null;
 	} = {},
-): DailySummary {
+): Promise<DailySummary> {
 	const nowMs = opts.nowMs ?? Date.now();
 	const harnessId = opts.harnessId ?? "";
 	const baselines = opts.baselines ?? [];
-	const current = buildUsageReport(db, { windowDays: 1, harnessId, nowMs, baselines });
-	const previous = buildUsageReport(db, { windowDays: 1, harnessId, nowMs: nowMs - DAY_MS, untilMs: current.sinceMs });
+	const current = await buildUsageReport(db, { windowDays: 1, harnessId, nowMs, baselines });
+	// The previous window ends where this one starts, so the two never
+	// double-count a turn on the boundary.
+	const previous = await buildUsageReport(db, { windowDays: 1, harnessId, nowMs: nowMs - DAY_MS, untilMs: current.sinceMs });
 	return {
 		generatedAtMs: nowMs,
 		sinceMs: current.sinceMs,
@@ -132,7 +137,7 @@ export function buildDailySummary(
 		current: windowOf(current),
 		previous: windowOf(previous),
 		topModels: current.models.slice(0, TOP_MODELS).map((m) => ({ slug: m.key, spendUsd: m.spendUsd, share: m.share, dispatches: m.dispatches })),
-		tierChanges: countTierChanges(db, current.sinceMs, harnessId),
+		tierChanges: await countTierChanges(db, current.sinceMs, harnessId),
 		baseline: current.baselines[0] ?? null,
 		spikes: [...(opts.spikes ?? [])],
 		ollama: opts.ollama ?? null,

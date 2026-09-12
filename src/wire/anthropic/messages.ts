@@ -25,8 +25,7 @@
  */
 
 import { encoder, sseDataFrame } from "../../util/sse.ts";
-import type { Ledger } from "../../cost/types.ts";
-import { estimateTokens } from "../../tokens/estimate.ts";
+import { estimateTokens, type TokenRatio } from "../../tokens/estimate.ts";
 import type { NormRequest, ResponseSink, TurnSummary, UpstreamChunk, WireError } from "../types.ts";
 import { invalidRequest, WireErrorException } from "../openai/errors.ts";
 import { parseChatRequest } from "../openai/request.ts";
@@ -217,9 +216,9 @@ export function parseMessagesRequest(body: unknown, headers: Headers, models: Re
 }
 
 /** `POST /v1/messages/count_tokens`: the router's own estimate over the prompt bytes. */
-export function countAnthropicTokens(body: unknown, models: Record<string, string>, ledger: Ledger | null): number {
+export function countAnthropicTokens(body: unknown, models: Record<string, string>, ratio: TokenRatio): number {
 	const norm = parseChatRequest(messagesToChatBody({ ...(isRec(body) ? body : {}), stream: false }, models), new Headers());
-	return estimateTokens(norm.promptBytes, "anthropic", ledger);
+	return estimateTokens(norm.promptBytes, "anthropic", ratio);
 }
 
 // ---------------------------------------------------------------------------

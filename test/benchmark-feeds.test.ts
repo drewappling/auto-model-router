@@ -40,7 +40,7 @@ function blScore(over: Partial<FeedScore> & { key: string }): FeedScore {
 }
 
 describe("normalizeModelKey", () => {
-	test("strips provider, tilde, and release words but keeps the parameter size", () => {
+	test("strips provider, tilde, and release words but keeps the parameter size", async () => {
 		expect(normalizeModelKey("z-ai/glm-5.3-flash")).toBe("glm-5-3-flash");
 		expect(normalizeModelKey("~deepseek/deepseek-v4-flash-latest")).toBe("deepseek-v4-flash");
 		expect(normalizeModelKey("meta/muse-glimmer-30b")).toBe("muse-glimmer-30b");
@@ -51,7 +51,7 @@ describe("normalizeModelKey", () => {
 });
 
 describe("parseAaModels", () => {
-	test("reads the three indices, keeps in-range values, and skips empty rows", () => {
+	test("reads the three indices, keeps in-range values, and skips empty rows", async () => {
 		const body = {
 			data: [
 				{
@@ -74,7 +74,7 @@ describe("parseAaModels", () => {
 });
 
 describe("parseBenchlmModels", () => {
-	test("maps categories to axes, drops estimated rows, and ignores out-of-range", () => {
+	test("maps categories to axes, drops estimated rows, and ignores out-of-range", async () => {
 		const body = {
 			models: [
 				{
@@ -98,7 +98,7 @@ describe("parseBenchlmModels", () => {
 });
 
 describe("applyFeedScores", () => {
-	test("fills the real gap models and reaches normalizeCatalogModel", () => {
+	test("fills the real gap models and reaches normalizeCatalogModel", async () => {
 		const catalog = [
 			raw("meta/muse-glimmer-30b"),
 			raw("z-ai/glm-5.3-flash"),
@@ -135,7 +135,7 @@ describe("applyFeedScores", () => {
 		expect(result.sources.benchlm).toBe(3); // muse coding+agentic, glm agentic
 	});
 
-	test("AA wins over BenchLM for the same axis", () => {
+	test("AA wins over BenchLM for the same axis", async () => {
 		const catalog = [raw("z-ai/glm-5.3-flash")];
 		const feeds: FeedScore[] = [
 			blScore({ key: "glm-5-3-flash", creator: "z-ai", coding: 10 }),
@@ -145,7 +145,7 @@ describe("applyFeedScores", () => {
 		expect(normalizeCatalogModel(catalog[0])?.quality.coding).toBe(61);
 	});
 
-	test("never fuzzy-matches a different model", () => {
+	test("never fuzzy-matches a different model", async () => {
 		const catalog = [raw("meta/muse-glimmer-30b")];
 		// Same family, different model — must not lend its score.
 		const feeds: FeedScore[] = [aaScore({ key: "muse-spark-1-2", creator: "meta", coding: 72 })];
@@ -154,7 +154,7 @@ describe("applyFeedScores", () => {
 		expect(normalizeCatalogModel(catalog[0])?.quality).toEqual({});
 	});
 
-	test("a shared key with conflicting creators fills only the creator that matches", () => {
+	test("a shared key with conflicting creators fills only the creator that matches", async () => {
 		const catalog = [raw("z-ai/glm-5.3-flash")];
 		const feeds: FeedScore[] = [
 			aaScore({ key: "glm-5-3-flash", creator: "someone-else", coding: 5 }),

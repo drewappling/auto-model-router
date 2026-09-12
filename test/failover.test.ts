@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { fakeLedger } from "./fakes.ts";
 import { createDisabledBridge } from "../src/context/bridge.ts";
 import type { CatalogSource } from "../src/catalog/types.ts";
 import type { EscalationConfig, RouterConfig } from "../src/config/types.ts";
-import { EMPTY_USAGE, type Ledger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
+import { EMPTY_USAGE, type AsyncLedger, type LedgerEntry, type UsageCounts } from "../src/cost/types.ts";
 import type {
 	ConversationState,
 	ConversationStore,
@@ -245,29 +246,29 @@ function mkRouter(decisions: Decision[]): { router: Router; calls: RouteCall[] }
 	return { router, calls };
 }
 
-function mkLedger(): { ledger: Ledger; entries: LedgerEntry[] } {
+function mkLedger(): { ledger: AsyncLedger; entries: LedgerEntry[] } {
 	const entries: LedgerEntry[] = [];
-	const ledger: Ledger = {
-		record: (e) => {
+	const ledger: AsyncLedger = fakeLedger({
+		record: async (e) => {
 			entries.push(e);
 		},
-		conversationSpend: () => 0,
-		spendSince: () => 0,
-		blendedRate: () => null,
-		latency: () => null,
-		trust: () => null,
-		allTrust: () => [],
-		tokenRatio: () => null,
-		recentEntries: () => [],
-	};
+		conversationSpend: async () => 0,
+		spendSince: async () => 0,
+		blendedRate: async () => null,
+		latency: async () => null,
+		trust: async () => null,
+		allTrust: async () => [],
+		tokenRatio: async () => null,
+		recentEntries: async () => [],
+	});
 	return { ledger, entries };
 }
 
 function mkConversations(): { store: ConversationStore; map: Map<string, ConversationState> } {
 	const map = new Map<string, ConversationState>();
 	const store: ConversationStore = {
-		get: (k) => map.get(k) ?? null,
-		load: (k) => {
+		get: async (k) => map.get(k) ?? null,
+		load: async (k) => {
 			const existing = map.get(k);
 			if (existing) return existing;
 			const fresh: ConversationState = {
@@ -290,11 +291,11 @@ function mkConversations(): { store: ConversationStore; map: Map<string, Convers
 			map.set(k, fresh);
 			return fresh;
 		},
-		save: (s) => {
+		save: async (s) => {
 			map.set(s.key, s);
 		},
-		accrue: () => {},
-		prune: () => 0,
+		accrue: async () => {},
+		prune: async () => 0,
 	};
 	return { store, map };
 }
@@ -664,19 +665,19 @@ describe("same-tier failover", () => {
 });
 
 describe("400 classification (review 2026-09-05 follow-up)", () => {
-	test("a 400 naming a model capability limit is retryable, so failover picks a sibling", () => {
+	test("a 400 naming a model capability limit is retryable, so failover picks a sibling", async () => {
 		const e = classifyUpstreamStatus(400, { error: { message: "This model only supports single tool-calls at once!" } });
 		expect(e.kind).toBe("invalid_request");
 		expect(e.retryable).toBe(true);
 	});
 
-	test("a 400 for a malformed request stays non-retryable", () => {
+	test("a 400 for a malformed request stays non-retryable", async () => {
 		const e = classifyUpstreamStatus(400, { error: { message: "messages[3].content: invalid type" } });
 		expect(e.kind).toBe("invalid_request");
 		expect(e.retryable).toBe(false);
 	});
 
-	test("a 400 for context overflow is still context_length", () => {
+	test("a 400 for context overflow is still context_length", async () => {
 		const e = classifyUpstreamStatus(400, { error: { message: "This endpoint's maximum context length is 131072 tokens" } });
 		expect(e.kind).toBe("context_length");
 		expect(e.retryable).toBe(false);

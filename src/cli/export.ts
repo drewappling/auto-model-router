@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { Database } from "bun:sqlite";
+import { openSqlDb } from "../util/sql.ts";
 import { loadConfig } from "../config/load.ts";
 import { exportCsv, exportRows } from "../cost/views.ts";
 import { configOpts, flagInt, flagString, type CliArgs } from "./args.ts";
@@ -18,12 +18,13 @@ export async function exportCommand(args: CliArgs): Promise<void> {
 		process.stdout.write(args.flags.has("json") ? "[]\n" : exportCsv([]));
 		return;
 	}
-	// Read-only: an export must never create or migrate the ledger.
-	const db = new Database(cfg.ledger.path, { readonly: true });
+	// The shim opens the ledger wherever it lives; an export must never create
+	// or migrate it, so nothing here calls migrateLedger.
+	const db = openSqlDb(cfg.ledger.path);
 	try {
-		const rows = exportRows(db, Date.now() - days * 86_400_000, harness === "" ? null : harness.split(",").map((s) => s.trim()).filter((s) => s !== ""));
+		const rows = await exportRows(db, Date.now() - days * 86_400_000, harness === "" ? null : harness.split(",").map((s) => s.trim()).filter((s) => s !== ""));
 		process.stdout.write(args.flags.has("json") ? `${JSON.stringify(rows, null, 2)}\n` : exportCsv(rows));
 	} finally {
-		db.close();
+		await db.close();
 	}
 }

@@ -55,7 +55,7 @@ const configuredFor = (r: ConnectReport, prefix: string): string | undefined => 
 const backupsIn = (dir: string): string[] => readdirSync(dir).filter((f) => f.endsWith(".bak"));
 
 describe("OpenCode", () => {
-	test("the provider block is merged into opencode.json, the plugin is copied, and a second run changes nothing", () => {
+	test("the provider block is merged into opencode.json, the plugin is copied, and a second run changes nothing", async () => {
 		const { home, o } = bare();
 		const dir = join(home, ".config", "opencode");
 		const cfg = plant(home, "opencode.json", ".config", "opencode", "opencode.json");
@@ -95,7 +95,7 @@ describe("OpenCode", () => {
 		}
 	});
 
-	test("--harness opencode selects it alone, and an absent OpenCode is reported as skipped", () => {
+	test("--harness opencode selects it alone, and an absent OpenCode is reported as skipped", async () => {
 		const { home, o } = bare({ only: ["opencode"] });
 		plant(home, "opencode.json", ".config", "opencode", "opencode.json");
 		try {
@@ -112,7 +112,7 @@ describe("OpenCode", () => {
 		}
 	});
 
-	test("a pinned scope rides in the provider's headers; a file we cannot parse is left alone", () => {
+	test("a pinned scope rides in the provider's headers; a file we cannot parse is left alone", async () => {
 		expect(JSON.parse(mergeOpenCodeConfig("", "https://t", "k", "omp-router")!).provider["auto-model-router"].options.headers).toEqual({ "X-Omp-Harness": "opencode", "X-Agentdox-Scope": "omp-router" });
 		expect(mergeOpenCodeConfig("[]", "https://t", "k")).toBeNull();
 		expect(mergeOpenCodeConfig("{ not json", "https://t", "k")).toBeNull();
@@ -123,7 +123,7 @@ describe("OpenCode", () => {
 describe("Cline", () => {
 	const REL = [".cline", "data", "settings"];
 
-	test("the openai-compatible provider is merged into providers.json beside the user's own, and a second run changes nothing", () => {
+	test("the openai-compatible provider is merged into providers.json beside the user's own, and a second run changes nothing", async () => {
 		const { home, o } = bare();
 		const dir = join(home, ...REL);
 		const cfg = plant(home, "cline-providers.json", ...REL, "providers.json");
@@ -158,7 +158,7 @@ describe("Cline", () => {
 		}
 	});
 
-	test("--harness cline selects it alone, and an absent Cline is reported as skipped", () => {
+	test("--harness cline selects it alone, and an absent Cline is reported as skipped", async () => {
 		const { home, o } = bare({ only: ["cline"] });
 		plant(home, "cline-providers.json", ...REL, "providers.json");
 		try {
@@ -175,7 +175,7 @@ describe("Cline", () => {
 		}
 	});
 
-	test("the stamp only moves when the settings do, a pinned scope rides along, and an unreadable file is left alone", () => {
+	test("the stamp only moves when the settings do, a pinned scope rides along, and an unreadable file is left alone", async () => {
 		const first = mergeClineProviders("", "https://t", "k", "2026-01-01T00:00:00.000Z", "omp-router")!;
 		expect(JSON.parse(first).providers["openai-compatible"].settings.headers).toEqual({ "X-Omp-Harness": "cline", "X-Agentdox-Scope": "omp-router" });
 		expect(mergeClineProviders(first, "https://t", "k", "2027-01-01T00:00:00.000Z", "omp-router")).toBeNull();
@@ -187,7 +187,7 @@ describe("Cline", () => {
 });
 
 describe("Continue", () => {
-	test("the three profiles become model entries in config.yaml, keeping the file's comments, and a second run changes nothing", () => {
+	test("the three profiles become model entries in config.yaml, keeping the file's comments, and a second run changes nothing", async () => {
 		const { home, o } = bare();
 		const dir = join(home, ".continue");
 		const cfg = plant(home, "continue-config.yaml", ".continue", "config.yaml");
@@ -218,7 +218,7 @@ describe("Continue", () => {
 		}
 	});
 
-	test("--harness continue selects it alone, and an absent Continue is reported as skipped", () => {
+	test("--harness continue selects it alone, and an absent Continue is reported as skipped", async () => {
 		const { home, o } = bare({ only: ["continue"] });
 		plant(home, "continue-config.yaml", ".continue", "config.yaml");
 		try {
@@ -235,7 +235,7 @@ describe("Continue", () => {
 		}
 	});
 
-	test("a fresh file gets the schema's required fields first, a re-key replaces entries in place, and broken YAML is left alone", () => {
+	test("a fresh file gets the schema's required fields first, a re-key replaces entries in place, and broken YAML is left alone", async () => {
 		const fresh = mergeContinueConfig("", "https://t", "k")!;
 		expect(fresh.startsWith("name: auto-model-router\nversion: 0.0.1\nschema: v1\nmodels:\n  - name:")).toBe(true);
 		expect(mergeContinueConfig(fresh, "https://t", "k")).toBeNull();
@@ -249,7 +249,7 @@ describe("Continue", () => {
 });
 
 describe("Cursor and Windsurf keep their provider settings where no file can reach them", () => {
-	test("connect prints what to set and writes nothing under either home", () => {
+	test("connect prints what to set and writes nothing under either home", async () => {
 		const { home, o } = bare({ only: ["cursor", "windsurf"] });
 		mkdirSync(join(home, ".cursor"), { recursive: true });
 		mkdirSync(join(home, ".codeium", "windsurf"), { recursive: true });
@@ -270,7 +270,7 @@ describe("Cursor and Windsurf keep their provider settings where no file can rea
 		}
 	});
 
-	test("a loopback router is called out for Cursor, which proxies chat through its own servers", () => {
+	test("a loopback router is called out for Cursor, which proxies chat through its own servers", async () => {
 		const { home, o } = bare({ only: ["cursor"], url: "http://127.0.0.1:8788" });
 		mkdirSync(join(home, ".cursor"), { recursive: true });
 		try {

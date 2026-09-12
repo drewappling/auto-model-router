@@ -3,11 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { fetchReport, parseReportArgs, renderSoftFailureSpikes, renderStatus, type HealthSnapshot } from "../omp-extension/report-logic.ts";
 
 describe("parseReportArgs", () => {
-	test("defaults to 7 days scoped to the harness", () => {
+	test("defaults to 7 days scoped to the harness", async () => {
 		expect(parseReportArgs("", "omp")).toEqual({ windowDays: 7, harnessId: "omp" });
 	});
 
-	test("accepts bare numbers and d/h/w suffixes", () => {
+	test("accepts bare numbers and d/h/w suffixes", async () => {
 		expect(parseReportArgs("30", "")).toEqual({ windowDays: 30, harnessId: "" });
 		expect(parseReportArgs("14d", "")).toEqual({ windowDays: 14, harnessId: "" });
 		expect(parseReportArgs("24h", "")).toEqual({ windowDays: 1, harnessId: "" });
@@ -15,12 +15,12 @@ describe("parseReportArgs", () => {
 		expect(parseReportArgs("2w", "")).toEqual({ windowDays: 14, harnessId: "" });
 	});
 
-	test("--all drops the harness scope and --harness= sets one", () => {
+	test("--all drops the harness scope and --harness= sets one", async () => {
 		expect(parseReportArgs("7d --all", "omp").harnessId).toBe("");
 		expect(parseReportArgs("--harness=hermes", "omp").harnessId).toBe("hermes");
 	});
 
-	test("ignores junk and clamps the window", () => {
+	test("ignores junk and clamps the window", async () => {
 		expect(parseReportArgs("bogus 0 -3", "x")).toEqual({ windowDays: 7, harnessId: "x" });
 		expect(parseReportArgs("9999", "").windowDays).toBe(365);
 	});
@@ -45,13 +45,13 @@ describe("fetchReport", () => {
 			seen.push(url);
 			return new Response("nope", { status: 503 });
 		};
-		await expect(fetchReport("http://h", { windowDays: 7, harnessId: "" }, {}, fake)).rejects.toThrow("503");
+		(await expect(fetchReport("http://h", { windowDays: 7, harnessId: "" }, {}, fake))).rejects.toThrow("503");
 		expect(seen).toEqual(["http://h/v1/router/report?days=7"]);
 	});
 });
 
 describe("renderStatus", () => {
-	test("summarises keys, catalog, ollama and agentdox", () => {
+	test("summarises keys, catalog, ollama and agentdox", async () => {
 		const now = 1_000_000_000;
 		const h: HealthSnapshot = {
 			status: "ok",
@@ -89,14 +89,14 @@ describe("renderStatus", () => {
 		expect(text).toContain("recording turns");
 	});
 
-	test("reports a quiet hour and omits the line for routers that predate the check", () => {
+	test("reports a quiet hour and omits the line for routers that predate the check", async () => {
 		expect(renderStatus("http://h", { status: "ok", softFailures: { spikes: [] } })).toContain("soft failures: no model spiking in the last hour");
 		expect(renderStatus("http://h", { status: "ok" })).not.toContain("soft failures");
 		expect(renderSoftFailureSpikes(null)).toEqual([]);
 		expect(renderSoftFailureSpikes([{ slug: "a/b", recentRate: 0.5, recentDispatches: 6 }], 30 * 60_000, 7)).toEqual(["a/b: 50% of 6 failed in the last 30m (7d baseline 0% of 0)"]);
 	});
 
-	test("degrades cleanly when sections are absent", () => {
+	test("degrades cleanly when sections are absent", async () => {
 		const text = renderStatus("http://h", { status: "ok", apiKeyConfigured: false });
 		expect(text).toContain("key MISSING");
 		expect(renderStatus("http://h", { status: "ok", apiKeyConfigured: false, serving: ["ollama"] })).toContain("routing over ollama cloud only");

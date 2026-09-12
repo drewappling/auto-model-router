@@ -119,7 +119,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 		async resolve(input) {
 			if (input.scope === "") return null;
 
-			const pinned = input.pinnedVersion === null ? null : store.get(input.pinnedVersion);
+			const pinned = input.pinnedVersion === null ? null : await store.get(input.pinnedVersion);
 			if (!shouldRefresh(input, pinned) && pinned !== null) {
 				// Carry the conversation's own pin time forward, so the TTL keeps
 				// counting from its last real refresh rather than resetting to
@@ -163,7 +163,7 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			const version = sha256Hex(block).slice(0, 32);
 			const pin: ContextPin = { version, block, fetchedAtMs: Date.now() };
 			try {
-				store.put(input.scope, pin);
+				await store.put(input.scope, pin);
 			} catch (err) {
 				log.debug("context block persist failed", { error: err instanceof Error ? err.message : String(err) });
 			}
@@ -215,11 +215,11 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			queued++;
 			queue = queue
 				.then(async () => {
-					let sessionId = store.sessionFor(rec.conversationKey);
+					let sessionId = await store.sessionFor(rec.conversationKey);
 					if (sessionId === null) {
 						sessionId = await client.createSession(rec.scope, rec.title);
 						if (sessionId === null) return;
-						store.bindSession(rec.conversationKey, rec.scope, sessionId);
+						await store.bindSession(rec.conversationKey, rec.scope, sessionId);
 					}
 					// Model attribution rides on refs, which agentdox already carries
 					// per message. This is what makes the transcript newly useful:
@@ -245,8 +245,8 @@ export function createContextBridge(opts: BridgeOptions): ContextBridge {
 			await queue;
 		},
 
-		pruneBlocks(maxAgeMs: number) {
-			return store.prune(maxAgeMs);
+		async pruneBlocks(maxAgeMs: number) {
+			return await store.prune(maxAgeMs);
 		},
 
 		close() {
@@ -263,7 +263,7 @@ export function createDisabledBridge(): ContextBridge {
 		resolve: async () => null,
 		recordTurn: () => {},
 		flush: async () => {},
-		pruneBlocks: () => 0,
+		pruneBlocks: async () => 0,
 		close: () => {},
 	};
 }

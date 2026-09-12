@@ -24,7 +24,7 @@ import type { DigestRequest, DigestResult } from "./digest.ts";
 export interface CompactionDigester {
 	digest(req: DigestRequest): Promise<DigestResult>;
 	/** See Digester.noteToolCalls; optional so a fake need not implement it. */
-	noteToolCalls?(ompSessionId: string, calls: readonly { name: string; argsJson: string }[], nowMs?: number): number;
+	noteToolCalls?(ompSessionId: string, calls: readonly { name: string; argsJson: string }[], nowMs?: number): Promise<number>;
 }
 
 export interface DigestCompactionArgs {

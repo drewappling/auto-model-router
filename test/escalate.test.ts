@@ -57,14 +57,14 @@ function toolDelta(
 }
 
 describe("createProbe", () => {
-	test("valid tool-call JSON commits", () => {
+	test("valid tool-call JSON commits", async () => {
 		const p = createProbe(plan(), req(), ALL_TRIGGERS);
 		expect(p.observe(toolDelta(0, { id: "c1", name: "read", argsDelta: '{"path":"a' }))).toBeNull();
 		const verdict = p.observe(toolDelta(0, { argsDelta: '.ts"}' }));
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("truncated tool-call JSON at stream end yields malformed_tool_args", () => {
+	test("truncated tool-call JSON at stream end yields malformed_tool_args", async () => {
 		// Via the finish event.
 		const p1 = createProbe(plan(), req(), ALL_TRIGGERS);
 		p1.observe(toolDelta(0, { id: "c1", name: "read", argsDelta: '{"path":"a' }));
@@ -80,7 +80,7 @@ describe("createProbe", () => {
 		expect(v2).toMatchObject({ signal: "malformed_tool_args" });
 	});
 
-	test("a tool call identical to the previous assistant call yields repeat_tool_call", () => {
+	test("a tool call identical to the previous assistant call yields repeat_tool_call", async () => {
 		const history: NormMessage[] = [
 			{ role: "user", text: "read it", images: 0, textBytes: 8, toolCalls: [] },
 			{
@@ -99,7 +99,7 @@ describe("createProbe", () => {
 		expect(verdict).toMatchObject({ signal: "repeat_tool_call" });
 	});
 
-	test("a different tool call is not a repeat", () => {
+	test("a different tool call is not a repeat", async () => {
 		const history: NormMessage[] = [
 			{
 				role: "assistant",
@@ -114,14 +114,14 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("a disabled plan commits on the first chunk", () => {
+	test("a disabled plan commits on the first chunk", async () => {
 		const p = createProbe(plan({ enabled: false }), req(), ALL_TRIGGERS);
 		const verdict = p.observe(text("anything at all"));
 		expect(verdict?.action).toBe("commit");
 		expect(p.held()).toHaveLength(1);
 	});
 
-	test("a signal absent from triggers never fires", () => {
+	test("a signal absent from triggers never fires", async () => {
 		// Truncated args would be malformed_tool_args, but the trigger is off.
 		const p1 = createProbe(plan(), req(), new Set(["refusal"]));
 		p1.observe(toolDelta(0, { id: "c1", name: "read", argsDelta: '{"path":"a' }));
@@ -135,14 +135,14 @@ describe("createProbe", () => {
 		expect(v2.action).toBe("commit");
 	});
 
-	test("refusal openers escalate as soon as text arrives", () => {
+	test("refusal openers escalate as soon as text arrives", async () => {
 		const p = createProbe(plan(), req(), ALL_TRIGGERS);
 		const verdict = p.observe(text("I'm sorry, but I can't help with that request."));
 		expect(verdict?.action).toBe("escalate");
 		expect(verdict).toMatchObject({ signal: "refusal" });
 	});
 
-	test("a forced tool choice answered with prose yields missing_expected_tool_call", () => {
+	test("a forced tool choice answered with prose yields missing_expected_tool_call", async () => {
 		const tools: NormTool[] = [{ name: "read", description: "read a file", schemaBytes: 42 }];
 		const p = createProbe(plan(), req([], { tools, forcedToolChoice: true }), ALL_TRIGGERS);
 		p.observe(text("Sure, here is some prose instead."));
@@ -151,20 +151,20 @@ describe("createProbe", () => {
 		expect(verdict).toMatchObject({ signal: "missing_expected_tool_call" });
 	});
 
-	test("enough held text commits", () => {
+	test("enough held text commits", async () => {
 		const p = createProbe(plan({ maxTokens: 2 }), req(), ALL_TRIGGERS);
 		const verdict = p.observe(text("this is well over eight characters"));
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("an empty stop with nothing emitted yields empty_completion", () => {
+	test("an empty stop with nothing emitted yields empty_completion", async () => {
 		const p = createProbe(plan(), req(), ALL_TRIGGERS);
 		const verdict = p.observe(chunk([{ type: "finish", reason: "stop" }]));
 		expect(verdict?.action).toBe("escalate");
 		expect(verdict).toMatchObject({ signal: "empty_completion" });
 	});
 
-	test("a stalled stream escalates at the hold ceiling instead of committing silence", () => {
+	test("a stalled stream escalates at the hold ceiling instead of committing silence", async () => {
 		let t = 0;
 		const p = createProbe(plan({ maxHoldMs: 1_000 }), req(), ALL_TRIGGERS, () => t);
 		expect(p.observe(chunk([]))).toBeNull();
@@ -174,7 +174,7 @@ describe("createProbe", () => {
 		expect(verdict).toMatchObject({ signal: "empty_completion" });
 	});
 
-	test("the hold ceiling still commits when content has arrived", () => {
+	test("the hold ceiling still commits when content has arrived", async () => {
 		let t = 0;
 		const p = createProbe(plan({ maxTokens: 1_000, maxHoldMs: 1_000 }), req(), ALL_TRIGGERS, () => t);
 		expect(p.observe(text("partial answer"))).toBeNull();
@@ -183,7 +183,7 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("a length finish on prose commits: that is the caller's max_tokens", () => {
+	test("a length finish on prose commits: that is the caller's max_tokens", async () => {
 		// Escalating cannot fix it — the retry runs under the same cap and
 		// truncates in the same place, so it would just bill twice.
 		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
@@ -192,7 +192,7 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("a length finish that truncated tool-call arguments still escalates", () => {
+	test("a length finish that truncated tool-call arguments still escalates", async () => {
 		// Structurally unusable output: another model may emit a complete call.
 		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
 		expect(p.observe(toolDelta(0, { id: "c1", name: "read", argsDelta: '{"path":"a' }))).toBeNull();
@@ -200,14 +200,14 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("escalate");
 	});
 
-	test("a length finish having produced nothing escalates as an empty completion", () => {
+	test("a length finish having produced nothing escalates as an empty completion", async () => {
 		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
 		const verdict = p.observe(chunk([{ type: "finish", reason: "length" }]));
 		expect(verdict?.action).toBe("escalate");
 		if (verdict?.action === "escalate") expect(verdict.signal).toBe("empty_completion");
 	});
 
-	test("reasoning-only output counts as alive at the hold ceiling", () => {
+	test("reasoning-only output counts as alive at the hold ceiling", async () => {
 		// A reasoning model that has emitted only reasoning tokens after the
 		// ceiling is working normally; escalating would discard a healthy paid
 		// generation.
@@ -219,7 +219,7 @@ describe("createProbe", () => {
 		expect(verdict?.action).toBe("commit");
 	});
 
-	test("a stream that ENDS with only reasoning is still hollow", () => {
+	test("a stream that ENDS with only reasoning is still hollow", async () => {
 		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
 		expect(p.observe(chunk([{ type: "reasoning", delta: "thinking" }]))).toBeNull();
 		const verdict = p.verdictOnEnd();

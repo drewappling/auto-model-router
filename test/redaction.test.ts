@@ -1,16 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { openSqlDb } from "../src/util/sql.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { loadConfig } from "../src/config/load.ts";
 import { compileRedactionRules, redactionRulesFor, validateRedactionPattern, validateRedactionRule } from "../src/config/redaction.ts";
-import { createLedger } from "../src/cost/ledger.ts";
 import { buildUsageReport, renderUsageReport } from "../src/cost/report.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
+import { migrateStore } from "../src/util/schema.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { redactUpstreamBody } from "../src/server/redact.ts";
-import { openDb } from "../src/util/sqlite.ts";
 import { parseMessagesRequest } from "../src/wire/anthropic/messages.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 import { parseResponsesRequest } from "../src/wire/openai/responses.ts";
@@ -27,7 +29,7 @@ function rules(...specs: { name: string; pattern: string; replacement?: string }
 }
 
 describe("pattern guard", () => {
-	test("the shapes a real rule uses all compile", () => {
+	test("the shapes a real rule uses all compile", async () => {
 		for (const pattern of [
 			"sk-live-[a-z0-9]{16,}",
 			"AKIA[0-9A-Z]{16}",
@@ -40,7 +42,7 @@ describe("pattern guard", () => {
 		}
 	});
 
-	test("a pattern that can backtrack catastrophically is refused, with the reason", () => {
+	test("a pattern that can backtrack catastrophically is refused, with the reason", async () => {
 		const nested = validateRedactionPattern("(a+)+$");
 		expect(nested).toContain("nested unbounded quantifiers");
 		expect(nested).toContain("exponential");
@@ -54,14 +56,14 @@ describe("pattern guard", () => {
 		expect(validateRedactionPattern("(?<k>x)\\k<k>")).toContain("backreferences");
 	});
 
-	test("a pattern that cannot compile, is empty, matches nothing, or is enormous is refused", () => {
+	test("a pattern that cannot compile, is empty, matches nothing, or is enormous is refused", async () => {
 		expect(validateRedactionPattern("(unclosed")).toContain("does not compile");
 		expect(validateRedactionPattern("")).toBe("pattern must not be empty");
 		expect(validateRedactionPattern("x*")).toContain("matches the empty string");
 		expect(validateRedactionPattern(`a${"b".repeat(600)}`)).toContain("the limit is 512");
 	});
 
-	test("a legacy pattern the unicode flag alone rejects still loads", () => {
+	test("a legacy pattern the unicode flag alone rejects still loads", async () => {
 		// `\d{1,2}` is fine either way; an unescaped `{` is a syntax error under
 		// `u` and a literal brace without it. An operator's working rule must not
 		// break on an upgrade, so `u` is preferred, not required.
@@ -70,19 +72,19 @@ describe("pattern guard", () => {
 		expect(rules({ name: "unicode", pattern: "sk-[a-z0-9]+" })[0]!.regex.flags).toBe("gu");
 	});
 
-	test("a rule name is checked too, since it is echoed into the prompt", () => {
+	test("a rule name is checked too, since it is echoed into the prompt", async () => {
 		expect(validateRedactionRule({ name: "api key", pattern: "sk-\\w+" })).toBeNull();
 		expect(validateRedactionRule({ name: "", pattern: "sk-\\w+" })).toContain("name must be");
 		expect(validateRedactionRule({ name: "[redacted]\ninjected", pattern: "sk-\\w+" })).toContain("name must be");
 	});
 
-	test("compiling a rule set names the offending rule and refuses the whole set", () => {
+	test("compiling a rule set names the offending rule and refuses the whole set", async () => {
 		expect(() => rules({ name: "ok", pattern: "sk-\\w+" }, { name: "greedy", pattern: "(x+)+" })).toThrow(
 			/redaction rule "greedy": nested unbounded quantifiers/,
 		);
 	});
 
-	test("the config file rejects a backtracking rule at load, naming its path", () => {
+	test("the config file rejects a backtracking rule at load, naming its path", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "amr-redact-"));
 		try {
 			const path = join(dir, "config.yml");
@@ -99,7 +101,7 @@ describe("pattern guard", () => {
 		}
 	});
 
-	test("compiled rules are memoised on the rule text, and off means none", () => {
+	test("compiled rules are memoised on the rule text, and off means none", async () => {
 		const cfg = { enabled: true, rules: [{ name: "key", pattern: "sk-\\w+" }], scanTools: false };
 		expect(redactionRulesFor(cfg)).toBe(redactionRulesFor({ ...cfg, rules: [{ name: "key", pattern: "sk-\\w+" }] }));
 		expect(redactionRulesFor({ ...cfg, enabled: false })).toEqual([]);
@@ -112,19 +114,19 @@ describe("pattern guard", () => {
 describe("each rule shape", () => {
 	const body = () => ({ messages: [{ role: "user", content: `token ${SECRET} and 10.1.2.3` }] });
 
-	test("a rule with no replacement redacts to [redacted:<name>]", () => {
+	test("a rule with no replacement redacts to [redacted:<name>]", async () => {
 		const b = body();
 		expect(redactUpstreamBody(b, rules({ name: "api key", pattern: "sk-live-[a-z0-9]+" }), { scanTools: false })).toBe(1);
 		expect(b.messages[0]!.content).toBe("token [redacted:api key] and 10.1.2.3");
 	});
 
-	test("a rule with a replacement uses it", () => {
+	test("a rule with a replacement uses it", async () => {
 		const b = body();
 		redactUpstreamBody(b, rules({ name: "ip", pattern: "(?:\\d{1,3}\\.){3}\\d{1,3}", replacement: "0.0.0.0" }), { scanTools: false });
 		expect(b.messages[0]!.content).toBe(`token ${SECRET} and 0.0.0.0`);
 	});
 
-	test("several rules all apply, and every match counts", () => {
+	test("several rules all apply, and every match counts", async () => {
 		const b = { messages: [{ role: "user", content: `${SECRET} ${SECRET} 10.1.2.3` }] };
 		const n = redactUpstreamBody(
 			b,
@@ -135,7 +137,7 @@ describe("each rule shape", () => {
 		expect(b.messages[0]!.content).toBe("[redacted:key] [redacted:key] [redacted:ip]");
 	});
 
-	test("nothing to match leaves the body untouched and counts zero", () => {
+	test("nothing to match leaves the body untouched and counts zero", async () => {
 		const b = { messages: [{ role: "user", content: "nothing secret here" }] };
 		expect(redactUpstreamBody(b, rules({ name: "key", pattern: "sk-live-[a-z0-9]+" }), { scanTools: false })).toBe(0);
 		expect(b.messages[0]!.content).toBe("nothing secret here");
@@ -157,7 +159,7 @@ describe("what the walker reaches", () => {
 		};
 	}
 
-	test("message text is redacted; tool arguments and tool results wait for scanTools", () => {
+	test("message text is redacted; tool arguments and tool results wait for scanTools", async () => {
 		const b = fullBody();
 		expect(redactUpstreamBody(b, KEY, { scanTools: false })).toBe(2);
 		const messages = b.messages as Record<string, unknown>[];
@@ -171,7 +173,7 @@ describe("what the walker reaches", () => {
 		expect(b.model).toBe("sk-live-notreally/model");
 	});
 
-	test("with scanTools, arguments and results go too and nothing else changes", () => {
+	test("with scanTools, arguments and results go too and nothing else changes", async () => {
 		const b = fullBody();
 		expect(redactUpstreamBody(b, KEY, { scanTools: true })).toBe(4);
 		const messages = b.messages as Record<string, unknown>[];
@@ -184,7 +186,7 @@ describe("what the walker reaches", () => {
 		expect(messages[3]!.tool_call_id).toBe("c1");
 	});
 
-	test("no rules is a no-op, and a body without messages is ignored", () => {
+	test("no rules is a no-op, and a body without messages is ignored", async () => {
 		const b = fullBody();
 		expect(redactUpstreamBody(b, [], { scanTools: true })).toBe(0);
 		expect(JSON.stringify(b)).toContain(SECRET);
@@ -204,7 +206,7 @@ describe("every wire renders into the shape redaction reads", () => {
 		stripAssistantReasoning: false,
 	};
 
-	test("chat completions, Responses and Anthropic Messages all lose the secret", () => {
+	test("chat completions, Responses and Anthropic Messages all lose the secret", async () => {
 		const chat = parseChatRequest(
 			{ model: "auto", messages: [{ role: "system", content: `rules ${SECRET}` }, { role: "user", content: `use ${SECRET}` }] },
 			new Headers(),
@@ -265,36 +267,40 @@ describe("the ledger keeps the count and never the match", () => {
 		};
 	}
 
-	test("the column round-trips, absent stays absent, and the report totals it", () => {
-		const db = openDb(":memory:");
+	test("the column round-trips, absent stays absent, and the report totals it", async () => {
+		const path = join(tmpdir(), `redaction-${process.pid}-${Date.now()}.db`);
+		const db = openSqlDb(path);
 		try {
-			const ledger = createLedger(db, { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" } });
+			await migrateStore(db);
+			const ledger = createSqlLedger(db, { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path } }, { findModel: () => null });
 			const now = Date.now();
-			ledger.record(entry({ createdAtMs: now - 3, redactions: 3 }));
-			ledger.record(entry({ createdAtMs: now - 2, redactions: 0 }));
-			ledger.record(entry({ createdAtMs: now - 1 })); // redaction off: NULL, which is not 0
-			const recorded = ledger.recentEntries(10);
+			await ledger.record(entry({ createdAtMs: now - 3, redactions: 3 }));
+			await ledger.record(entry({ createdAtMs: now - 2, redactions: 0 }));
+			await ledger.record(entry({ createdAtMs: now - 1 })); // redaction off: NULL, which is not 0
+			const recorded = await ledger.recentEntries(10);
 			expect(recorded.map((e) => e.redactions)).toEqual([undefined, 0, 3]);
-			const totals = buildUsageReport(db, { windowDays: 7 }).totals;
+			const totals = (await buildUsageReport(db, { windowDays: 7 })).totals;
 			expect(totals.redactions).toBe(3);
 			expect(totals.redactedTurns).toBe(1);
-			expect(renderUsageReport(buildUsageReport(db, { windowDays: 7 }))).toContain("redaction: 1 turns had something removed (3 strings)");
+			expect(renderUsageReport(await buildUsageReport(db, { windowDays: 7 }))).toContain("redaction: 1 turns had something removed (3 strings)");
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("a window with no redaction says nothing about it", () => {
-		const db = openDb(":memory:");
+	test("a window with no redaction says nothing about it", async () => {
+		const path = join(tmpdir(), `redaction-none-${process.pid}-${Date.now()}.db`);
+		const db = openSqlDb(path);
 		try {
-			const ledger = createLedger(db, { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" } });
-			ledger.record(entry({}));
-			const report = buildUsageReport(db, { windowDays: 7 });
+			await migrateStore(db);
+			const ledger = createSqlLedger(db, { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path } }, { findModel: () => null });
+			await ledger.record(entry({}));
+			const report = await buildUsageReport(db, { windowDays: 7 });
 			expect(report.totals.redactions).toBe(0);
 			expect(report.totals.redactedTurns).toBe(0);
 			expect(renderUsageReport(report)).not.toContain("redaction:");
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });

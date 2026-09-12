@@ -63,7 +63,7 @@ const served = () => null;
 const bySlug = (view: CatalogView): Map<string, CatalogViewModel> => new Map(view.models.map((m) => [m.slug, m]));
 
 describe("catalogView", () => {
-	test("sorted by slug, prices per million, vendor per slug, and no verdict without a policy", () => {
+	test("sorted by slug, prices per million, vendor per slug, and no verdict without a policy", async () => {
 		const view = catalogView({ models: MODELS, fetchedAtMs: 123, unserved: served });
 		expect(view.fetchedAtMs).toBe(123);
 		expect(view.models.map((m) => m.slug)).toEqual([...MODELS.map((m) => m.slug)].sort());
@@ -91,7 +91,7 @@ describe("catalogView", () => {
 		expect(bySlug(view).get("azure-eu/gpt-4o-deploy")!.price).toEqual({ prompt: 2.5, completion: 10, cacheRead: 1.25 });
 	});
 
-	test("vendor: the namespace before the first slash; a named upstream's model id may carry its own", () => {
+	test("vendor: the namespace before the first slash; a named upstream's model id may carry its own", async () => {
 		expect(vendorOf({ slug: "anthropic/claude-sonnet-5", provider: "openrouter" })).toBe("anthropic");
 		expect(vendorOf({ slug: "ollama/glm-5.3-flash", provider: "ollama" })).toBe("ollama");
 		expect(vendorOf({ slug: "vllm/meta-llama/Llama-3", provider: "vllm" })).toBe("meta-llama");
@@ -101,7 +101,7 @@ describe("catalogView", () => {
 		expect(view.get("azure-eu/gpt-4o-deploy")!.vendor).toBe("azure-eu");
 	});
 
-	test("an empty policy still judges: the router's own filters and the upstream's state", () => {
+	test("an empty policy still judges: the router's own filters and the upstream's state", async () => {
 		const unserved = (p: string) => (p === "azure-eu" ? "upstream azure-eu is disabled" : null);
 		const view = bySlug(catalogView({ models: MODELS, fetchedAtMs: 0, verdict: { filters: DEFAULT_CONFIG.filters }, unserved }));
 		expect(view.get("openai/gpt-5")).toMatchObject({ admitted: true });
@@ -118,7 +118,7 @@ describe("catalogView", () => {
 		expect(open.get("tencent/translator")!.admitted).toBe(true);
 	});
 
-	test("allow list, deny glob and pin, in the order a turn applies them", () => {
+	test("allow list, deny glob and pin, in the order a turn applies them", async () => {
 		const filters = { ...DEFAULT_CONFIG.filters, allow: ["anthropic/*", "vllm/*"], deny: ["*haiku*"] };
 		const view = bySlug(catalogView({ models: MODELS, fetchedAtMs: 0, verdict: { filters }, unserved: served }));
 		expect(view.get("openai/gpt-5")).toMatchObject({ admitted: false, reason: "not in the allow list" });

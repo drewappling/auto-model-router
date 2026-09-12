@@ -16,7 +16,7 @@
  */
 
 import type { RouterConfig } from "../config/types.ts";
-import type { Ledger } from "../cost/types.ts";
+import type { AsyncLedger } from "../cost/types.ts";
 import { scoreHeuristic } from "../router/classify.ts";
 import { extractFeatures } from "../router/features.ts";
 import { estimateTokens } from "../tokens/estimate.ts";
@@ -69,11 +69,13 @@ function requestOf(req: AdviseRequest): NormRequest {
 }
 
 /** Classifies a prompt the way the first turn of a conversation would be, without dispatching anything. */
-export function advise(cfg: RouterConfig, ledger: Ledger | null, req: AdviseRequest): Advice {
+export async function advise(cfg: RouterConfig, ledger: AsyncLedger | null, req: AdviseRequest): Promise<Advice> {
 	const norm = requestOf(req);
-	const features = extractFeatures(norm, estimateTokens(norm.promptBytes, "unknown", ledger));
+	// Advice is a hint for a client that has not dispatched yet: the default
+	// family ratio is enough, and it keeps this off the store entirely.
+	const features = extractFeatures(norm, estimateTokens(norm.promptBytes, "unknown", null));
 	const cls = scoreHeuristic(features, cfg);
-	const last = req.ompSessionId === "" ? null : (ledger?.latestForSession?.(req.ompSessionId)?.tier ?? null);
+	const last = req.ompSessionId === "" ? null : ((await ledger?.latestForSession(req.ompSessionId))?.tier ?? null);
 	return {
 		tier: cls.tier,
 		task: cls.task,

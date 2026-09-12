@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { migrateStore } from "../src/util/schema.ts";
+import { num, openSqlDb, type SqlDb } from "../src/util/sql.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,14 +8,14 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { createFeedbackStore } from "../src/cost/feedback.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { fakeLedger } from "./fakes.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { createRetentionRunner, RETENTION_INTERVAL_MS } from "../src/cost/retention.ts";
-import { EMPTY_USAGE, type Ledger, type LedgerEntry, type PruneResult } from "../src/cost/types.ts";
+import { EMPTY_USAGE, type AsyncLedger, type LedgerEntry, type PruneResult } from "../src/cost/types.ts";
 import { startServer, type StartedServer } from "../src/server/http.ts";
-import { openDb } from "../src/util/sqlite.ts";
 
 /**
- * Ledger retention: how long turns are kept, what goes with them, and the
+ * AsyncLedger retention: how long turns are kept, what goes with them, and the
  * route a front door asks through — the team edition holds a read-only handle
  * on the ledger and must never delete from it itself.
  */
@@ -59,124 +61,133 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 	};
 }
 
-function seeded(path = ":memory:", base = NOW): { db: ReturnType<typeof openDb>; ledger: Ledger; ids: string[] } {
-	const db = openDb(path);
+async function seeded(
+	path = join(tmpdir(), `retention-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`),
+	base = NOW,
+): Promise<{ db: SqlDb; ledger: AsyncLedger; ids: string[] }> {
+	const db = openSqlDb(path);
+	await migrateStore(db);
 	const cfg: RouterConfig = { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path } };
-	const ledger = createLedger(db, cfg);
+	const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 	// 400, 200 and 1 days old.
-	const ids = [400, 200, 1].map((age) => {
+	const ids: string[] = [];
+	for (const age of [400, 200, 1]) {
 		const e = entry({ createdAtMs: base - age * DAY });
-		ledger.record(e);
-		return e.id;
-	});
+		await ledger.record(e);
+		ids.push(e.id);
+	}
 	return { db, ledger, ids };
 }
 
 describe("prune", () => {
-	test("rows past the window go, newer ones stay, and the oldest kept is reported", () => {
-		const { db, ledger } = seeded();
+	test("rows past the window go, newer ones stay, and the oldest kept is reported", async () => {
+		const { db, ledger } = await seeded();
 		try {
-			expect(ledger.prune?.(365, NOW)).toEqual({ deleted: 1, oldestKeptMs: NOW - 200 * DAY });
-			expect(ledger.recentEntries(10)).toHaveLength(2);
-			expect(ledger.prune?.(30, NOW)).toEqual({ deleted: 1, oldestKeptMs: NOW - DAY });
-			expect(ledger.recentEntries(10)).toHaveLength(1);
+			expect(await ledger.prune(365, NOW)).toEqual({ deleted: 1, oldestKeptMs: NOW - 200 * DAY });
+			expect(await ledger.recentEntries(10)).toHaveLength(2);
+			expect(await ledger.prune(30, NOW)).toEqual({ deleted: 1, oldestKeptMs: NOW - DAY });
+			expect(await ledger.recentEntries(10)).toHaveLength(1);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("a null window (the default) deletes nothing, and neither does 0", () => {
-		const { db, ledger } = seeded();
+	test("a null window (the default) deletes nothing, and neither does 0", async () => {
+		const { db, ledger } = await seeded();
 		try {
 			expect(DEFAULT_CONFIG.ledger.retentionDays).toBeNull();
-			expect(ledger.prune?.(null, NOW)).toEqual({ deleted: 0, oldestKeptMs: NOW - 400 * DAY });
-			expect(ledger.prune?.(0, NOW)).toEqual({ deleted: 0, oldestKeptMs: NOW - 400 * DAY });
-			expect(ledger.recentEntries(10)).toHaveLength(3);
+			expect(await ledger.prune(null, NOW)).toEqual({ deleted: 0, oldestKeptMs: NOW - 400 * DAY });
+			expect(await ledger.prune(0, NOW)).toEqual({ deleted: 0, oldestKeptMs: NOW - 400 * DAY });
+			expect(await ledger.recentEntries(10)).toHaveLength(3);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("feedback keyed to a deleted turn goes with it; a verdict on a kept turn stays", () => {
-		const { db, ledger, ids } = seeded();
+	test("feedback keyed to a deleted turn goes with it; a verdict on a kept turn stays", async () => {
+		const { db, ledger, ids } = await seeded();
 		try {
 			const feedback = createFeedbackStore(db);
 			const [old, mid, recent] = ids as [string, string, string];
-			feedback.record({ ledgerId: old, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "bad", note: "" }, NOW - 400 * DAY);
-			feedback.record({ ledgerId: mid, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "good", note: "" }, NOW - 200 * DAY);
-			feedback.record({ ledgerId: recent, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "good", note: "" }, NOW - DAY);
-			expect(ledger.prune?.(365, NOW)?.deleted).toBe(1);
-			expect(feedback.forLedgerId(old)).toHaveLength(0);
-			expect(feedback.forLedgerId(mid)).toHaveLength(1);
-			expect(feedback.forLedgerId(recent)).toHaveLength(1);
+			await feedback.record({ ledgerId: old, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "bad", note: "" }, NOW - 400 * DAY);
+			await feedback.record({ ledgerId: mid, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "good", note: "" }, NOW - 200 * DAY);
+			await feedback.record({ ledgerId: recent, ompSessionId: "omp-1", slug: "a/b", tier: "simple", verdict: "good", note: "" }, NOW - DAY);
+			expect((await ledger.prune(365, NOW))?.deleted).toBe(1);
+			expect(await feedback.forLedgerId(old)).toHaveLength(0);
+			expect(await feedback.forLedgerId(mid)).toHaveLength(1);
+			expect(await feedback.forLedgerId(recent)).toHaveLength(1);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("ollama meter samples age out with the rows they calibrate", () => {
-		const { db, ledger } = seeded();
+	test("ollama meter samples age out with the rows they calibrate", async () => {
+		const { db, ledger } = await seeded();
 		try {
-			db.run("INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (?, 1, 1), (?, 2, 2)", [NOW - 400 * DAY, NOW - DAY]);
-			ledger.prune?.(365, NOW);
-			expect((db.query("SELECT COUNT(*) AS n FROM ollama_meter_samples").get() as { n: number }).n).toBe(1);
+			for (const atMs of [NOW - 400 * DAY, NOW - DAY]) {
+				await db.sql`INSERT INTO ollama_meter_samples (at_ms, meter_usd, ledger_usd) VALUES (${atMs}, 1, 1)`;
+			}
+			await ledger.prune(365, NOW);
+			const kept = await db.one<{ n: unknown }>("SELECT COUNT(*) AS n FROM ollama_meter_samples");
+			expect(num(kept?.n)).toBe(1);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 
-	test("an empty ledger reports no oldest row rather than a cutoff of its own", () => {
-		const db = openDb(":memory:");
+	test("an empty ledger reports no oldest row rather than a cutoff of its own", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-retention.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		try {
-			const ledger = createLedger(db, { ...DEFAULT_CONFIG, ledger: { ...DEFAULT_CONFIG.ledger, path: ":memory:" } });
-			expect(ledger.prune?.(30, NOW)).toEqual({ deleted: 0, oldestKeptMs: null });
+			const ledger = createSqlLedger(db, DEFAULT_CONFIG, { findModel: () => null });
+			expect(await ledger.prune(30, NOW)).toEqual({ deleted: 0, oldestKeptMs: null });
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 });
 
 describe("the schedule", () => {
-	function counting(): { ledger: Ledger; runs: number[] } {
+	function counting(): { ledger: AsyncLedger; runs: number[] } {
 		const runs: number[] = [];
-		const ledger = {
-			prune: (_days: number | null, nowMs?: number): PruneResult => {
+		const ledger = fakeLedger({
+			prune: async (_days: number | null, nowMs?: number): Promise<PruneResult> => {
 				runs.push(nowMs ?? 0);
 				return { deleted: 1, oldestKeptMs: null };
 			},
-		} as unknown as Ledger;
+		});
 		return { ledger, runs };
 	}
 
-	test("the scheduled path runs at most once an hour, however often it is asked", () => {
+	test("the scheduled path runs at most once an hour, however often it is asked", async () => {
 		const { ledger, runs } = counting();
 		const runner = createRetentionRunner({ ledger, retentionDays: () => 30 });
 		// The first call is always due, so a lowered window applies at boot.
-		expect(runner.maybeRun(NOW)?.deleted).toBe(1);
+		expect((await runner.maybeRun(NOW))?.deleted).toBe(1);
 		// A minute timer ticking for an hour must not re-run it.
-		for (let t = 60_000; t < RETENTION_INTERVAL_MS; t += 60_000) expect(runner.maybeRun(NOW + t)).toBeNull();
+		for (let t = 60_000; t < RETENTION_INTERVAL_MS; t += 60_000) expect(await runner.maybeRun(NOW + t)).toBeNull();
 		expect(runs).toEqual([NOW]);
-		expect(runner.maybeRun(NOW + RETENTION_INTERVAL_MS)?.deleted).toBe(1);
+		expect((await runner.maybeRun(NOW + RETENTION_INTERVAL_MS))?.deleted).toBe(1);
 		expect(runs).toEqual([NOW, NOW + RETENTION_INTERVAL_MS]);
 	});
 
-	test("an explicit run always happens, and satisfies the schedule for the next hour", () => {
+	test("an explicit run always happens, and satisfies the schedule for the next hour", async () => {
 		const { ledger, runs } = counting();
 		const runner = createRetentionRunner({ ledger, retentionDays: () => 30 });
-		runner.runNow(NOW);
-		runner.runNow(NOW + 1_000);
+		await runner.runNow(NOW);
+		await runner.runNow(NOW + 1_000);
 		expect(runs).toEqual([NOW, NOW + 1_000]);
-		expect(runner.maybeRun(NOW + 2_000)).toBeNull();
-		expect(runner.maybeRun(NOW + 1_000 + RETENTION_INTERVAL_MS)).not.toBeNull();
+		expect(await runner.maybeRun(NOW + 2_000)).toBeNull();
+		expect(await runner.maybeRun(NOW + 1_000 + RETENTION_INTERVAL_MS)).not.toBeNull();
 	});
 
-	test("the window is read live, so a hot reload applies on the next run", () => {
+	test("the window is read live, so a hot reload applies on the next run", async () => {
 		let days: number | null = null;
 		const { ledger, runs } = counting();
 		const runner = createRetentionRunner({ ledger, retentionDays: () => days });
 		expect(runner.retentionDays()).toBeNull();
 		days = 7;
-		runner.runNow(NOW);
+		await runner.runNow(NOW);
 		expect(runner.retentionDays()).toBe(7);
 		expect(runs).toHaveLength(1);
 	});
@@ -191,11 +202,11 @@ describe("POST /v1/router/prune", () => {
 	// relative to it rather than to the fixed NOW the unit tests use.
 	const realNow = Date.now();
 
-	beforeAll(() => {
+	beforeAll(async () => {
 		dir = mkdtempSync(join(tmpdir(), "amr-retention-"));
 		dbPath = join(dir, "router.db");
-		const { db } = seeded(dbPath, realNow);
-		db.close();
+		const { db } = await seeded(dbPath, realNow);
+		await db.close();
 		const cfg: RouterConfig = {
 			...structuredClone(DEFAULT_CONFIG),
 			server: { host: "127.0.0.1", port: 0, maxConcurrentTurns: 24, subagentProfile: "auto-sub" },
@@ -223,11 +234,13 @@ describe("POST /v1/router/prune", () => {
 		expect(body.oldestKeptMs).toBe(realNow - 200 * DAY);
 		expect(body.retentionDays).toBe(365);
 		// The rows are really gone from the file, not just from a view.
-		const db = openDb(dbPath);
+		const db = openSqlDb(dbPath);
+		await migrateStore(db);
 		try {
-			expect((db.query("SELECT COUNT(*) AS n FROM ledger").get() as { n: number }).n).toBe(2);
+			const left = await db.one<{ n: unknown }>("SELECT COUNT(*) AS n FROM ledger");
+			expect(num(left?.n)).toBe(2);
 		} finally {
-			db.close();
+			await db.close();
 		}
 	});
 

@@ -25,14 +25,18 @@ export type { DeepPartial } from "./config/load.ts";
 export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotals } from "./cost/report.ts";
 export { buildDailySummary, renderDailySummary, type DailySummary } from "./cost/summary.ts";
 export { openDb } from "./util/sqlite.ts";
+// A front door reads the ledger through the engine-agnostic handle: the store
+// may be a file or a shared database, and the view functions take this.
+export { dialectOf, openSqlDb, num, numOrNull, type Dialect, type SqlDb } from "./util/sql.ts";
 export { spendUsdSince, feedbackView, exportRows, exportCsv, decisionEntries, harnessScopeParam, type HarnessScope, type ExportRow, type FeedbackRow, type FeedbackByModel, type FeedbackView, type DecisionEntry, type DecisionFilter } from "./cost/views.ts";
-export { createLedger } from "./cost/ledger.ts";
+export { createSqlLedger } from "./cost/ledger-sql.ts";
+export { migrateStore, STORE_TABLES } from "./util/schema.ts";
 export { createFeedbackStore, type FeedbackStore, type FeedbackRecord } from "./cost/feedback.ts";
 export { buildExecutable, collectPackageFiles, executableFileName, hostTarget, isExecutableTarget, EXECUTABLE_TARGETS, type ExecutableTarget, type BuildExecutableResult } from "./cli/build-executable.ts";
 export { parseSkillsBundle, type SkillsBundle } from "./cli/skills.ts";
 export type { RequestPolicy } from "./wire/types.ts";
 export type { CatalogView, CatalogViewModel } from "./server/catalog-view.ts";
-export type { Ledger, LedgerEntry, PruneResult } from "./cost/types.ts";
+export type { AsyncLedger, LedgerEntry, PruneResult } from "./cost/types.ts";
 // Retention: a front door asks through `POST /v1/router/prune` rather than
 // deleting from the ledger itself. The interval is exported so it can say when.
 export { RETENTION_INTERVAL_MS } from "./cost/retention.ts";

@@ -128,6 +128,13 @@ export interface NormRequest {
 	policy?: RequestPolicy;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
+	/**
+	 * The client's `model` string before the provider prefix was stripped, so a
+	 * vendor-qualified catalog slug (`deepseek/deepseek-v4.1-flash`) stays
+	 * distinguishable from a profile id. Absent ⇒ `requestedModel` is the whole
+	 * of what the client asked for.
+	 */
+	requestedModelFull?: string;
 	messages: NormMessage[];
 	tools: NormTool[];
 	/** True when the client forced a specific tool. */

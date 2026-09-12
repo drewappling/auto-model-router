@@ -1,9 +1,8 @@
 import { existsSync } from "node:fs";
-import type { Database } from "bun:sqlite";
 import { loadConfig } from "../config/load.ts";
-import { createLedger } from "../cost/ledger.ts";
+import { createSqlLedger } from "../cost/ledger-sql.ts";
 import { computeStats, type RouterStats } from "../server/http.ts";
-import { openDb } from "../util/sqlite.ts";
+import { openSqlDb, type SqlDb } from "../util/sql.ts";
 import { configOpts, flagInt, type CliArgs } from "./args.ts";
 
 function usd(v: number): string {
@@ -38,11 +37,12 @@ export async function statsCommand(args: CliArgs): Promise<void> {
 	const cfg = loadConfig(configOpts(args));
 
 	// A stats query must not create the ledger file just by looking.
-	let db: Database | null = null;
+	let db: SqlDb | null = null;
 	let stats: RouterStats;
 	if (existsSync(cfg.ledger.path)) {
-		db = openDb(cfg.ledger.path);
-		stats = computeStats(createLedger(db, cfg), { windowDays: days });
+		db = openSqlDb(cfg.ledger.path);
+		// No catalog here, so rows cannot be re-priced; stats only read.
+		stats = await computeStats(createSqlLedger(db, cfg, { findModel: () => null }), { windowDays: days });
 	} else {
 		stats = {
 			generatedAtMs: Date.now(),
@@ -64,6 +64,6 @@ export async function statsCommand(args: CliArgs): Promise<void> {
 		if (args.flags.has("json")) console.log(JSON.stringify(stats, null, 2));
 		else renderStats(stats);
 	} finally {
-		db?.close();
+		await db?.close();
 	}
 }

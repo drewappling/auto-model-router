@@ -3,7 +3,7 @@ import { ORIGIN_ENV, SCOPE_ENV, acceptOrigin, acceptScope, isOrigin, isScopeSlug
 import { parseChatRequest } from "../src/wire/openai/request.ts";
 
 describe("the scope a request may name", () => {
-	test("a slug passes; the env-var sentinel and other non-slugs do not", () => {
+	test("a slug passes; the env-var sentinel and other non-slugs do not", async () => {
 		expect(isScopeSlug("omp-router")).toBe(true);
 		expect(isScopeSlug("ashlands")).toBe(true);
 		expect(isScopeSlug("my.app_v2")).toBe(true);
@@ -16,20 +16,20 @@ describe("the scope a request may name", () => {
 		expect(isScopeSlug("a".repeat(129))).toBe(false);
 	});
 
-	test("acceptScope trims and rejects", () => {
+	test("acceptScope trims and rejects", async () => {
 		expect(acceptScope(" omp-router ")).toBe("omp-router");
 		expect(acceptScope(SCOPE_ENV)).toBe("");
 		expect(acceptScope(null)).toBe("");
 	});
 
-	test("the wire parser drops a non-slug X-Agentdox-Scope", () => {
+	test("the wire parser drops a non-slug X-Agentdox-Scope", async () => {
 		const body = { model: "auto", messages: [{ role: "user", content: "hi" }] };
 		const parse = (scope: string) => parseChatRequest(body, new Headers({ "x-agentdox-scope": scope }));
 		expect(parse("omp-router").agentdoxScope).toBe("omp-router");
 		expect(parse(SCOPE_ENV).agentdoxScope).toBe("");
 	});
 
-	test("the wire parser reads X-Agentdox-Group and X-Agentdox-Personal by the same rule", () => {
+	test("the wire parser reads X-Agentdox-Group and X-Agentdox-Personal by the same rule", async () => {
 		// A team front door names the group-context and personal scopes; a
 		// lone router never sees the headers and must end up with empties, so
 		// nothing new is sent to agentdox.
@@ -51,7 +51,7 @@ describe("the scope a request may name", () => {
 });
 
 describe("the origin a request may name", () => {
-	test("normalizeOrigin reduces every remote form to host/path, and a local path to nothing", () => {
+	test("normalizeOrigin reduces every remote form to host/path, and a local path to nothing", async () => {
 		// The same repository over https and ssh is one fingerprint.
 		expect(normalizeOrigin("https://github.com/DrewAppling/omp-router.git")).toBe("github.com/drewappling/omp-router");
 		expect(normalizeOrigin("git@github.com:drewappling/omp-router.git")).toBe("github.com/drewappling/omp-router");
@@ -70,7 +70,7 @@ describe("the origin a request may name", () => {
 		expect(normalizeOrigin("")).toBe("");
 	});
 
-	test("isOrigin: host/path only; the env-var sentinel never passes", () => {
+	test("isOrigin: host/path only; the env-var sentinel never passes", async () => {
 		expect(isOrigin("github.com/drewappling/omp-router")).toBe(true);
 		expect(isOrigin("gitlab.example.com/team/sub/api")).toBe(true);
 		// omp sends the header's literal value when the variable it names is
@@ -83,14 +83,14 @@ describe("the origin a request may name", () => {
 		expect(isOrigin("")).toBe(false);
 	});
 
-	test("acceptOrigin trims and rejects", () => {
+	test("acceptOrigin trims and rejects", async () => {
 		expect(acceptOrigin(" github.com/a/b ")).toBe("github.com/a/b");
 		expect(acceptOrigin(ORIGIN_ENV)).toBe("");
 		expect(acceptOrigin("https://github.com/a/b")).toBe("");
 		expect(acceptOrigin(null)).toBe("");
 	});
 
-	test("the wire parser reads X-Agentdox-Origin by that rule and nothing else changes", () => {
+	test("the wire parser reads X-Agentdox-Origin by that rule and nothing else changes", async () => {
 		const body = { model: "auto", messages: [{ role: "user", content: "hi" }] };
 		const parse = (h: Record<string, string>) => parseChatRequest(body, new Headers(h));
 		expect(parse({ "x-agentdox-scope": "omp-router" }).agentdoxOrigin).toBe("");

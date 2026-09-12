@@ -47,24 +47,24 @@ async function drive(lines: string[]): Promise<{
 }
 
 describe("getPath / setPath", () => {
-	test("reads nested and top-level config paths", () => {
+	test("reads nested and top-level config paths", async () => {
 		expect(getPath(cfg, "server.port")).toBe(cfg.server.port);
 		expect(getPath(cfg, "logLevel")).toBe(cfg.logLevel);
 		expect(getPath(cfg, "tiers.hard.minQuality")).toBe(cfg.tiers.hard.minQuality);
 	});
 
-	test("returns undefined for missing paths without throwing", () => {
+	test("returns undefined for missing paths without throwing", async () => {
 		expect(getPath(cfg, "nope.missing.deep")).toBeUndefined();
 		expect(getPath(null, "a.b")).toBeUndefined();
 	});
 
-	test("creates intermediate objects", () => {
+	test("creates intermediate objects", async () => {
 		const target: Record<string, unknown> = {};
 		setPath(target, "a.b.c", 1);
 		expect(target).toEqual({ a: { b: { c: 1 } } });
 	});
 
-	test("replaces a non-object on the path rather than throwing", () => {
+	test("replaces a non-object on the path rather than throwing", async () => {
 		const target: Record<string, unknown> = { a: 5 };
 		setPath(target, "a.b", 1);
 		expect(target).toEqual({ a: { b: 1 } });
@@ -78,19 +78,19 @@ describe("validateField", () => {
 	const en: FieldSpec = { path: "e", label: "e", kind: "enum", options: ["a", "b"] };
 	const arr: FieldSpec = { path: "a", label: "a", kind: "stringArray" };
 
-	test("accepts in-range numbers", () => {
+	test("accepts in-range numbers", async () => {
 		expect(validateField(num, "5")).toEqual({ ok: true, value: 5 });
 		expect(validateField(num, " 0 ")).toEqual({ ok: true, value: 0 });
 	});
 
-	test("rejects non-numbers and out-of-range numbers", () => {
+	test("rejects non-numbers and out-of-range numbers", async () => {
 		expect(validateField(num, "abc").ok).toBe(false);
 		expect(validateField(num, "-1").ok).toBe(false);
 		expect(validateField(num, "11").ok).toBe(false);
 		expect(validateField(num, "Infinity").ok).toBe(false);
 	});
 
-	test("parses both boolean spellings", () => {
+	test("parses both boolean spellings", async () => {
 		for (const yes of ["y", "yes", "true", "1", "on", "Y", "TRUE"]) {
 			expect(validateField(bool, yes)).toEqual({ ok: true, value: true });
 		}
@@ -100,23 +100,23 @@ describe("validateField", () => {
 		expect(validateField(bool, "maybe").ok).toBe(false);
 	});
 
-	test("enforces enum options", () => {
+	test("enforces enum options", async () => {
 		expect(validateField(en, "b")).toEqual({ ok: true, value: "b" });
 		const bad = validateField(en, "z");
 		expect(bad.ok).toBe(false);
 		if (!bad.ok) expect(bad.error).toContain("a, b");
 	});
 
-	test("splits and trims string arrays, dropping blanks", () => {
+	test("splits and trims string arrays, dropping blanks", async () => {
 		expect(validateField(arr, "x, y ,, z")).toEqual({ ok: true, value: ["x", "y", "z"] });
 	});
 
-	test("clear token is allowed only on optional fields", () => {
+	test("clear token is allowed only on optional fields", async () => {
 		expect(validateField(opt, CLEAR_TOKEN)).toEqual({ ok: true, value: null });
 		expect(validateField(num, CLEAR_TOKEN).ok).toBe(false);
 	});
 
-	test("a restricted string array rejects unknown items", () => {
+	test("a restricted string array rejects unknown items", async () => {
 		const tiers: FieldSpec = { path: "escalation.probeTiers", label: "t", kind: "stringArray", options: ["trivial", "simple"] };
 		expect(validateField(tiers, "simple, trivial")).toEqual({ ok: true, value: ["simple", "trivial"] });
 		const bad = validateField(tiers, "simple, hard");
@@ -124,14 +124,14 @@ describe("validateField", () => {
 		if (!bad.ok) expect(bad.error).toContain("hard");
 	});
 
-	test("number arrays parse, bound-check and reject non-numbers", () => {
+	test("number arrays parse, bound-check and reject non-numbers", async () => {
 		const arms: FieldSpec = { path: "exploration.holdTurns.values", label: "a", kind: "numberArray", min: 1 };
 		expect(validateField(arms, "2, 3,4")).toEqual({ ok: true, value: [2, 3, 4] });
 		expect(validateField(arms, "2, x").ok).toBe(false);
 		expect(validateField(arms, "0, 2").ok).toBe(false);
 	});
 
-	test("secrets display as set/unset", () => {
+	test("secrets display as set/unset", async () => {
 		const key: FieldSpec = { path: "openrouter.apiKey", label: "k", kind: "string", optional: true, secret: true };
 		expect(displayValue(key, "sk-abc")).toBe("set");
 		expect(displayValue(key, "")).toBe("unset");
@@ -155,13 +155,13 @@ describe("WIZARD_SECTIONS coverage", () => {
 		return out;
 	}
 
-	test("every config leaf has a wizard field (so /router can edit all of it)", () => {
+	test("every config leaf has a wizard field (so /router can edit all of it)", async () => {
 		const fields = new Set(WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path)));
 		const missing = leaves(DEFAULT_CONFIG).filter((p) => !fields.has(p));
 		expect(missing).toEqual([]);
 	});
 
-	test("every wizard field points at a real config path or a known optional", () => {
+	test("every wizard field points at a real config path or a known optional", async () => {
 		// Optional keys absent from DEFAULT_CONFIG still have to be spelled right;
 		// they are listed here so a typo in a new field path fails loudly.
 		const KNOWN_OPTIONAL = new Set([
@@ -179,19 +179,19 @@ describe("WIZARD_SECTIONS coverage", () => {
 		expect(unknown).toEqual([]);
 	});
 
-	test("field paths are unique across sections", () => {
+	test("field paths are unique across sections", async () => {
 		const all = WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path));
 		expect(new Set(all).size).toBe(all.length);
 	});
 
-	test("secrets are exactly the credential keys", () => {
+	test("secrets are exactly the credential keys", async () => {
 		const secrets = WIZARD_SECTIONS.flatMap((s) => s.fields.filter((f) => f.secret === true).map((f) => f.path)).sort();
 		expect(secrets).toEqual(["benchmarks.artificialAnalysisApiKey", "context.token", "ollama.apiKey", "openrouter.apiKey", "server.apiKey"]);
 	});
 });
 
 describe("applyAnswers", () => {
-	test("nests a flat edit map into a deep partial", () => {
+	test("nests a flat edit map into a deep partial", async () => {
 		expect(
 			applyAnswers({
 				"server.port": 9000,
@@ -207,7 +207,7 @@ describe("applyAnswers", () => {
 });
 
 describe("mergeConfigPartial", () => {
-	test("deep-merges without clobbering sibling keys", () => {
+	test("deep-merges without clobbering sibling keys", async () => {
 		const merged = mergeConfigPartial(
 			{ server: { host: "127.0.0.1", port: 8788 } },
 			{ server: { port: 9000 } },
@@ -215,7 +215,7 @@ describe("mergeConfigPartial", () => {
 		expect(merged).toEqual({ server: { host: "127.0.0.1", port: 9000 } });
 	});
 
-	test("a null leaf deletes the key instead of writing null", () => {
+	test("a null leaf deletes the key instead of writing null", async () => {
 		const merged = mergeConfigPartial(
 			{ budget: { perDayUsd: 1, onExceeded: "reject" } },
 			{ budget: { perDayUsd: null } },
@@ -223,12 +223,12 @@ describe("mergeConfigPartial", () => {
 		expect(merged).toEqual({ budget: { onExceeded: "reject" } });
 	});
 
-	test("prunes a section left empty by a clear", () => {
+	test("prunes a section left empty by a clear", async () => {
 		const merged = mergeConfigPartial({ budget: { perDayUsd: 1 } }, { budget: { perDayUsd: null } });
 		expect(merged).toEqual({});
 	});
 
-	test("replaces arrays wholesale rather than merging by index", () => {
+	test("replaces arrays wholesale rather than merging by index", async () => {
 		const merged = mergeConfigPartial(
 			{ filters: { deny: ["a", "b", "c"] } },
 			{ filters: { deny: ["z"] } },
@@ -236,7 +236,7 @@ describe("mergeConfigPartial", () => {
 		expect(merged).toEqual({ filters: { deny: ["z"] } });
 	});
 
-	test("does not mutate the base object", () => {
+	test("does not mutate the base object", async () => {
 		const base = { server: { port: 8788 } };
 		mergeConfigPartial(base, { server: { port: 1 } });
 		expect(base).toEqual({ server: { port: 8788 } });
@@ -244,7 +244,7 @@ describe("mergeConfigPartial", () => {
 });
 
 describe("formatValue", () => {
-	test("renders scalars, arrays, and absent values", () => {
+	test("renders scalars, arrays, and absent values", async () => {
 		expect(formatValue(0.5)).toBe("0.5");
 		expect(formatValue(true)).toBe("y");
 		expect(formatValue(false)).toBe("n");
@@ -429,7 +429,7 @@ describe("runWizard: profiles", () => {
 		expect(profiles[0]).toMatchObject({ id: "auto", contextWindow: 400000 });
 	});
 
-	test("profile edits survive a round-trip through the config file", () => {
+	test("profile edits survive a round-trip through the config file", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ompr-prof-"));
 		try {
 			const target = join(dir, "config.yml");
@@ -448,7 +448,7 @@ describe("runWizard: profiles", () => {
 });
 
 describe("WIZARD_SECTIONS", () => {
-	test("required fields resolve against the default config", () => {
+	test("required fields resolve against the default config", async () => {
 		for (const section of WIZARD_SECTIONS) {
 			for (const field of section.fields) {
 				if (field.optional === true) continue;
@@ -457,12 +457,12 @@ describe("WIZARD_SECTIONS", () => {
 		}
 	});
 
-	test("field paths are unique", () => {
+	test("field paths are unique", async () => {
 		const paths = WIZARD_SECTIONS.flatMap((s) => s.fields.map((f) => f.path));
 		expect(new Set(paths).size).toBe(paths.length);
 	});
 
-	test("every enum field declares its options", () => {
+	test("every enum field declares its options", async () => {
 		for (const section of WIZARD_SECTIONS) {
 			for (const field of section.fields) {
 				if (field.kind !== "enum") continue;
@@ -514,7 +514,7 @@ describe("writeRouterConfig", () => {
 		}
 	}
 
-	test("creates the file and reloads to the chosen value", () => {
+	test("creates the file and reloads to the chosen value", async () => {
 		withTemp((dir) => {
 			const target = join(dir, "config.yml");
 			const backup = writeRouterConfig(target, { server: { port: 9123 } });
@@ -525,7 +525,7 @@ describe("writeRouterConfig", () => {
 		});
 	});
 
-	test("preserves unrelated existing keys and backs up the old file", () => {
+	test("preserves unrelated existing keys and backs up the old file", async () => {
 		withTemp((dir) => {
 			const target = join(dir, "config.yml");
 			writeFileSync(target, "logLevel: debug\nserver:\n  host: 0.0.0.0\n", "utf8");
@@ -541,7 +541,7 @@ describe("writeRouterConfig", () => {
 		});
 	});
 
-	test("refuses to write an invalid config and leaves the file untouched", () => {
+	test("refuses to write an invalid config and leaves the file untouched", async () => {
 		withTemp((dir) => {
 			const target = join(dir, "config.yml");
 			writeFileSync(target, "logLevel: debug\n", "utf8");
@@ -550,7 +550,7 @@ describe("writeRouterConfig", () => {
 		});
 	});
 
-	test("a clear deletes the key from the written file", () => {
+	test("a clear deletes the key from the written file", async () => {
 		withTemp((dir) => {
 			const target = join(dir, "config.yml");
 			writeFileSync(target, "budget:\n  perDayUsd: 5\n  onExceeded: reject\n", "utf8");

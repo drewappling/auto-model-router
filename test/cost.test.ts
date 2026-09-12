@@ -23,12 +23,12 @@ const SONNET = model("anthropic/claude-sonnet-4.5"); // publishes cache prices +
 const ALL = FIXTURE.data.map(normalizeCatalogModel).filter((m): m is CatalogModel => m !== null);
 
 describe("priceAt", () => {
-	test("returns the base price below every override threshold", () => {
+	test("returns the base price below every override threshold", async () => {
 		expect(priceAt(SONNET, 1000).prompt).toBe(SONNET.price.prompt);
 		expect(priceAt(SONNET, 199_999).prompt).toBe(SONNET.price.prompt);
 	});
 
-	test("crosses into the long-context tier at the threshold", () => {
+	test("crosses into the long-context tier at the threshold", async () => {
 		const tier = SONNET.priceTiers[0];
 		expect(tier).toBeDefined();
 		if (tier === undefined) return;
@@ -36,7 +36,7 @@ describe("priceAt", () => {
 		expect(priceAt(SONNET, tier.minPromptTokens + 1).prompt).toBeGreaterThan(SONNET.price.prompt);
 	});
 
-	test("a long conversation is dearer per token than a short one", () => {
+	test("a long conversation is dearer per token than a short one", async () => {
 		// The whole reason override tiers are modelled: ignoring them
 		// underestimates long-session cost by roughly half.
 		const short = computeCost(SONNET, usage({ promptTokens: 50_000, completionTokens: 1000 }));
@@ -48,7 +48,7 @@ describe("priceAt", () => {
 });
 
 describe("computeCost", () => {
-	test("components sum to the reported total", () => {
+	test("components sum to the reported total", async () => {
 		const b = computeCost(
 			SONNET,
 			usage({ promptTokens: 10_000, cachedTokens: 6000, cacheWriteTokens: 1000, completionTokens: 500, reasoningTokens: 200, images: 2 }),
@@ -57,7 +57,7 @@ describe("computeCost", () => {
 		expect(sum).toBeCloseTo(b.total, 12);
 	});
 
-	test("prompt_tokens already includes cached tokens, so they are not billed twice", () => {
+	test("prompt_tokens already includes cached tokens, so they are not billed twice", async () => {
 		// 10k prompt of which 10k cached must cost far less than 10k fresh,
 		// and must not be billed as 20k.
 		const allFresh = computeCost(SONNET, usage({ promptTokens: 10_000 }));
@@ -70,7 +70,7 @@ describe("computeCost", () => {
 		expect(allCached.cacheRead).toBeCloseTo(10_000 * cacheRead, 12);
 	});
 
-	test("cache reads are cheaper than fresh prompt tokens wherever published", () => {
+	test("cache reads are cheaper than fresh prompt tokens wherever published", async () => {
 		let checked = 0;
 		for (const m of ALL) {
 			const read = m.price.cacheRead;
@@ -83,7 +83,7 @@ describe("computeCost", () => {
 		expect(checked).toBeGreaterThan(0);
 	});
 
-	test("reasoning tokens are a subset of completion tokens and never double-billed", () => {
+	test("reasoning tokens are a subset of completion tokens and never double-billed", async () => {
 		const withReasoning = computeCost(SONNET, usage({ completionTokens: 1000, reasoningTokens: 400 }));
 		const withoutReasoning = computeCost(SONNET, usage({ completionTokens: 1000 }));
 		// Sonnet publishes no separate reasoning rate, so 1000 completion tokens
@@ -94,14 +94,14 @@ describe("computeCost", () => {
 		expect(withReasoning.total).toBeLessThan(inflated.total);
 	});
 
-	test("zero usage costs nothing beyond any flat per-request fee", () => {
+	test("zero usage costs nothing beyond any flat per-request fee", async () => {
 		const b = computeCost(SONNET, EMPTY_USAGE);
 		expect(b.total).toBe(b.request);
 	});
 });
 
 describe("forecast", () => {
-	test("cold is never cheaper than expected, for every model in the catalog", () => {
+	test("cold is never cheaper than expected, for every model in the catalog", async () => {
 		// A budget guard checks the cold number, so this ordering is load-bearing:
 		// several models publish a cache-write rate BELOW their prompt rate, so
 		// the honest worst case is the max of "no cache" and "full cache write".
@@ -113,14 +113,14 @@ describe("forecast", () => {
 		}
 	});
 
-	test("a higher assumed cache hit rate lowers the expected cost", () => {
+	test("a higher assumed cache hit rate lowers the expected cost", async () => {
 		const cold = forecast(SONNET, { promptTokens: 50_000, completionTokens: 500, cacheHitRate: 0, images: 0 });
 		const warm = forecast(SONNET, { promptTokens: 50_000, completionTokens: 500, cacheHitRate: 0.9, images: 0 });
 		expect(warm.expectedUsd).toBeLessThan(cold.expectedUsd);
 		expect(warm.assumedCacheHitRate).toBeCloseTo(0.9, 12);
 	});
 
-	test("records the assumptions it was given", () => {
+	test("records the assumptions it was given", async () => {
 		const f = forecast(SONNET, { promptTokens: 1234, completionTokens: 567, cacheHitRate: 0.25, images: 3 });
 		expect(f.slug).toBe(SONNET.slug);
 		expect(f.assumedPromptTokens).toBe(1234);
@@ -128,7 +128,7 @@ describe("forecast", () => {
 		expect(f.expectedUsd).toBeGreaterThan(0);
 	});
 
-	test("a cheap model forecasts below an expensive one for identical work", () => {
+	test("a cheap model forecasts below an expensive one for identical work", async () => {
 		const cheap = model("openai/gpt-5-nano");
 		const dear = model("openai/gpt-5-pro");
 		const args = { promptTokens: 20_000, completionTokens: 1000, cacheHitRate: 0, images: 0 };

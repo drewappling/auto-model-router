@@ -70,7 +70,9 @@ import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
 import { loadConfig } from "../src/config/load.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { computeCost } from "../src/cost/forecast.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
+import { prefetchTurnReads } from "../src/router/index.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 import type { UsageCounts } from "../src/cost/types.ts";
 import { classifyTask, scoreHeuristic } from "../src/router/classify.ts";
 import { resolveHoldTurns } from "../src/router/explore.ts";
@@ -324,7 +326,11 @@ function snapshotFor(cfg: RouterConfig): CatalogSnapshot {
 const snapshotA = snapshotFor(cfgA);
 const snapshotB = snapshotFor(cfgB);
 const bySlug = new Map([...snapshotA.models, ...snapshotB.models].map((m) => [m.slug, m]));
-const ledger = createLedger(db, cfgA);
+// Replay reads through the engine-agnostic handle: `select` takes the ledger's
+// answers as DATA now, so each replayed turn prefetches the same reads a live
+// turn would. Read-only — nothing here writes.
+const sqlDb = openSqlDb(dbPath);
+const ledger = createSqlLedger(sqlDb, cfgA, { findModel: (slug: string) => bySlug.get(slug) ?? null });
 
 const predicate = args.where === "" ? "" : ` AND (${args.where})`;
 // Newest-first to honour --limit, then flipped to chronological so each row can
@@ -371,7 +377,7 @@ interface Outcome {
 	trail: VariantTrail;
 }
 
-function run(
+async function run(
 	cfg: RouterConfig,
 	snapshot: CatalogSnapshot,
 	row: Row,
@@ -379,7 +385,7 @@ function run(
 	prior: PriorTurn | undefined,
 	trail: VariantTrail | undefined,
 	esc: EscalationContext,
-): Outcome {
+): Promise<Outcome> {
 	const f = featuresOf(row, usage.promptTokens);
 	const req = requestOf(row, f);
 	const state = stateOf(row, prior, trail, args.warmth);
@@ -399,14 +405,16 @@ function run(
 	} else {
 		classification = scoreHeuristic(f, cfg);
 	}
+	const profile = profileOf(cfg, row.requested_model);
+	const reads = await prefetchTurnReads(ledger, req, profile, cfg, snapshot, classification.task, row.created_at_ms);
 	const decision: Decision = select({
 		req,
 		features: f,
 		classification,
-		profile: profileOf(cfg, row.requested_model),
+		profile,
 		state,
 		snapshot,
-		ledger,
+		reads,
 		cfg,
 		// The row's own clock: cache warmth and hold windows are judged against
 		// when the turn happened, not against today. Passing Date.now() here made
@@ -500,8 +508,8 @@ for (const row of rows) {
 		excludeSlugs: wasted.map((w) => w.served_slug ?? w.slug),
 	};
 	if (esc.escalateFrom !== undefined) escalationsReplayed++;
-	const a = run(cfgA, snapshotA, row, u, prior, trailA.get(row.conversation_key), esc);
-	const b = run(cfgB, snapshotB, row, u, prior, trailB.get(row.conversation_key), esc);
+	const a = await run(cfgA, snapshotA, row, u, prior, trailA.get(row.conversation_key), esc);
+	const b = await run(cfgB, snapshotB, row, u, prior, trailB.get(row.conversation_key), esc);
 	trailA.set(row.conversation_key, a.trail);
 	trailB.set(row.conversation_key, b.trail);
 

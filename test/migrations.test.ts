@@ -1,16 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { openDb } from "../src/util/sqlite.ts";
+import { openSqlDb } from "../src/util/sql.ts";
+import { copyFileSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { createFeedbackStore } from "../src/cost/feedback.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { buildUsageReport } from "../src/cost/report.ts";
 import { buildDailySummary, createKv } from "../src/cost/summary.ts";
 import { exportRows, spendUsdSince } from "../src/cost/views.ts";
 import { createConversationStore } from "../src/router/state.ts";
-import { openDb } from "../src/util/sqlite.ts";
 
 /**
  * Every ledger a past release wrote must open under the current bootstrap:
@@ -27,19 +29,22 @@ const files = readdirSync(FIXTURES).filter((f) => /^router-v\d+\.db$/.test(f)).s
 const CURRENT_VERSION = 19;
 
 describe("schema migrations from every shipped version", () => {
-	test("fixtures exist for the versions that shipped", () => {
+	test("fixtures exist for the versions that shipped", async () => {
 		expect(files.map((f) => Number(/\d+/.exec(f)![0]))).toEqual([4, 5, 10, 12, 13, 14, 16]);
 	});
 
 	for (const file of files) {
 		const from = Number(/\d+/.exec(file)![0]);
-		test(`v${from} → v${CURRENT_VERSION}: opens, migrates, keeps its rows, and every consumer runs`, () => {
+		test(`v${from} → v${CURRENT_VERSION}: opens, migrates, keeps its rows, and every consumer runs`, async () => {
 			const dir = mkdtempSync(join(tmpdir(), "amr-migrate-"));
 			const path = join(dir, "router.db");
 			copyFileSync(join(FIXTURES, file), path);
 			const cfg = structuredClone(DEFAULT_CONFIG);
 			cfg.ledger.path = path;
+			// `openDb` is the migration path for a SQLite file: it applies the
+			// nineteen versions in order. The shim handle then reads the result.
 			const db = openDb(path);
+			const sdb = openSqlDb(path);
 			try {
 				expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(CURRENT_VERSION);
 				// Every column the current code writes exists after migration.
@@ -51,27 +56,28 @@ describe("schema migrations from every shipped version", () => {
 				const row = db.query("SELECT id, error, slug FROM ledger").get() as { id: string; error: string | null; slug: string } | null;
 				expect(row).toEqual({ id: "fixture-id", error: "upstream_error: 502", slug: "fixture-slug" });
 				// Every prepared statement compiles and every consumer runs on the migrated file.
-				const ledger = createLedger(db, cfg);
-				const conversations = createConversationStore(db);
-				createFeedbackStore(db);
+				const ledger = createSqlLedger(sdb, cfg, { findModel: () => null });
+				const conversations = createConversationStore(sdb);
+				createFeedbackStore(sdb);
 				createKv(db);
-				expect(ledger.recentEntries(5)).toHaveLength(1);
-				expect(ledger.trust("fixture-slug")).not.toBeNull();
-				expect(ledger.softFailureSpikes?.()).toEqual([]);
-				expect(ledger.latestForSession?.("nope")).toBeNull();
-				expect(conversations.load("fixture-key").key).toBe("fixture-key");
-				expect(buildUsageReport(db, { windowDays: 3650 }).totals.dispatches).toBe(1);
-				expect(buildDailySummary(db, {}).current.dispatches).toBe(0);
+				expect(await ledger.recentEntries(5)).toHaveLength(1);
+				expect(await ledger.trust("fixture-slug")).not.toBeNull();
+				expect(await ledger.softFailureSpikes()).toEqual([]);
+				expect(await ledger.latestForSession("nope")).toBeNull();
+				expect((await conversations.load("fixture-key")).key).toBe("fixture-key");
+				expect((await buildUsageReport(sdb, { windowDays: 3650 })).totals.dispatches).toBe(1);
+				expect((await buildDailySummary(sdb, {})).current.dispatches).toBe(0);
 				// v18: the fixture's row predates `scope`, so it exports under "" and no
 				// context scope claims its spend.
-				expect(exportRows(db, 0, null).map((r) => r.scope)).toEqual([""]);
-				expect(spendUsdSince(db, 0, null, "acme.api")).toBe(0);
-				expect(spendUsdSince(db, 0, null)).toBeGreaterThanOrEqual(0);
-				expect(ledger.prune?.(0)?.deleted).toBe(0);
+				expect((await exportRows(sdb, 0, null)).map((r) => r.scope)).toEqual([""]);
+				expect(await spendUsdSince(sdb, 0, null, "acme.api")).toBe(0);
+				expect(await spendUsdSince(sdb, 0, null)).toBeGreaterThanOrEqual(0);
+				expect((await ledger.prune(0)).deleted).toBe(0);
 				// v19: the fixture's row predates `redactions`, so nothing claims a
 				// redaction happened on it and the report totals it as zero.
-				expect(buildUsageReport(db, { windowDays: 3650 }).totals.redactions).toBe(0);
+				expect((await buildUsageReport(sdb, { windowDays: 3650 })).totals.redactions).toBe(0);
 			} finally {
+				await sdb.close();
 				db.close();
 				try {
 					rmSync(dir, { recursive: true, force: true });
@@ -82,8 +88,8 @@ describe("schema migrations from every shipped version", () => {
 		});
 	}
 
-	test("a fresh database lands on the same version as a migrated one", () => {
-		const db = openDb(":memory:");
+	test("a fresh database lands on the same version as a migrated one", async () => {
+		const db = openDb(join(tmpdir(), `t-migrations.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
 		try {
 			expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(CURRENT_VERSION);
 			// A fresh ledger has the scope column the bootstrap never spells out in CREATE TABLE.

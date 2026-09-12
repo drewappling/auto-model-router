@@ -110,22 +110,23 @@ export interface ContextBridge {
 	 * content-addressed and shared, so nothing else reclaims them — without this
 	 * the table grows for the life of the install.
 	 */
-	pruneBlocks(maxAgeMs: number): number;
+	pruneBlocks(maxAgeMs: number): Promise<number>;
 	close(): void;
 }
 
 /** Content-addressed store of fetched blocks, so a restart keeps a warm prefix. */
+/** Asynchronous throughout: the store may be a shared database, not a file. */
 export interface ContextBlockStore {
-	get(version: string): ContextPin | null;
-	put(scope: string, pin: ContextPin): void;
+	get(version: string): Promise<ContextPin | null>;
+	put(scope: string, pin: ContextPin): Promise<void>;
 	/** agentdox session id previously opened for a conversation. */
-	sessionFor(conversationKey: string): string | null;
-	bindSession(conversationKey: string, scope: string, sessionId: string): void;
+	sessionFor(conversationKey: string): Promise<string | null>;
+	bindSession(conversationKey: string, scope: string, sessionId: string): Promise<void>;
 	/**
 	 * Drops blocks older than `maxAgeMs` that NO conversation still pins.
 	 * Returns the number removed. Referenced blocks are kept regardless of age:
 	 * deleting one would force a live conversation to refetch and re-inject
 	 * different bytes, turning housekeeping into a prompt-cache miss.
 	 */
-	prune(maxAgeMs: number): number;
+	prune(maxAgeMs: number): Promise<number>;
 }

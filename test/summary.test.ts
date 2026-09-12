@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
+import { migrateStore } from "../src/util/schema.ts";
+import type { AsyncLedger } from "../src/cost/types.ts";
 import { buildDailySummary, countTierChanges, createKv, DAILY_SUMMARY_INTERVAL_MS, markSummaryShown, renderDailySummary, summaryDue, summaryHasNews } from "../src/cost/summary.ts";
 import type { LedgerEntry } from "../src/cost/types.ts";
+import { openSqlDb, type SqlDb } from "../src/util/sql.ts";
 import { openDb } from "../src/util/sqlite.ts";
 import { fetchSummary } from "../omp-extension/report-logic.ts";
 
@@ -53,27 +59,30 @@ function entry(over: Partial<LedgerEntry>): LedgerEntry {
 	} as LedgerEntry;
 }
 
-function seeded() {
+async function seeded(): Promise<{ db: SqlDb; ledger: AsyncLedger }> {
 	const cfg = structuredClone(DEFAULT_CONFIG);
-	cfg.ledger.path = ":memory:";
-	const db = openDb(":memory:");
-	const ledger = createLedger(db, cfg);
-	return { db, ledger };
+	// A file, not `:memory:`: the summary reads the report through its own
+	// handle on the store, which an in-memory database cannot share.
+	const path = join(tmpdir(), `summary-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+	cfg.ledger.path = path;
+	const db = openSqlDb(path);
+	await migrateStore(db);
+	return { db, ledger: createSqlLedger(db, cfg, { findModel: () => null }) };
 }
 
 describe("buildDailySummary", () => {
-	test("compares the last 24h with the day before and names the top models and tier moves", () => {
-		const { db, ledger } = seeded();
+	test("compares the last 24h with the day before and names the top models and tier moves", async () => {
+		const { db, ledger } = await seeded();
 		try {
 			// Yesterday: one conversation climbing simple → hard, then dropping to moderate; a second model.
-			ledger.record(entry({ createdAtMs: NOW - 5 * HOUR, tier: "simple", turn: 1 }));
-			ledger.record(entry({ createdAtMs: NOW - 4 * HOUR, tier: "hard", turn: 2, slug: "vendor/big", servedSlug: "vendor/big", reportedUsd: 0.5 }));
-			ledger.record(entry({ createdAtMs: NOW - 3 * HOUR, tier: "moderate", turn: 3, escalationSignal: "empty_completion", wasted: true }));
-			ledger.record(entry({ createdAtMs: NOW - 3 * HOUR + 1, tier: "moderate", turn: 3, attempt: 1 }));
-			ledger.record(entry({ createdAtMs: NOW - 2 * HOUR, requestedModel: "digest", slug: "vendor/tiny", servedSlug: "vendor/tiny", conversationKey: "d", reportedUsd: 0.001 }));
+			await ledger.record(entry({ createdAtMs: NOW - 5 * HOUR, tier: "simple", turn: 1 }));
+			await ledger.record(entry({ createdAtMs: NOW - 4 * HOUR, tier: "hard", turn: 2, slug: "vendor/big", servedSlug: "vendor/big", reportedUsd: 0.5 }));
+			await ledger.record(entry({ createdAtMs: NOW - 3 * HOUR, tier: "moderate", turn: 3, escalationSignal: "empty_completion", wasted: true }));
+			await ledger.record(entry({ createdAtMs: NOW - 3 * HOUR + 1, tier: "moderate", turn: 3, attempt: 1 }));
+			await ledger.record(entry({ createdAtMs: NOW - 2 * HOUR, requestedModel: "digest", slug: "vendor/tiny", servedSlug: "vendor/tiny", conversationKey: "d", reportedUsd: 0.001 }));
 			// The day before: pricier.
-			for (let i = 0; i < 4; i++) ledger.record(entry({ createdAtMs: NOW - 30 * HOUR - i, conversationKey: "old", reportedUsd: 0.4 }));
-			const s = buildDailySummary(db, { nowMs: NOW, baselines: [{ slug: "anthropic/claude-opus-5", prompt: 15e-6, completion: 75e-6, cacheRead: 1.5e-6 }] });
+			for (let i = 0; i < 4; i++) await ledger.record(entry({ createdAtMs: NOW - 30 * HOUR - i, conversationKey: "old", reportedUsd: 0.4 }));
+			const s = await buildDailySummary(db, { nowMs: NOW, baselines: [{ slug: "anthropic/claude-opus-5", prompt: 15e-6, completion: 75e-6, cacheRead: 1.5e-6 }] });
 			expect(s.current.dispatches).toBe(5);
 			expect(s.current.spendUsd).toBeCloseTo(0.531, 6);
 			expect(s.current.escalations).toBe(1);
@@ -103,29 +112,29 @@ describe("buildDailySummary", () => {
 		}
 	});
 
-	test("an empty day renders as such and carries no news unless a model is spiking", () => {
-		const { db } = seeded();
+	test("an empty day renders as such and carries no news unless a model is spiking", async () => {
+		const { db } = await seeded();
 		try {
-			const s = buildDailySummary(db, { nowMs: NOW });
+			const s = await buildDailySummary(db, { nowMs: NOW });
 			expect(summaryHasNews(s)).toBe(false);
 			const text = renderDailySummary(s);
 			expect(text).toContain("no routed turns in the last 24h");
 			expect(text).toContain("soft failures: no model spiking in the last hour");
 			expect(text).not.toContain("ollama:");
 			expect(summaryHasNews({ ...s, spikes: [{ slug: "a/b", recentDispatches: 5, recentFailures: 3, recentRate: 0.6, baselineDispatches: 0, baselineFailures: 0, baselineRate: 0 }] })).toBe(true);
-			expect(countTierChanges(db, 0, "")).toEqual({ up: 0, down: 0 });
+			expect(await countTierChanges(db, 0, "")).toEqual({ up: 0, down: 0 });
 		} finally {
 			db.close();
 		}
 	});
 
-	test("harness scope narrows both windows", () => {
-		const { db, ledger } = seeded();
+	test("harness scope narrows both windows", async () => {
+		const { db, ledger } = await seeded();
 		try {
-			ledger.record(entry({ harnessId: "a" }));
-			ledger.record(entry({ harnessId: "b", reportedUsd: 5 }));
-			expect(buildDailySummary(db, { nowMs: NOW, harnessId: "a" }).current).toMatchObject({ dispatches: 1, spendUsd: 0.01 });
-			expect(buildDailySummary(db, { nowMs: NOW }).current.dispatches).toBe(2);
+			await ledger.record(entry({ harnessId: "a" }));
+			await ledger.record(entry({ harnessId: "b", reportedUsd: 5 }));
+			expect((await buildDailySummary(db, { nowMs: NOW, harnessId: "a" })).current).toMatchObject({ dispatches: 1, spendUsd: 0.01 });
+			expect((await buildDailySummary(db, { nowMs: NOW })).current.dispatches).toBe(2);
 		} finally {
 			db.close();
 		}
@@ -133,8 +142,10 @@ describe("buildDailySummary", () => {
 });
 
 describe("once-a-day gate", () => {
-	test("router_kv marks the summary shown per harness for 20h, surviving a reopen", () => {
-		const db = openDb(":memory:");
+	test("router_kv marks the summary shown per harness for 20h, surviving a reopen", async () => {
+		// `createKv` owns `router_kv` on a bun:sqlite handle — not the ledger's
+		// table, and not part of the shim port.
+		const db = openDb(join(tmpdir(), `t-summary.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
 		try {
 			const kv = createKv(db);
 			expect(summaryDue(kv, "", NOW)).toBe(true);

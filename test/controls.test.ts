@@ -1,15 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { migrateStore } from "../src/util/schema.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
 import { createFeedbackStore } from "../src/cost/feedback.ts";
-import { createLedger } from "../src/cost/ledger.ts";
+import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { EMPTY_USAGE, type LedgerEntry } from "../src/cost/types.ts";
 import { startServer, type StartedServer } from "../src/server/http.ts";
-import { resolveProfile } from "../src/router/index.ts";
+import { pinForRequestedModel, resolveProfile } from "../src/router/index.ts";
 import { ollamaRunway } from "../src/server/http.ts";
 import { createSessionOverrides, OVERRIDE_TTL_MS } from "../src/server/overrides.ts";
-import { openDb } from "../src/util/sqlite.ts";
 import { describeOverride, parseOverrideArgs, renderWhy, type WhyEntry } from "../omp-extension/report-logic.ts";
 
 /**
@@ -19,7 +22,7 @@ import { describeOverride, parseOverrideArgs, renderWhy, type WhyEntry } from ".
  */
 
 describe("session overrides", () => {
-	test("set, read, count down, clear, and expire", () => {
+	test("set, read, count down, clear, and expire", async () => {
 		const o = createSessionOverrides();
 		const now = Date.now();
 		expect(o.get("s1")).toBeNull();
@@ -44,7 +47,7 @@ describe("session overrides", () => {
 		expect(o.get("")).toBeNull();
 	});
 
-	test("clearing both fields reads as no override", () => {
+	test("clearing both fields reads as no override", async () => {
 		const o = createSessionOverrides();
 		o.set("s", { tier: "hard" });
 		o.set("s", { tier: null });
@@ -92,27 +95,29 @@ describe("feedback store", () => {
 		} as LedgerEntry;
 	}
 
-	test("records verdicts against the session's newest kept turn and counts them by model", () => {
-		const db = openDb(":memory:");
+	test("records verdicts against the session's newest kept turn and counts them by model", async () => {
+		const db = openSqlDb(join(tmpdir(), `t-controls.test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 		const cfg = structuredClone(DEFAULT_CONFIG);
 		cfg.ledger.path = ":memory:";
-		const ledger = createLedger(db, cfg);
+		const ledger = createSqlLedger(db, cfg, { findModel: () => null });
 		const fb = createFeedbackStore(db);
-		ledger.record(entry({ createdAtMs: 1_000, slug: "a/m", servedSlug: "a/m" }));
-		ledger.record(entry({ createdAtMs: 2_000, slug: "b/m", servedSlug: "b/m", wasted: true })); // a wasted probe is never "the turn"
-		ledger.record(entry({ createdAtMs: 3_000, slug: "c/m", servedSlug: "c/m" }));
-		ledger.record(entry({ createdAtMs: 4_000, ompSessionId: "omp-2", slug: "d/m", servedSlug: "d/m" }));
-		const latest = ledger.latestForSession!("omp-1")!;
-		expect(latest.servedSlug).toBe("c/m");
-		expect(ledger.entriesForSession!("omp-1", 10).map((e) => e.servedSlug)).toEqual(["c/m", "a/m"]);
-		expect(ledger.latestForSession!("")).toBeNull();
+		await ledger.record(entry({ createdAtMs: 1_000, slug: "a/m", servedSlug: "a/m" }));
+		await ledger.record(entry({ createdAtMs: 2_000, slug: "b/m", servedSlug: "b/m", wasted: true })); // a wasted probe is never "the turn"
+		await ledger.record(entry({ createdAtMs: 3_000, slug: "c/m", servedSlug: "c/m" }));
+		await ledger.record(entry({ createdAtMs: 4_000, ompSessionId: "omp-2", slug: "d/m", servedSlug: "d/m" }));
+		const latest = await ledger.latestForSession("omp-1");
+		expect(latest?.servedSlug).toBe("c/m");
+		expect((await ledger.entriesForSession("omp-1", 10)).map((e) => e.servedSlug)).toEqual(["c/m", "a/m"]);
+		expect(await ledger.latestForSession("")).toBeNull();
 
-		fb.record({ ledgerId: latest.id, ompSessionId: "omp-1", slug: "c/m", tier: "simple", verdict: "bad", note: "wrong file" }, 5_000);
-		fb.record({ ledgerId: latest.id, ompSessionId: "omp-1", slug: "c/m", tier: "simple", verdict: "good", note: "" }, 6_000);
-		expect(fb.forLedgerId(latest.id).map((f) => f.verdict)).toEqual(["good", "bad"]);
-		expect([...fb.countsBySlug(0).entries()]).toEqual([["c/m", { good: 1, bad: 1 }]]);
-		expect(fb.countsBySlug(5_500).get("c/m")).toEqual({ good: 1, bad: 0 });
-		db.close();
+		const ledgerId = latest?.id ?? "";
+		await fb.record({ ledgerId, ompSessionId: "omp-1", slug: "c/m", tier: "simple", verdict: "bad", note: "wrong file" }, 5_000);
+		await fb.record({ ledgerId, ompSessionId: "omp-1", slug: "c/m", tier: "simple", verdict: "good", note: "" }, 6_000);
+		expect((await fb.forLedgerId(ledgerId)).map((f) => f.verdict)).toEqual(["good", "bad"]);
+		expect([...(await fb.countsBySlug(0)).entries()]).toEqual([["c/m", { good: 1, bad: 1 }]]);
+		expect((await fb.countsBySlug(5_500)).get("c/m")).toEqual({ good: 1, bad: 0 });
+		await db.close();
 	});
 });
 
@@ -184,7 +189,7 @@ describe("/router why and override parsing", () => {
 		feedback: [{ verdict: "bad", note: "edited the wrong file", createdAtMs: 1_000_500 }],
 	};
 
-	test("renderWhy names the model, tier, confidence, cost, cache, trail and feedback", () => {
+	test("renderWhy names the model, tier, confidence, cost, cache, trail and feedback", async () => {
 		const text = renderWhy(entry, 1_060_000);
 		expect(text).toContain("turn 12 · 1m ago · ollama · ollama/glm-5.3-flash (asked z-ai/glm-5.3-flash) [moderate]");
 		expect(text).toContain("classified moderate by heuristic at 42% confidence · task coding");
@@ -194,7 +199,7 @@ describe("/router why and override parsing", () => {
 		expect(text).toContain("  - bad: edited the wrong file");
 	});
 
-	test("parseOverrideArgs handles pin, tier with turns, off, and errors", () => {
+	test("parseOverrideArgs handles pin, tier with turns, off, and errors", async () => {
 		expect(parseOverrideArgs("pin", "ollama/glm-5.3-flash")).toEqual({ kind: "pin", slug: "ollama/glm-5.3-flash" });
 		expect(parseOverrideArgs("pin", "off")).toEqual({ kind: "pin", slug: null });
 		expect(parseOverrideArgs("pin", "")).toEqual({ kind: "show" });
@@ -205,7 +210,7 @@ describe("/router why and override parsing", () => {
 		expect(parseOverrideArgs("tier", "hard x").kind).toBe("error");
 	});
 
-	test("describeOverride summarises what is in force", () => {
+	test("describeOverride summarises what is in force", async () => {
 		expect(describeOverride(null)).toBe("no override on this session");
 		expect(describeOverride({ slug: "a/b", tier: "hard", turnsLeft: 1 })).toBe("pinned to a/b, tier forced to hard · 1 turn left");
 		expect(describeOverride({ slug: null, tier: "simple", turnsLeft: 0 })).toBe("tier forced to simple · until cleared");
@@ -213,7 +218,7 @@ describe("/router why and override parsing", () => {
 });
 
 describe("ollamaRunway", () => {
-	test("days of credits left at the calibrated weekly burn", () => {
+	test("days of credits left at the calibrated weekly burn", async () => {
 		const r = ollamaRunway({ usedUsd: 6.3, creditsUsd: 60 }, 7, 1.25)!;
 		expect(r.dailyBurnUsd).toBeCloseTo(1.25, 6);
 		expect(r.creditsLeftUsd).toBeCloseTo(53.7, 6);
@@ -224,7 +229,7 @@ describe("ollamaRunway", () => {
 });
 
 describe("subagent profile", () => {
-	test("a subagent asking for the default profile is routed under server.subagentProfile; explicit profiles are honoured", () => {
+	test("a subagent asking for the default profile is routed under server.subagentProfile; explicit profiles are honoured", async () => {
 		const cfg = structuredClone(DEFAULT_CONFIG);
 		expect(resolveProfile(cfg, "auto", true).id).toBe("auto-sub");
 		expect(resolveProfile(cfg, "auto", false).id).toBe("auto");
@@ -234,6 +239,28 @@ describe("subagent profile", () => {
 		expect(resolveProfile(cfg, "auto", true).id).toBe("auto");
 		cfg.server.subagentProfile = "nope";
 		expect(resolveProfile(cfg, "auto", true).id).toBe("auto");
+	});
+});
+
+describe("requested model", () => {
+	test("a catalog slug pins, a profile does not, and an unknown name is refused rather than substituted", async () => {
+		const cfg = structuredClone(DEFAULT_CONFIG);
+		const slugs = ["deepseek/deepseek-v4.1-flash", "ollama/deepseek-v4.1-flash"];
+		// A profile id routes normally: nothing is pinned.
+		expect(pinForRequestedModel(cfg, slugs, "auto", "auto")).toBeUndefined();
+		expect(pinForRequestedModel(cfg, slugs, "auto-cheap", "auto-model-router/auto-cheap")).toBeUndefined();
+		// A real slug is honoured as a pin, and the vendor prefix decides which
+		// one: the stripped name alone is ambiguous between these two.
+		expect(pinForRequestedModel(cfg, slugs, "deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash")).toBe(
+			"deepseek/deepseek-v4.1-flash",
+		);
+		expect(pinForRequestedModel(cfg, slugs, "deepseek-v4.1-flash", "ollama/deepseek-v4.1-flash")).toBe(
+			"ollama/deepseek-v4.1-flash",
+		);
+		// Neither a profile nor a slug: refused. Silently routing `auto` here is
+		// what billed a caller for glm-5.3-flash after it asked for v4.1-flash.
+		expect(() => pinForRequestedModel(cfg, slugs, "deepseek-v4.1-flash", "deepseek-v4.1-flash")).toThrow();
+		expect(() => pinForRequestedModel(cfg, slugs, "nope", "vendor/nope")).toThrow();
 	});
 });
 

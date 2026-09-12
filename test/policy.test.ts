@@ -12,7 +12,7 @@ import { parseChatRequest, parsePolicyHeader } from "../src/wire/openai/request.
  */
 
 describe("parsePolicyHeader", () => {
-	test("accepts the documented fields, drops junk, and never rejects a turn", () => {
+	test("accepts the documented fields, drops junk, and never rejects a turn", async () => {
 		expect(parsePolicyHeader(null)).toBeUndefined();
 		expect(parsePolicyHeader("not json")).toBeUndefined();
 		expect(parsePolicyHeader("[]")).toBeUndefined();
@@ -28,7 +28,7 @@ describe("applyRequestPolicy", () => {
 	const cfg = DEFAULT_CONFIG;
 	const profile = resolveProfile(cfg, "auto");
 
-	test("narrows the tier envelope, never widens it", () => {
+	test("narrows the tier envelope, never widens it", async () => {
 		const r = applyRequestPolicy(profile, cfg, { maxTier: "moderate", minTier: "trivial" }, undefined);
 		expect(r.profile.maxTier).toBe("moderate");
 		expect(r.profile.minTier).toBe(profile.minTier);
@@ -41,7 +41,7 @@ describe("applyRequestPolicy", () => {
 		expect(up.profile.maxTier).toBe(cheap.maxTier);
 	});
 
-	test("allow replaces, deny adds, and a pin forces unless a session override already did", () => {
+	test("allow replaces, deny adds, and a pin forces unless a session override already did", async () => {
 		const base = { ...cfg, filters: { ...cfg.filters, allow: ["x/*"], deny: ["bad/*"] } };
 		const r = applyRequestPolicy(profile, base, { allow: ["anthropic/*"], deny: ["openai/*"], pin: "anthropic/claude-sonnet-5" }, undefined);
 		expect(r.cfg.filters.allow).toEqual(["anthropic/*"]);

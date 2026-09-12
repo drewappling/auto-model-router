@@ -104,7 +104,7 @@ function scriptedUpstream(behaviour: () => Promise<CompletionResult>): UpstreamC
 
 const tierIdx = (t: Tier): number => TIER_ORDER.indexOf(t);
 describe("scoreHeuristic", () => {
-	test("a mechanical tool-result continuation scores cheaper than a fresh architecture question", () => {
+	test("a mechanical tool-result continuation scores cheaper than a fresh architecture question", async () => {
 		// The single most valuable signal in agent traffic: most turns are
 		// post-tool-result continuations, and they do not need a frontier model.
 		const continuation = scoreHeuristic(
@@ -135,7 +135,7 @@ describe("scoreHeuristic", () => {
 		expect(tierIdx(continuation.tier)).toBeLessThan(tierIdx(architecture.tier));
 	});
 
-	test("a failing tool result raises the tier above a clean one", () => {
+	test("a failing tool result raises the tier above a clean one", async () => {
 		const clean = scoreHeuristic(
 			featuresFor([
 				SYSTEM,
@@ -165,7 +165,7 @@ describe("scoreHeuristic", () => {
 		expect(failed.score).toBeGreaterThan(clean.score);
 	});
 
-	test("a requested high reasoning effort raises the score", () => {
+	test("a requested high reasoning effort raises the score", async () => {
 		const plain = scoreHeuristic(featuresFor([SYSTEM, { role: "user", content: "tidy this up" }]), BASE);
 		const thinking = scoreHeuristic(
 			extractFeatures(
@@ -180,7 +180,7 @@ describe("scoreHeuristic", () => {
 		expect(thinking.score).toBeGreaterThan(plain.score);
 	});
 
-	test("the reasoning weight is configurable, so a session-wide level can be discounted", () => {
+	test("the reasoning weight is configurable, so a session-wide level can be discounted", async () => {
 		// A harness that pins one reasoning level for a whole session turns this
 		// "signal" into a constant that lifts every turn's score. Measured live:
 		// the level never changed within 111 of 115 conversations, and 64 of 119
@@ -205,11 +205,11 @@ describe("scoreHeuristic", () => {
 		expect(discounted.reasons.some((r) => /requested reasoning/.test(r))).toBe(false);
 	});
 
-	test("ships with the historical weights, so enabling a discount is opt-in", () => {
+	test("ships with the historical weights, so enabling a discount is opt-in", async () => {
 		expect(DEFAULT_CONFIG.classifier.reasoningWeights).toEqual({ medium: 0.14, high: 0.24, xhigh: 0.3, max: 0.34 });
 	});
 
-	test("always produces a bounded score, a real tier, and its reasoning", () => {
+	test("always produces a bounded score, a real tier, and its reasoning", async () => {
 		const c = scoreHeuristic(featuresFor([SYSTEM, { role: "user", content: "hello" }]), BASE);
 		expect(c.score).toBeGreaterThanOrEqual(0);
 		expect(c.score).toBeLessThanOrEqual(1);
@@ -220,12 +220,12 @@ describe("scoreHeuristic", () => {
 		expect(c.confidence).toBeLessThanOrEqual(1);
 	});
 
-	test("a shallow tool-result continuation stays trivial", () => {
+	test("a shallow tool-result continuation stays trivial", async () => {
 		const shallow = scoreHeuristic(contFeatures(2), BASE);
 		expect(shallow.tier).toBe("trivial");
 	});
 
-	test("a sustained autonomous loop climbs out of trivial", () => {
+	test("a sustained autonomous loop climbs out of trivial", async () => {
 		// The failure mode this fixes: a long coding loop pinned to the cheapest
 		// tier for dozens of turns because agentic complexity never accumulated.
 		const shallow = scoreHeuristic(contFeatures(2), BASE);
@@ -234,7 +234,7 @@ describe("scoreHeuristic", () => {
 		expect(deep.tier).not.toBe("trivial");
 	});
 
-	test("score increases monotonically with loop depth past the agentic threshold", () => {
+	test("score increases monotonically with loop depth past the agentic threshold", async () => {
 		const depths = [4, 6, 8, 10, 15, 20, 30];
 		let prev = -1;
 		for (const d of depths) {
@@ -244,7 +244,7 @@ describe("scoreHeuristic", () => {
 		}
 	});
 
-	test("pure loop depth never reaches hard on its own, however runaway", () => {
+	test("pure loop depth never reaches hard on its own, however runaway", async () => {
 		// A sustained-but-not-runaway loop tops out in moderate: the calibrated
 		// ramp ceiling for ordinary deep work.
 		const midRange = scoreHeuristic(contFeatures(30), BASE);
@@ -264,7 +264,7 @@ describe("scoreHeuristic", () => {
 		expect(scoreHeuristic(contFeatures(400), BASE).tier).toBe("moderate");
 	});
 
-	test("a circular tool call on a FRESH turn escalates to hard", () => {
+	test("a circular tool call on a FRESH turn escalates to hard", async () => {
 		// Off a continuation the stuck signal keeps full weight: the user is
 		// watching a live loop and a pricier model may actually break it.
 		const deepCircular = scoreHeuristic(
@@ -274,7 +274,7 @@ describe("scoreHeuristic", () => {
 		expect(deepCircular.tier).toBe("hard");
 	});
 
-	test("a circular tool call on a mechanical continuation is damped, not hard", () => {
+	test("a circular tool call on a mechanical continuation is damped, not hard", async () => {
 		// Measured: hard escalations on circular calls never shortened the loop
 		// (chain means identical, 5.74 turns, hard vs moderate). 22 of 27 such
 		// hard turns were mechanical continuations paying up to 6x for nothing.
@@ -285,7 +285,7 @@ describe("scoreHeuristic", () => {
 		expect(retry.score - plain.score).toBeCloseTo(BASE.classifier.mechanicalRetryFactor * 0.24, 5);
 	});
 
-	test("a failing tool result on a deep loop is at least simple", () => {
+	test("a failing tool result on a deep loop is at least simple", async () => {
 		// Was 'at least moderate' before the mechanical-retry damp: the flat
 		// +0.26 pushed deep mechanical retry loops into hard. A damped retry
 		// still clears trivial.
@@ -293,7 +293,7 @@ describe("scoreHeuristic", () => {
 		expect(tierIdx(deepAndFailing.tier)).toBeGreaterThanOrEqual(tierIdx("simple"));
 	});
 
-	test("a failed-tool retry on a mechanical continuation is damped, not hard", () => {
+	test("a failed-tool retry on a mechanical continuation is damped, not hard", async () => {
 		// A retry after a failed tool call is the most mechanical turn there is;
 		// the flat +0.26 let automated retry loops buy the hard tier ($7.02 of one
 		// measured day vs $0.19 for the same rows as moderate picks). The
@@ -313,14 +313,14 @@ describe("scoreHeuristic", () => {
 });
 
 describe("pickQualityAxis", () => {
-	test("tools imply the coding axis, plain chat the chat axis", () => {
+	test("tools imply the coding axis, plain chat the chat axis", async () => {
 		expect(pickQualityAxis(featuresFor([SYSTEM, { role: "user", content: "fix it" }]), BASE)).toBe(BASE.classifier.toolAxis);
 		expect(pickQualityAxis(featuresFor([SYSTEM, { role: "user", content: "hello" }], []), BASE)).toBe(
 			BASE.classifier.chatAxis,
 		);
 	});
 
-	test("a deep tool loop switches to the agentic axis", () => {
+	test("a deep tool loop switches to the agentic axis", async () => {
 		const deep = featuresFor([
 			SYSTEM,
 			{ role: "user", content: "go" },
@@ -395,12 +395,12 @@ describe("classify", () => {
 });
 
 describe("classifyTask", () => {
-	test("image input is a vision task", () => {
+	test("image input is a vision task", async () => {
 		const f = featuresFor([SYSTEM, { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,xxx" } }] }], []);
 		expect(classifyTask(f)).toBe("vision");
 	});
 
-	test("a stale image on a tool continuation is coding, not vision", () => {
+	test("a stale image on a tool continuation is coding, not vision", async () => {
 		const f = featuresFor(
 			[
 				SYSTEM,
@@ -421,7 +421,7 @@ describe("classifyTask", () => {
 		expect(classifyTask(f)).toBe("coding");
 	});
 
-	test("a freshly supplied image mid-loop is vision", () => {
+	test("a freshly supplied image mid-loop is vision", async () => {
 		const f = featuresFor(
 			[
 				SYSTEM,
@@ -442,26 +442,26 @@ describe("classifyTask", () => {
 		expect(classifyTask(f)).toBe("vision");
 	});
 
-	test("code blocks and diffs are coding tasks", () => {
+	test("code blocks and diffs are coding tasks", async () => {
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "```ts\nconst x = 1;\n```" }], []))).toBe("coding");
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new" }], []))).toBe("coding");
 	});
 
-	test("tools offered is a coding task", () => {
+	test("tools offered is a coding task", async () => {
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "read the file" }], TOOLS))).toBe("coding");
 	});
 
-	test("bare chat with no tools or code is a chat task", () => {
+	test("bare chat with no tools or code is a chat task", async () => {
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "hello, how are you?" }], []))).toBe("chat");
 	});
 
-	test("design/architecture prose is a documentation task", () => {
+	test("design/architecture prose is a documentation task", async () => {
 		expect(classifyTask(featuresFor([SYSTEM, { role: "user", content: "explain the architecture of the system" }], []))).toBe("documentation");
 	});
 });
 
 describe("classifier.readOnlyToolWeight", () => {
-	test("subtracts only when enabled and the tail is a read-only loop", () => {
+	test("subtracts only when enabled and the tail is a read-only loop", async () => {
 		const base = { ...featuresFor([{ role: "user", content: "look" }]), isToolResultContinuation: true, readOnlyToolTail: true };
 		const off = scoreHeuristic(base, DEFAULT_CONFIG);
 		const cfg = structuredClone(DEFAULT_CONFIG);

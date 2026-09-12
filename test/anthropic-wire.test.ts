@@ -42,7 +42,7 @@ const CLAUDE_CODE_BODY = {
 };
 
 describe("messagesToChatBody", () => {
-	test("translates a Claude Code turn: system blocks, tool_use/tool_result, custom tools only, tool_choice, thinking budget", () => {
+	test("translates a Claude Code turn: system blocks, tool_use/tool_result, custom tools only, tool_choice, thinking budget", async () => {
 		const b = messagesToChatBody(CLAUDE_CODE_BODY);
 		expect(b.model).toBe("auto");
 		const messages = b.messages as { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string }[];
@@ -63,7 +63,7 @@ describe("messagesToChatBody", () => {
 		for (const k of ["system", "metadata", "thinking", "tool_choice_anthropic", "cache_control"]) expect(k in b && k !== "tool_choice").toBe(false);
 	});
 
-	test("string bodies, images, documents, error tool results, tool_choice variants, stop sequences, effort", () => {
+	test("string bodies, images, documents, error tool results, tool_choice variants, stop sequences, effort", async () => {
 		const b = messagesToChatBody({
 			model: "auto-max",
 			system: "sys",
@@ -97,7 +97,7 @@ describe("messagesToChatBody", () => {
 		expect(messagesToChatBody({ model: "m", messages: [{ role: "user", content: "x" }], thinking: { type: "adaptive" } }).reasoning).toEqual({ effort: "medium" });
 	});
 
-	test("rejects what cannot be a turn", () => {
+	test("rejects what cannot be a turn", async () => {
 		expect(() => messagesToChatBody("nope")).toThrow("JSON object");
 		expect(() => messagesToChatBody({ model: "", messages: [{ role: "user", content: "x" }] })).toThrow("model");
 		expect(() => messagesToChatBody({ model: "m", messages: [] })).toThrow("messages");
@@ -105,7 +105,7 @@ describe("messagesToChatBody", () => {
 		expect(() => messagesToChatBody({ model: "m", messages: [{ role: "user", content: 5 }] })).toThrow("content");
 	});
 
-	test("model names map by glob, first match wins, profile ids pass through", () => {
+	test("model names map by glob, first match wins, profile ids pass through", async () => {
 		expect(mapAnthropicModel("claude-haiku-4-5-20251001")).toBe("auto-cheap");
 		expect(mapAnthropicModel("claude-opus-4-8")).toBe("auto");
 		expect(mapAnthropicModel("auto-sub")).toBe("auto-sub");
@@ -115,7 +115,7 @@ describe("messagesToChatBody", () => {
 });
 
 describe("parseMessagesRequest", () => {
-	test("derives the harness from the user agent and the session from metadata; explicit headers win; the rendered body is chat-shaped", () => {
+	test("derives the harness from the user agent and the session from metadata; explicit headers win; the rendered body is chat-shaped", async () => {
 		const headers = new Headers({ "user-agent": "claude-cli/2.1.263 (external, cli)", "x-api-key": "k", "anthropic-version": "2023-06-01" });
 		const norm = parseMessagesRequest(CLAUDE_CODE_BODY, headers);
 		expect(norm.protocol).toBe("anthropic-messages");
@@ -138,7 +138,7 @@ describe("parseMessagesRequest", () => {
 		expect(anthropicIdentityHeaders({}, new Headers({ "user-agent": "python-requests" })).get("x-omp-harness")).toBe("anthropic");
 	});
 
-	test("the agentdox scope and layer headers reach the request on the Anthropic path too", () => {
+	test("the agentdox scope and layer headers reach the request on the Anthropic path too", async () => {
 		const plain = parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "user-agent": "claude-cli/2.1.263" }));
 		expect(plain.agentdoxScope).toBe("");
 		expect(plain.agentdoxGroup).toBe("");
@@ -154,13 +154,13 @@ describe("parseMessagesRequest", () => {
 		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-group": "Not A Slug" })).agentdoxGroup).toBe("");
 	});
 
-	test("the origin fingerprint reaches the request on the Anthropic path too", () => {
+	test("the origin fingerprint reaches the request on the Anthropic path too", async () => {
 		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "user-agent": "claude-cli/2.1.263" })).agentdoxOrigin).toBe("");
 		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-origin": "github.com/drewappling/omp-router" })).agentdoxOrigin).toBe("github.com/drewappling/omp-router");
 		expect(parseMessagesRequest(CLAUDE_CODE_BODY, new Headers({ "x-agentdox-origin": "https://github.com/a/b" })).agentdoxOrigin).toBe("");
 	});
 
-	test("a request captured from Claude Code 2.1: system inside messages, JSON user_id, adaptive thinking with effort, 23 custom tools", () => {
+	test("a request captured from Claude Code 2.1: system inside messages, JSON user_id, adaptive thinking with effort, 23 custom tools", async () => {
 		const fixture = JSON.parse(readFileSync("test/fixtures/harness/claude-code.json", "utf8")) as { headers: Record<string, string>; body: Record<string, unknown> };
 		const norm = parseMessagesRequest(fixture.body, new Headers(fixture.headers));
 		expect(norm.harnessId).toBe("claude-code");
@@ -179,7 +179,7 @@ describe("parseMessagesRequest", () => {
 		expect(sessionFromUserId("nothing here")).toBeNull();
 	});
 
-	test("count_tokens estimates from the prompt bytes", () => {
+	test("count_tokens estimates from the prompt bytes", async () => {
 		expect(countAnthropicTokens(CLAUDE_CODE_BODY, DEFAULT_CONFIG.anthropic.models, null)).toBeGreaterThan(50);
 		expect(() => countAnthropicTokens({ model: "m", messages: [] }, {}, null)).toThrow("messages");
 	});

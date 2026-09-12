@@ -21,7 +21,7 @@
 import type { CatalogModel, CatalogSource } from "../catalog/types.ts";
 import type { DigestConfig, RouterConfig } from "../config/types.ts";
 import { computeCost, forecast } from "../cost/forecast.ts";
-import type { Ledger, LedgerEntry } from "../cost/types.ts";
+import type { AsyncLedger, LedgerEntry } from "../cost/types.ts";
 import { buildCandidates } from "../router/candidates.ts";
 import { primaryArg } from "../router/compaction.ts";
 import { extractFeatures } from "../router/features.ts";
@@ -57,7 +57,7 @@ export type DigestResult =
 export interface DigesterDeps {
 	cfg: RouterConfig;
 	catalog: CatalogSource;
-	ledger: Ledger;
+	ledger: AsyncLedger;
 	upstream: UpstreamClient;
 	log: Logger;
 }
@@ -144,7 +144,7 @@ export interface Digester {
 	 * back for the full output; that digest's ledger row is marked wasted and
 	 * the report shows the re-run rate. Returns how many were marked.
 	 */
-	noteToolCalls(ompSessionId: string, calls: readonly { name: string; argsJson: string }[], nowMs?: number): number;
+	noteToolCalls(ompSessionId: string, calls: readonly { name: string; argsJson: string }[], nowMs?: number): Promise<number>;
 }
 
 export function createDigester(deps: DigesterDeps): Digester {
@@ -163,7 +163,6 @@ export function createDigester(deps: DigesterDeps): Digester {
 				tier: cfg.digest.tier,
 				task: "documentation",
 				snapshot,
-				ledger,
 				cfg,
 				expectedCompletionTokens: cfg.digest.maxOutputTokens,
 				warmSlug: null,
@@ -179,14 +178,14 @@ export function createDigester(deps: DigesterDeps): Digester {
 		async digest(req) {
 			const inputBytes = Buffer.byteLength(req.content);
 			const source = req.source ?? "tool_result";
-			const currentTier = req.tier ?? ledger.latestForSession?.(req.ompSessionId)?.tier ?? null;
+			const currentTier = req.tier ?? (await ledger.latestForSession(req.ompSessionId))?.tier ?? null;
 			const gate = source === "compaction" ? { ...cfg.digest, enabled: cfg.compaction.digestToolResults } : cfg.digest;
 			const applies = digestApplies(gate, req.toolName, inputBytes, false, currentTier);
 			if (!applies.ok) return { digested: false, reason: applies.reason };
 
 			const promptText = `Task: ${req.query === "" ? "(unknown)" : req.query}\nTool: ${req.toolName} ${JSON.stringify(req.input)}\n--- output ---\n${req.content}`;
 			const synthetic = syntheticRequest(req, promptText);
-			const promptTokens = estimateTokens(synthetic.promptBytes, "unknown", ledger);
+			const promptTokens = estimateTokens(synthetic.promptBytes, "unknown", null);
 			const model = await pickModel(synthetic, promptTokens);
 			if (model === null) return { digested: false, reason: "no digest model available" };
 			const est = forecast(model, { promptTokens, completionTokens: cfg.digest.maxOutputTokens, cacheHitRate: 0, images: 0 });
@@ -222,7 +221,7 @@ export function createDigester(deps: DigesterDeps): Digester {
 				clearTimeout(timer);
 			}
 			const ms = Date.now() - startedAt;
-			const completionTokens = estimateTokens(Buffer.byteLength(text), model.tokenizer, ledger);
+			const completionTokens = estimateTokens(Buffer.byteLength(text), model.tokenizer, null);
 			const usage = { promptTokens, cachedTokens: 0, cacheWriteTokens: 0, completionTokens, reasoningTokens: 0, images: 0 };
 			const usd = costUsd ?? computeCost(model, usage).total;
 
@@ -264,7 +263,7 @@ export function createDigester(deps: DigesterDeps): Digester {
 				priceModel: model,
 			};
 			try {
-				ledger.record(entry);
+				await ledger.record(entry);
 			} catch (err) {
 				log.debug("digest ledger record failed", { error: err instanceof Error ? err.message : String(err) });
 			}
@@ -285,7 +284,7 @@ export function createDigester(deps: DigesterDeps): Digester {
 				ms,
 			};
 		},
-		noteToolCalls(ompSessionId, calls, nowMs = Date.now()) {
+		async noteToolCalls(ompSessionId, calls, nowMs = Date.now()) {
 			const list = recent.get(ompSessionId);
 			if (list === undefined || list.length === 0) return 0;
 			let marked = 0;
@@ -303,7 +302,7 @@ export function createDigester(deps: DigesterDeps): Digester {
 					d.rerun = true;
 					marked++;
 					try {
-						ledger.markWasted?.(d.ledgerId);
+						await ledger.markWasted(d.ledgerId);
 					} catch (err) {
 						log.debug("digest re-run mark failed", { error: err instanceof Error ? err.message : String(err) });
 					}

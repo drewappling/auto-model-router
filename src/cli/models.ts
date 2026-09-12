@@ -7,21 +7,19 @@
  * command's whole value is that it cannot lie about what would be chosen.
  */
 
-import { existsSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 
 import { createProviders } from "../server/providers.ts";
 import { effectiveQualityFloor, tierPlanFor } from "../router/tier-plan.ts";
 import { loadConfig } from "../config/load.ts";
 import type { QualityAxis, RouterConfig } from "../config/types.ts";
-import { createLedger } from "../cost/ledger.ts";
-import type { Ledger } from "../cost/types.ts";
 import { buildCandidates } from "../router/candidates.ts";
 import { classifyTask } from "../router/classify.ts";
 import { extractFeatures } from "../router/features.ts";
 import { TIER_ORDER, type Candidate, type Rejection, type Tier } from "../router/types.ts";
 import { estimatePromptTokens } from "../tokens/estimate.ts";
 import { openDb } from "../util/sqlite.ts";
+import { openSqlDb } from "../util/sql.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
 import { configOpts, flagInt, flagString, type CliArgs } from "./args.ts";
 
@@ -153,13 +151,18 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 
 	// Reuse the on-disk catalog cache when present so a survey costs no network.
 	const db: Database = openDb(cfg.ledger.path);
-	const ledger: Ledger | null = existsSync(cfg.ledger.path) ? createLedger(db, cfg) : null;
+	// The engine-agnostic handle exists only to satisfy the providers' calibration
+	// store; a survey reads the catalog and nothing else.
+	const sqlDb = openSqlDb(cfg.ledger.path);
+	// A measured token ratio would change the estimate by a few percent and cost a
+	// read per survey; the family default is what a cold router uses anyway.
+	const ledgerRatio = null;
 	try {
-		const { catalog } = createProviders(cfg, db);
+		const { catalog } = createProviders(cfg, db, sqlDb);
 		const snapshot = await catalog.get();
 
 		const req = syntheticRequest();
-		const promptTokens = estimatePromptTokens(req, "gpt", ledger);
+		const promptTokens = estimatePromptTokens(req, "gpt", ledgerRatio);
 		const features = extractFeatures(req, promptTokens);
 
 		const reports: TierReport[] = tiers.map((tier) => {
@@ -172,7 +175,6 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 				tier,
 				task,
 				snapshot,
-				ledger,
 				cfg,
 				expectedCompletionTokens: EXPECTED_COMPLETION_TOKENS,
 				warmSlug: null,
@@ -233,6 +235,7 @@ export async function modelsCommand(args: CliArgs): Promise<void> {
 		console.log(`survey request: ${promptTokens} estimated prompt tokens, ${req.tools.length} tools offered`);
 		for (const report of reports) renderTier(report, limit);
 	} finally {
+		await sqlDb.close();
 		db.close();
 	}
 }

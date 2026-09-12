@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 
 import { joinBenchmarks, normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import type { CatalogModel, CatalogSnapshot } from "../src/catalog/types.ts";
-import type { Ledger } from "../src/cost/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { buildCandidates } from "../src/router/candidates.ts";
 import { extractFeatures } from "../src/router/features.ts";
@@ -48,7 +47,7 @@ function snapshot(list: CatalogModel[]): CatalogSnapshot {
 }
 
 describe("joinBenchmarks", () => {
-	test("copies benchmarks onto key-scoped records matched by id", () => {
+	test("copies benchmarks onto key-scoped records matched by id", async () => {
 		const keyScoped = [{ id: "a/one" }, { id: "b/two" }];
 		const pub = [
 			{ id: "a/one", benchmarks: { artificial_analysis: { coding_index: 70 } } },
@@ -59,13 +58,13 @@ describe("joinBenchmarks", () => {
 		expect(keyScoped[1]).not.toHaveProperty("benchmarks");
 	});
 
-	test("falls back to canonical_slug", () => {
+	test("falls back to canonical_slug", async () => {
 		const keyScoped = [{ id: "vendor/model-preview", canonical_slug: "vendor/model" }];
 		const pub = [{ id: "vendor/model", benchmarks: { artificial_analysis: { coding_index: 55 } } }];
 		expect(joinBenchmarks(keyScoped, pub)).toBe(1);
 	});
 
-	test("strips a leading ~ from an alias id", () => {
+	test("strips a leading ~ from an alias id", async () => {
 		const keyScoped = [{ id: "~vendor/model-latest" }];
 		const pub = [{ id: "vendor/model-latest", benchmarks: { artificial_analysis: { coding_index: 60 } } }];
 		expect(joinBenchmarks(keyScoped, pub)).toBe(1);
@@ -77,14 +76,14 @@ describe("joinBenchmarks", () => {
 		return rec.benchmarks?.artificial_analysis?.coding_index;
 	}
 
-	test("never overwrites benchmarks that are already present", () => {
+	test("never overwrites benchmarks that are already present", async () => {
 		const keyScoped: unknown[] = [{ id: "a/one", benchmarks: { artificial_analysis: { coding_index: 1 } } }];
 		const pub: unknown[] = [{ id: "a/one", benchmarks: { artificial_analysis: { coding_index: 99 } } }];
 		expect(joinBenchmarks(keyScoped, pub)).toBe(0);
 		expect(codingOf(keyScoped[0])).toBe(1);
 	});
 
-	test("a real id beats an alias target for the same key", () => {
+	test("a real id beats an alias target for the same key", async () => {
 		const keyScoped: unknown[] = [{ id: "vendor/model" }];
 		const pub: unknown[] = [
 			{ id: "other/model", canonical_slug: "vendor/model", benchmarks: { artificial_analysis: { coding_index: 10 } } },
@@ -94,11 +93,11 @@ describe("joinBenchmarks", () => {
 		expect(codingOf(keyScoped[0])).toBe(80);
 	});
 
-	test("tolerates junk records on both sides", () => {
+	test("tolerates junk records on both sides", async () => {
 		expect(joinBenchmarks([null, 7, "x"], [null, { id: "a" }])).toBe(0);
 	});
 
-	test("normalizing a joined record yields a scored model", () => {
+	test("normalizing a joined record yields a scored model", async () => {
 		const keyScoped: unknown[] = [raw("a/one", null, 1)];
 		joinBenchmarks(keyScoped, [raw("a/one", 66, 1)]);
 		const model = normalizeCatalogModel(keyScoped[0]);
@@ -107,7 +106,7 @@ describe("joinBenchmarks", () => {
 });
 
 describe("computeTierPlan", () => {
-	test("bands ascend across tiers", () => {
+	test("bands ascend across tiers", async () => {
 		const plan = computeTierPlan(
 			models([
 				["a/1", 10, 0.1],
@@ -124,7 +123,7 @@ describe("computeTierPlan", () => {
 		expect(f.hard).toBe(70);
 	});
 
-	test("an all-unscored catalog yields zero floors, never an imputed score", () => {
+	test("an all-unscored catalog yields zero floors, never an imputed score", async () => {
 		const plan = computeTierPlan(
 			models([
 				["a/1", null, 0.1],
@@ -136,7 +135,7 @@ describe("computeTierPlan", () => {
 		expect(plan.scoredCount.coding).toBe(0);
 	});
 
-	test("every tier floor is met by at least one available model", () => {
+	test("every tier floor is met by at least one available model", async () => {
 		const list = models([
 			["a/1", 12, 0.1],
 			["a/2", 44, 0.2],
@@ -151,7 +150,7 @@ describe("computeTierPlan", () => {
 		}
 	});
 
-	test("excludes built-in denials from the ranking", () => {
+	test("excludes built-in denials from the ranking", async () => {
 		// The batch entry is cheap and scored, but selection can never pick it,
 		// so it must not drag the bands down.
 		const plan = computeTierPlan(
@@ -166,12 +165,12 @@ describe("computeTierPlan", () => {
 		expect(plan.floors.coding.trivial).toBe(70);
 	});
 
-	test("a single scored model puts that model in every tier", () => {
+	test("a single scored model puts that model in every tier", async () => {
 		const plan = computeTierPlan(models([["a/1", 42, 0.1]]), BASE);
 		for (const tier of TIER_ORDER) expect(plan.floors.coding[tier]).toBe(42);
 	});
 
-	test("scores each axis independently", () => {
+	test("scores each axis independently", async () => {
 		const plan = computeTierPlan(models([["a/1", 30, 0.1]]), BASE);
 		expect(plan.scoredCount.coding).toBe(1);
 		expect(plan.scoredCount.agentic).toBe(1);
@@ -190,26 +189,26 @@ describe("effectiveQualityFloor", () => {
 		BASE,
 	);
 
-	test("relaxes a floor the catalog cannot meet", () => {
+	test("relaxes a floor the catalog cannot meet", async () => {
 		expect(effectiveQualityFloor(95, "hard", "coding", plan)).toBe(80);
 	});
 
-	test("never tightens a floor the catalog exceeds", () => {
+	test("never tightens a floor the catalog exceeds", async () => {
 		expect(effectiveQualityFloor(10, "hard", "coding", plan)).toBe(10);
 	});
 
-	test("is a no-op when configured equals adaptive", () => {
+	test("is a no-op when configured equals adaptive", async () => {
 		expect(effectiveQualityFloor(80, "hard", "coding", plan)).toBe(80);
 	});
 });
 
 describe("tierPlanFor", () => {
-	test("memoizes per snapshot object", () => {
+	test("memoizes per snapshot object", async () => {
 		const snap = snapshot(models([["a/1", 50, 0.1]]));
 		expect(tierPlanFor(snap, BASE)).toBe(tierPlanFor(snap, BASE));
 	});
 
-	test("a new snapshot recomputes, so a refresh tracks availability", () => {
+	test("a new snapshot recomputes, so a refresh tracks availability", async () => {
 		const first = snapshot(models([["a/1", 50, 0.1]]));
 		const second = snapshot(models([["a/1", 50, 0.1], ["a/2", 90, 0.1]]));
 		expect(tierPlanFor(second, BASE)).not.toBe(tierPlanFor(first, BASE));
@@ -245,26 +244,25 @@ describe("adaptive floors in candidate selection", () => {
 			tier: "hard",
 			task: "coding",
 			snapshot: lowCatalog,
-			ledger: null,
 			cfg,
 			expectedCompletionTokens: 512,
 			warmSlug: null,
 		});
 	}
 
-	test("hard is empty with adaptive floors off", () => {
+	test("hard is empty with adaptive floors off", async () => {
 		const { candidates } = build({ ...BASE, adaptiveTierFloors: false });
 		expect(candidates).toHaveLength(0);
 	});
 
-	test("hard still selects the best available with adaptive floors on", () => {
+	test("hard still selects the best available with adaptive floors on", async () => {
 		const { candidates } = build({ ...BASE, adaptiveTierFloors: true });
 		expect(candidates.length).toBeGreaterThan(0);
 		// The top band is the best-scoring model, not the cheapest.
 		expect(candidates.some((c) => c.model.slug === "a/4")).toBe(true);
 	});
 
-	test("adaptive floors still order the tiers apart", () => {
+	test("adaptive floors still order the tiers apart", async () => {
 		const cfg = { ...BASE, adaptiveTierFloors: true };
 		const best = (tier: "trivial" | "hard"): number => {
 			const { candidates } = buildCandidates({
@@ -273,7 +271,6 @@ describe("adaptive floors in candidate selection", () => {
 				tier,
 				task: "coding",
 				snapshot: lowCatalog,
-				ledger: null,
 				cfg,
 				expectedCompletionTokens: 512,
 				warmSlug: null,
@@ -284,7 +281,7 @@ describe("adaptive floors in candidate selection", () => {
 		expect(best("hard")).toBeGreaterThanOrEqual(best("trivial"));
 	});
 
-	test("excludeSlugs removes a model from the candidate set", () => {
+	test("excludeSlugs removes a model from the candidate set", async () => {
 		const cfg = { ...BASE, adaptiveTierFloors: true };
 		const all = build(cfg).candidates.map((c) => c.model.slug);
 		const target = all[0];
@@ -295,7 +292,6 @@ describe("adaptive floors in candidate selection", () => {
 			tier: "hard",
 			task: "coding",
 			snapshot: lowCatalog,
-			ledger: null,
 			cfg,
 			expectedCompletionTokens: 512,
 			warmSlug: null,
@@ -323,12 +319,12 @@ describe("adaptive price ceilings", () => {
 	);
 	const features = extractFeatures(req, 100);
 
-	test("computeTierPlan derives per-tier price bands from the catalog", () => {
+	test("computeTierPlan derives per-tier price bands from the catalog", async () => {
 		const plan = computeTierPlan(priced, BASE);
 		expect(plan.priceCeilings).toEqual({ trivial: 1, simple: 2, moderate: 3, hard: 4 });
 	});
 
-	test("effectivePriceCeiling: band when on, tighter of config/band, config when off", () => {
+	test("effectivePriceCeiling: band when on, tighter of config/band, config when off", async () => {
 		const plan = computeTierPlan(priced, BASE);
 		expect(effectivePriceCeiling(undefined, "moderate", plan, true)).toBe(3); // band
 		expect(effectivePriceCeiling(2, "moderate", plan, true)).toBe(2); // config tightens
@@ -337,7 +333,7 @@ describe("adaptive price ceilings", () => {
 		expect(effectivePriceCeiling(undefined, "hard", plan, false)).toBeUndefined();
 	});
 
-	test("a model above the adaptive band is dropped in candidate selection", () => {
+	test("a model above the adaptive band is dropped in candidate selection", async () => {
 		const snap = snapshot(priced);
 		const run = (adaptivePriceCeilings: boolean) =>
 			buildCandidates({
@@ -346,7 +342,6 @@ describe("adaptive price ceilings", () => {
 				tier: "moderate",
 				task: "coding",
 				snapshot: snap,
-				ledger: null,
 				cfg: { ...BASE, adaptivePriceCeilings },
 				expectedCompletionTokens: 512,
 				warmSlug: null,
@@ -359,14 +354,14 @@ describe("adaptive price ceilings", () => {
 		expect(on.rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
 	});
 
-	test("a price ceiling judges the BIASED price, so prepaid capacity is not thrown out on list", () => {
+	test("a price ceiling judges the BIASED price, so prepaid capacity is not thrown out on list", async () => {
 		// A subscription upstream inherits its OpenRouter twin's list price ($4/Mtok here) and is
 		// discounted by `costBias` because the capacity is already paid for. Judging the ceiling on
 		// list threw it out before the bias was ever read, which made the bias entirely inert.
 		const snap = snapshot(priced);
 		const biased = { ...snap, providerBias: { [snap.models[0]!.provider]: 0.1 } };
 		const run = (s: typeof snap) =>
-			buildCandidates({ req, features, tier: "moderate", task: "coding", snapshot: s, ledger: null, cfg: { ...BASE, adaptivePriceCeilings: true }, expectedCompletionTokens: 512, warmSlug: null });
+			buildCandidates({ req, features, tier: "moderate", task: "coding", snapshot: s, cfg: { ...BASE, adaptivePriceCeilings: true }, expectedCompletionTokens: 512, warmSlug: null });
 		// Unbiased: the band tightens moderate to $3 and a/4 is over it.
 		expect(run(snap).rejected.some((r) => r.slug === "a/4" && r.reason === "over_price_ceiling")).toBe(true);
 		// Biased ×0.1: $4 list is $0.40 to this deployment, so it clears the same ceiling.
@@ -375,7 +370,7 @@ describe("adaptive price ceilings", () => {
 		expect(on.rejected.some((r) => r.slug === "a/4")).toBe(false);
 	});
 
-	test("a tool turn excludes tool-incapable models on the cheap tiers and ranks on agentic above them", () => {
+	test("a tool turn excludes tool-incapable models on the cheap tiers and ranks on agentic above them", async () => {
 		// Two Ollama-priced models: the cheap one cannot drive a tool loop (agentic 1.4, as
 		// ollama/gpt-oss:20b really scores), the dearer one can (agentic 51.2, glm-5.3-flash).
 		const mk = (slug: string, price: number, intelligence: number, agentic: number) => ({
@@ -391,7 +386,7 @@ describe("adaptive price ceilings", () => {
 		const snap = { models: [weak, capable], fetchedAtMs: Date.now(), keyScoped: false };
 		const run = (tier: "trivial" | "moderate", min: number) =>
 			buildCandidates({
-				req, features, tier, task: "chat", snapshot: snap, ledger: null,
+				req, features, tier, task: "chat", snapshot: snap,
 				cfg: { ...BASE, filters: { ...BASE.filters, minAgenticForToolTurns: min } },
 				expectedCompletionTokens: 512, warmSlug: null,
 			});
@@ -440,20 +435,19 @@ describe("quality normalization and capability floor (benchmark findings 4/6)", 
 			tier: "hard",
 			task: "coding",
 			snapshot: spread,
-			ledger: null,
 			cfg: { ...BASE, tiers: { ...BASE.tiers, hard: { ...BASE.tiers.hard, ...tierOverride } } },
 			expectedCompletionTokens: 512,
 			warmSlug: null,
 		});
 
-	test("raw scoring at the shipped exponent picks the cheapest ELIGIBLE model", () => {
+	test("raw scoring at the shipped exponent picks the cheapest ELIGIBLE model", async () => {
 		const { candidates, rejected } = run({ qualityExponent: 3 });
 		expect(candidates[0]?.model.slug).toBe("mid/2");
 		// cheap/1 is under the hard floor of 72 and never competes.
 		expect(rejected.some((r) => r.slug === "cheap/1" && r.reason === "below_quality_floor")).toBe(true);
 	});
 
-	test("normalization lets a single-digit exponent buy the best model, which raw cannot", () => {
+	test("normalization lets a single-digit exponent buy the best model, which raw cannot", async () => {
 		// Raw at the same exponent still cannot reach it: that is the defect.
 		expect(run({ qualityExponent: 12 }).candidates[0]?.model.slug).toBe("mid/2");
 		// Normalised, the same 12 selects the top-quality model.
@@ -462,7 +456,7 @@ describe("quality normalization and capability floor (benchmark findings 4/6)", 
 		expect(normalised.candidates[0]?.reasons.some((r) => r.includes("quality normalised"))).toBe(true);
 	});
 
-	test("normalization is monotone in the exponent: higher never picks a weaker model", () => {
+	test("normalization is monotone in the exponent: higher never picks a weaker model", async () => {
 		let lastQuality = 0;
 		for (const qualityExponent of [1, 4, 8, 12, 20]) {
 			const top = run({ qualityExponent, qualityNormalization: true }).candidates[0];
@@ -472,7 +466,7 @@ describe("quality normalization and capability floor (benchmark findings 4/6)", 
 		}
 	});
 
-	test("capability floor takes the best model inside the cap, ignoring the ratio", () => {
+	test("capability floor takes the best model inside the cap, ignoring the ratio", async () => {
 		// mid/2 costs ~$0.0016 and good/3 ~$0.0049, so this cap admits both but
 		// excludes best/4 (~$0.0082). The ranked winner is mid/2 (cheapest).
 		const cap = 0.005;
@@ -485,14 +479,14 @@ describe("quality normalization and capability floor (benchmark findings 4/6)", 
 		expect(top?.reasons.some((r) => r.includes("capability floor"))).toBe(true);
 	});
 
-	test("capability floor is strictly an upgrade: an unaffordable cap changes nothing", () => {
+	test("capability floor is strictly an upgrade: an unaffordable cap changes nothing", async () => {
 		const base = run({}).candidates.map((c) => c.model.slug);
 		// A cap below every candidate's cost promotes nobody.
 		const tiny = run({ capabilityFloorUsd: 1e-9 }).candidates.map((c) => c.model.slug);
 		expect(tiny).toEqual(base);
 	});
 
-	test("both modes stay inert by default, so shipped behaviour is unchanged", () => {
+	test("both modes stay inert by default, so shipped behaviour is unchanged", async () => {
 		const shipped = run({});
 		expect(shipped.candidates[0]?.model.slug).toBe("mid/2");
 		expect(shipped.candidates.every((c) => !c.reasons.some((r) => r.includes("normalised")))).toBe(true);
@@ -524,26 +518,26 @@ describe("thinness-gated relaxation (review 2026-09-05 §1)", () => {
 		BASE,
 	);
 
-	test("the bands sit below the configured floors on a wide catalog", () => {
+	test("the bands sit below the configured floors on a wide catalog", async () => {
 		// The premise the gate exists for: unconditional min() would relax here.
 		expect(wide.floors.coding.moderate).toBeLessThan(60);
 		expect(wide.floors.coding.hard).toBeLessThan(72);
 	});
 
-	test("a configured floor that three or more models meet stands as written", () => {
+	test("a configured floor that three or more models meet stands as written", async () => {
 		expect(effectiveQualityFloor(60, "moderate", "coding", wide)).toBe(60); // 62,70,74,76,78 meet it
 		expect(effectiveQualityFloor(72, "hard", "coding", wide)).toBe(72); // 74,76,78 meet it
 		expect(effectiveQualityFloor(40, "simple", "coding", wide)).toBe(40);
 	});
 
-	test("a floor fewer than three models meet is relaxed to the band", () => {
+	test("a floor fewer than three models meet is relaxed to the band", async () => {
 		// Only 76 and 78 clear 75: thin, so the hard band applies.
 		expect(effectiveQualityFloor(75, "hard", "coding", wide)).toBe(Math.min(75, wide.floors.coding.hard));
 		// Nothing clears 90: relaxed as before.
 		expect(effectiveQualityFloor(90, "hard", "coding", wide)).toBe(wide.floors.coding.hard);
 	});
 
-	test("countAdmitted counts scores at or above the floor", () => {
+	test("countAdmitted counts scores at or above the floor", async () => {
 		expect(countAdmitted([10, 20, 30, 40], 25)).toBe(2);
 		expect(countAdmitted([10, 20, 30, 40], 40)).toBe(1);
 		expect(countAdmitted([10, 20, 30, 40], 41)).toBe(0);
@@ -551,7 +545,7 @@ describe("thinness-gated relaxation (review 2026-09-05 §1)", () => {
 		expect(countAdmitted([], 0)).toBe(0);
 	});
 
-	test("in candidate selection the wide catalog keeps weak models out of moderate", () => {
+	test("in candidate selection the wide catalog keeps weak models out of moderate", async () => {
 		const req = parseChatRequest(
 			{
 				model: "auto",
@@ -576,7 +570,6 @@ describe("thinness-gated relaxation (review 2026-09-05 §1)", () => {
 			tier: "moderate",
 			task: "coding",
 			snapshot: snap,
-			ledger: null,
 			cfg: { ...BASE, adaptiveTierFloors: true },
 			expectedCompletionTokens: 512,
 			warmSlug: null,
@@ -610,17 +603,6 @@ describe("escalation-cost term (review 2026-09-05 §2)", () => {
 		slug === "cheap/flaky"
 			? { slug, attempts: 100, escalations: 4, errors: 0, successRate: 0.96, meanCostError: 0 }
 			: { slug, attempts: 100, escalations: 0, errors: 4, successRate: 0.96, meanCostError: 0 };
-	const ledger: Ledger = {
-		record: () => {},
-		conversationSpend: () => 0,
-		spendSince: () => 0,
-		blendedRate: () => null,
-		trust: (slug) => trustOf(slug),
-		allTrust: () => [],
-		latency: () => null,
-		tokenRatio: () => null,
-		recentEntries: () => [],
-	};
 	function build(weight: number, usdPerPromptToken?: number) {
 		return buildCandidates({
 			req,
@@ -628,7 +610,8 @@ describe("escalation-cost term (review 2026-09-05 §2)", () => {
 			tier: "trivial",
 			task: "coding",
 			snapshot: snap,
-			ledger,
+			// Scoring reads trust out of the prefetched signals.
+			signals: new Map(snap.models.map((m) => [m.slug, { trust: trustOf(m.slug), latency: null }])),
 			cfg: { ...BASE, filters: { ...BASE.filters, escalationCostWeight: weight } },
 			expectedCompletionTokens: 512,
 			warmSlug: null,
@@ -636,21 +619,21 @@ describe("escalation-cost term (review 2026-09-05 §2)", () => {
 		});
 	}
 
-	test("with the term off, nothing separates them and the tie falls lexically to the flaky model", () => {
+	test("with the term off, nothing separates them and the tie falls lexically to the flaky model", async () => {
 		const { candidates } = build(0, 1e-6);
 		// Same success rate, same trust divisor: escalations are invisible.
 		expect(candidates[0]!.model.slug).toBe("cheap/flaky");
 		expect(candidates[0]!.reasons.some((r) => r.startsWith("escalation risk"))).toBe(false);
 	});
 
-	test("priced at what an escalated retry actually bills, the flaky model loses", () => {
+	test("priced at what an escalated retry actually bills, the flaky model loses", async () => {
 		const { candidates } = build(1, 1e-6); // $1/Mtok of escalated-retry cost
 		expect(candidates[0]!.model.slug).toBe("cheap/solid");
 		const flaky = candidates.find((c) => c.model.slug === "cheap/flaky")!;
 		expect(flaky.reasons.some((r) => r.startsWith("escalation risk"))).toBe(true);
 	});
 
-	test("inert until the ledger can measure the retry cost", () => {
+	test("inert until the ledger can measure the retry cost", async () => {
 		const { candidates } = build(1);
 		expect(candidates[0]!.model.slug).toBe("cheap/flaky");
 	});

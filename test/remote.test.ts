@@ -18,7 +18,7 @@ import { hasRefresh, refreshAccountOf } from "../omp-extension/remote-logic.ts";
  */
 
 describe("remote-logic", () => {
-	test("remote.json is parsed defensively and turned into omp's provider registration", () => {
+	test("remote.json is parsed defensively and turned into omp's provider registration", async () => {
 		expect(parseRemoteRouter("nope")).toBeNull();
 		expect(parseRemoteRouter(JSON.stringify({ url: "https://t/", key: "" }))).toBeNull();
 		const t = parseRemoteRouter(JSON.stringify({ url: "https://team.example/", key: "amrt_k", userId: "u_1", name: "Ada" }))!;
@@ -44,7 +44,7 @@ describe("remote-logic", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	test("text edits keep files byte-identical apart from the lines they add", () => {
+	test("text edits keep files byte-identical apart from the lines they add", async () => {
 		expect(addExtensions("", ["/a.ts"])).toBe("extensions:\n  - /a.ts\n");
 		expect(addExtensions("foo: 1\nextensions:\n  - /x.ts\nbar: 2\n", ["/x.ts", "/a.ts"])).toBe("foo: 1\nextensions:\n  - /a.ts\n  - /x.ts\nbar: 2\n");
 		expect(addExtensions("foo: 1\r\n", ["/a.ts"])).toBe("foo: 1\r\nextensions:\r\n  - /a.ts\r\n");
@@ -68,7 +68,7 @@ describe("connect", () => {
 		return { home, o };
 	}
 
-	test("writes remote.json and configures omp, Hermes, Codex, Aider and Claude Code idempotently", () => {
+	test("writes remote.json and configures omp, Hermes, Codex, Aider and Claude Code idempotently", async () => {
 		const { home, o } = scenario();
 		const r1 = connectRemote(o);
 		expect(existsSync(r1.remoteFile)).toBe(true);
@@ -93,7 +93,7 @@ describe("connect", () => {
 		rmSync(home, { recursive: true, force: true });
 	});
 
-	test("--harness restricts, --dry-run writes nothing, --profile appends once to the shell rc", () => {
+	test("--harness restricts, --dry-run writes nothing, --profile appends once to the shell rc", async () => {
 		const { home, o } = scenario({ only: ["omp"], dryRun: true });
 		const r = connectRemote(o);
 		expect(existsSync(r.remoteFile)).toBe(false);
@@ -118,7 +118,7 @@ describe("omp models.yml for a remote router", () => {
 	const NL = String.fromCharCode(10);
 	const yaml = (...lines: string[]): string => lines.join(NL) + NL;
 
-	test("the block names the remote, the key and the three virtual models; the scope follows the workspace unless pinned", () => {
+	test("the block names the remote, the key and the three virtual models; the scope follows the workspace unless pinned", async () => {
 		const block = renderRemoteModelsYml("https://team.example/", "amrt_k", BLEND);
 		expect(block).toContain("baseUrl: https://team.example/v1");
 		expect(block).toContain("apiKey: amrt_k");
@@ -141,7 +141,7 @@ describe("omp models.yml for a remote router", () => {
 		expect(pinned).toContain(`X-Agentdox-Origin: ${ORIGIN_ENV}`);
 	});
 
-	test("merging keeps other providers, replaces our own block, and is idempotent", () => {
+	test("merging keeps other providers, replaces our own block, and is idempotent", async () => {
 		const block = renderRemoteModelsYml("https://team.example", "k1", BLEND);
 		const empty = mergeModelsYml("", block);
 		expect(empty.startsWith("providers:")).toBe(true);
@@ -160,7 +160,7 @@ describe("omp models.yml for a remote router", () => {
 		expect(rekeyed).toContain("openai:");
 	});
 
-	test("a hand-written provider of the same name is left alone", () => {
+	test("a hand-written provider of the same name is left alone", async () => {
 		expect(hasForeignRouterProvider(yaml("providers:", "  auto-model-router:", "    baseUrl: http://127.0.0.1:1/v1"))).toBe(true);
 		expect(hasForeignRouterProvider(mergeModelsYml("", renderRemoteModelsYml("https://t", "k", BLEND)))).toBe(false);
 		expect(hasForeignRouterProvider(yaml("providers:", "  openai: {}"))).toBe(false);
@@ -171,7 +171,7 @@ describe("short-lived remote credentials", () => {
 	const NL = String.fromCharCode(10);
 	const remote = { url: "https://team.example", key: "amrt_old", userId: "u_ada", name: "Ada", joinedAtMs: 1, refreshToken: "amrr_r1", keyExpiresAtMs: 0, refreshExpiresAtMs: 0, device: "laptop" };
 
-	test("remote.json round-trips the credential fields, and a permanent key has none", () => {
+	test("remote.json round-trips the credential fields, and a permanent key has none", async () => {
 		const parsed = parseRemoteRouter(JSON.stringify(remote))!;
 		expect(parsed).toMatchObject({ refreshToken: "amrr_r1", keyExpiresAtMs: 0, refreshExpiresAtMs: 0, device: "laptop" });
 		const permanent = parseRemoteRouter(JSON.stringify({ url: "https://t", key: "k" }))!;
@@ -179,7 +179,7 @@ describe("short-lived remote credentials", () => {
 		expect(shouldRefresh(permanent)).toBe(false);
 	});
 
-	test("a key is refreshed a day ahead of expiry, never without a refresh token", () => {
+	test("a key is refreshed a day ahead of expiry, never without a refresh token", async () => {
 		const now = 1_000_000_000_000;
 		const day = 24 * 3_600_000;
 		expect(shouldRefresh({ ...remote, keyExpiresAtMs: now + 3 * day }, now)).toBe(false);
@@ -206,7 +206,7 @@ describe("short-lived remote credentials", () => {
 		}
 		expect(err?.code).toBe("refresh_reused");
 		expect(err?.message).toBe("already used");
-		await expect(refreshCredential({ ...remote, refreshToken: "" }, ok)).rejects.toBeInstanceOf(RefreshError);
+		(await expect(refreshCredential({ ...remote, refreshToken: "" }, ok))).rejects.toBeInstanceOf(RefreshError);
 	});
 
 	test("refreshAndRewrite re-writes remote.json and the managed models.yml block, keeping its scope and join time", async () => {
@@ -252,7 +252,7 @@ describe("the refresh token lives in the OS credential store", () => {
 	const vault = new Map<string, string>();
 	const backend = { save: (a: string, s: string) => void vault.set(a, s), load: (a: string) => vault.get(a) ?? null, remove: (a: string) => void vault.delete(a) };
 
-	test("the store is picked from the platform and its tools; the file is the fallback everywhere", () => {
+	test("the store is picked from the platform and its tools; the file is the fallback everywhere", async () => {
 		expect(pickStore("win32", (b) => b === "powershell")).toBe("dpapi");
 		expect(pickStore("win32", () => false)).toBe("file");
 		expect(pickStore("darwin", (b) => b === "security")).toBe("keychain");
@@ -261,7 +261,7 @@ describe("the refresh token lives in the OS credential store", () => {
 		expect(refreshAccountOf("https://team.example:8790/", "u_ada")).toBe("u_ada@team.example:8790");
 	});
 
-	test("save/load through a store, and the file fallback keeps the token owner-readable", () => {
+	test("save/load through a store, and the file fallback keeps the token owner-readable", async () => {
 		const home = mkdtempSync(join(tmpdir(), "amr-store-"));
 		try {
 			expect(saveRefreshToken(home, "u@t", "amrr_x", "keychain", { backend })).toBe("keychain");

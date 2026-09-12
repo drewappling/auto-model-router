@@ -14,7 +14,8 @@ import { createContextBridge } from "../src/context/bridge.ts";
 import { createContextStore } from "../src/context/store.ts";
 import type { ContextResolveInput } from "../src/context/types.ts";
 import { createLogger } from "../src/util/log.ts";
-import { openDb } from "../src/util/sqlite.ts";
+import { migrateStore } from "../src/util/schema.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 const baseUrl = process.env.AGENTDOX_URL ?? "http://localhost:3003";
 const token = process.env.AGENTDOX_TOKEN ?? "";
@@ -32,7 +33,9 @@ function check(name: string, ok: boolean, detail = ""): void {
 }
 
 const log = createLogger("warn");
-const db = openDb(":memory:");
+// A temp file rather than `:memory:`: the shim opens one store per handle.
+const db = openSqlDb(`${process.env.TMPDIR ?? "/tmp"}/agentdox-e2e-${Date.now()}.db`);
+await migrateStore(db);
 const client = createAgentDoxClient({ baseUrl, token, timeoutMs: 5_000, log });
 const bridge = createContextBridge({
 	client,

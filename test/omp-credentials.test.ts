@@ -66,25 +66,25 @@ afterEach(() => {
 });
 
 describe("readOmpCredential", () => {
-	test("reads an api_key credential in omp's stored shape", () => {
+	test("reads an api_key credential in omp's stored shape", async () => {
 		// Matches the real `ollama-cloud` row: {"key": "...", "source": "..."}
 		const path = storeWith([{ provider: "openrouter", type: "api_key", data: { key: "sk-or-real", source: "login" } }]);
 		expect(readOmpCredential("openrouter", path)).toBe("sk-or-real");
 	});
 
-	test("returns null for a provider that is not logged in", () => {
+	test("returns null for a provider that is not logged in", async () => {
 		const path = storeWith([{ provider: "anthropic", type: "oauth", data: { access: "x", expires: Date.now() + 1e6 } }]);
 		expect(readOmpCredential("openrouter", path)).toBeNull();
 	});
 
-	test("accepts an unexpired oauth access token", () => {
+	test("accepts an unexpired oauth access token", async () => {
 		const path = storeWith([
 			{ provider: "openrouter", type: "oauth", data: { access: "tok-live", refresh: "r", expires: Date.now() + 600_000 } },
 		]);
 		expect(readOmpCredential("openrouter", path)).toBe("tok-live");
 	});
 
-	test("rejects an expired oauth token rather than burning a turn on a 401", () => {
+	test("rejects an expired oauth token rather than burning a turn on a 401", async () => {
 		// Refreshing is omp's job; we hold the store read-only.
 		const path = storeWith([
 			{ provider: "openrouter", type: "oauth", data: { access: "tok-stale", refresh: "r", expires: Date.now() - 1000 } },
@@ -92,14 +92,14 @@ describe("readOmpCredential", () => {
 		expect(readOmpCredential("openrouter", path)).toBeNull();
 	});
 
-	test("skips a disabled credential", () => {
+	test("skips a disabled credential", async () => {
 		const path = storeWith([
 			{ provider: "openrouter", type: "api_key", data: { key: "sk-or-dead" }, disabled: "revoked" },
 		]);
 		expect(readOmpCredential("openrouter", path)).toBeNull();
 	});
 
-	test("prefers the most recently updated credential", () => {
+	test("prefers the most recently updated credential", async () => {
 		const path = storeWith([
 			{ provider: "openrouter", type: "api_key", data: { key: "sk-or-old" }, updatedAt: 1000 },
 			{ provider: "openrouter", type: "api_key", data: { key: "sk-or-new" }, updatedAt: 2000 },
@@ -107,7 +107,7 @@ describe("readOmpCredential", () => {
 		expect(readOmpCredential("openrouter", path)).toBe("sk-or-new");
 	});
 
-	test("survives a missing, unreadable, or unexpected store", () => {
+	test("survives a missing, unreadable, or unexpected store", async () => {
 		expect(readOmpCredential("openrouter", join(tmpdir(), "definitely-absent-agent.db"))).toBeNull();
 		const dir = mkdtempSync(join(tmpdir(), "ompr-cred-"));
 		dirs.push(dir);
@@ -118,7 +118,7 @@ describe("readOmpCredential", () => {
 		expect(readOmpCredential("openrouter", garbage)).toBeNull();
 	});
 
-	test("skips a row whose data is not valid JSON", () => {
+	test("skips a row whose data is not valid JSON", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ompr-cred-"));
 		dirs.push(dir);
 		const path = join(dir, "agent.db");
@@ -133,7 +133,7 @@ describe("readOmpCredential", () => {
 		expect(readOmpCredential("openrouter", path)).toBeNull();
 	});
 
-	test("declines to read a local store when a remote auth broker is configured", () => {
+	test("declines to read a local store when a remote auth broker is configured", async () => {
 		const path = storeWith([{ provider: "openrouter", type: "api_key", data: { key: "sk-or-local" } }]);
 		setEnv("OMP_AUTH_BROKER_URL", "https://broker.example");
 		// Broker mode replaces the local store; reading it would be a stale lie.
@@ -142,20 +142,20 @@ describe("readOmpCredential", () => {
 });
 
 describe("resolveOpenRouterKey", () => {
-	test("explicit configuration wins over the borrowed credential", () => {
+	test("explicit configuration wins over the borrowed credential", async () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
 		const resolved = resolveOpenRouterKey("sk-or-explicit");
 		expect(resolved.apiKey).toBe("sk-or-explicit");
 		expect(resolved.source).toBe("config");
 	});
 
-	test("attributes a key that came from the environment", () => {
+	test("attributes a key that came from the environment", async () => {
 		setEnv("OPENROUTER_API_KEY", "sk-or-from-env");
 		const resolved = resolveOpenRouterKey("sk-or-from-env");
 		expect(resolved.source).toBe("env");
 	});
 
-	test("reports an actionable message when nothing is configured", () => {
+	test("reports an actionable message when nothing is configured", async () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
 		setEnv("PI_CODING_AGENT_DIR", mkdtempSync(join(tmpdir(), "ompr-empty-agent-")));
 		dirs.push(process.env.PI_CODING_AGENT_DIR ?? "");
@@ -165,7 +165,7 @@ describe("resolveOpenRouterKey", () => {
 		expect(resolved.detail).toContain("/login openrouter");
 	});
 
-	test("borrows omp's credential when nothing else is configured", () => {
+	test("borrows omp's credential when nothing else is configured", async () => {
 		setEnv("OPENROUTER_API_KEY", undefined);
 		const dir = mkdtempSync(join(tmpdir(), "ompr-agentdir-"));
 		dirs.push(dir);
@@ -185,7 +185,7 @@ describe("resolveOpenRouterKey", () => {
 });
 
 describe("resolveOllamaKey", () => {
-	test("explicit configuration wins, and an env-sourced key is attributed to OLLAMA_API_KEY", () => {
+	test("explicit configuration wins, and an env-sourced key is attributed to OLLAMA_API_KEY", async () => {
 		setEnv("OLLAMA_API_KEY", undefined);
 		expect(resolveOllamaKey("ok-explicit").source).toBe("config");
 		setEnv("OLLAMA_API_KEY", "ok-from-env");
@@ -194,7 +194,7 @@ describe("resolveOllamaKey", () => {
 		expect(resolved.detail).toBe("OLLAMA_API_KEY");
 	});
 
-	test("borrows omp's ollama-cloud credential when nothing else is configured", () => {
+	test("borrows omp's ollama-cloud credential when nothing else is configured", async () => {
 		setEnv("OLLAMA_API_KEY", undefined);
 		const dir = mkdtempSync(join(tmpdir(), "ompr-agentdir-"));
 		dirs.push(dir);
@@ -214,7 +214,7 @@ describe("resolveOllamaKey", () => {
 		expect(resolveOpenRouterKey("").source).toBe("none");
 	});
 
-	test("points at /login ollama-cloud when nothing resolves", () => {
+	test("points at /login ollama-cloud when nothing resolves", async () => {
 		setEnv("OLLAMA_API_KEY", undefined);
 		const dir = mkdtempSync(join(tmpdir(), "ompr-empty-agent-"));
 		dirs.push(dir);

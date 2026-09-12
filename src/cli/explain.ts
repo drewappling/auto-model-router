@@ -12,11 +12,12 @@ import { existsSync } from "node:fs";
 
 import { createProviders } from "../server/providers.ts";
 import { loadConfig } from "../config/load.ts";
-import { createLedger } from "../cost/ledger.ts";
+import { createSqlLedger } from "../cost/ledger-sql.ts";
 import { createRouter } from "../router/index.ts";
 import { createConversationStore } from "../router/state.ts";
 import type { Candidate, Decision, Features, Rejection } from "../router/types.ts";
 import { openDb } from "../util/sqlite.ts";
+import { openSqlDb } from "../util/sql.ts";
 import { parseChatRequest } from "../wire/openai/request.ts";
 import { configOpts, flagString, type CliArgs } from "./args.ts";
 
@@ -130,10 +131,13 @@ export async function explainCommand(args: CliArgs): Promise<void> {
 	const req = parseChatRequest(body, new Headers());
 
 	const db = openDb(cfg.ledger.path);
+	// The conversation store reads through the engine-agnostic handle; the
+	// catalog and the ledger still use the bun:sqlite one. Same store.
+	const sdb = openSqlDb(cfg.ledger.path);
 	try {
-		const ledger = createLedger(db, cfg);
-		const { upstream, catalog } = createProviders(cfg, db);
-		const conversations = createConversationStore(db);
+		const ledger = createSqlLedger(sdb, cfg, { findModel: (slug: string) => catalog.find(slug) });
+		const { upstream, catalog } = createProviders(cfg, db, sdb);
+		const conversations = createConversationStore(sdb);
 		const router = createRouter({ config: cfg, catalog, ledger, conversations, upstream });
 
 		const decision = await router.route(req, { attempt: 0 });
@@ -143,7 +147,7 @@ export async function explainCommand(args: CliArgs): Promise<void> {
 			return;
 		}
 
-		const state = conversations.get(req.conversationKey);
+		const state = await conversations.get(req.conversationKey);
 		console.log(`request: ${req.messages.length} messages, ${req.tools.length} tools, model "${req.requestedModel}"`);
 		console.log(`conversation: ${req.conversationKey} (turn ${state?.turn ?? 0}, prior model ${state?.currentSlug ?? "none"})`);
 		console.log(
@@ -161,6 +165,7 @@ export async function explainCommand(args: CliArgs): Promise<void> {
 		renderDecision(decision);
 		console.log("\n(no completion was dispatched; nothing was billed)");
 	} finally {
+		await sdb.close();
 		db.close();
 	}
 }

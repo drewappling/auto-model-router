@@ -36,7 +36,7 @@ function yamlOf(partial: Record<string, unknown>): string {
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 400));
 
 describe("readValidatedConfig", () => {
-	test("accepts a valid partial and merges over defaults (removed knobs revert)", () => {
+	test("accepts a valid partial and merges over defaults (removed knobs revert)", async () => {
 		writeFileSync(CFG, yamlOf({ filters: { latencyWeight: 0.5 } }));
 		const result = readValidatedConfig(CFG);
 		expect(result.ok).toBe(true);
@@ -48,7 +48,7 @@ describe("readValidatedConfig", () => {
 		expect(result.cfg.tiers.simple).toEqual(DEFAULT_CONFIG.tiers.simple);
 	});
 
-	test("rejects a schema violation and names the path", () => {
+	test("rejects a schema violation and names the path", async () => {
 		writeFileSync(CFG, yamlOf({ tiers: { hard: { capabilityFloorUsd: -5 } } }));
 		const result = readValidatedConfig(CFG);
 		expect(result.ok).toBe(false);
@@ -56,13 +56,13 @@ describe("readValidatedConfig", () => {
 		expect(result.error).toContain("capabilityFloorUsd");
 	});
 
-	test("rejects malformed YAML", () => {
+	test("rejects malformed YAML", async () => {
 		writeFileSync(CFG, "filters: [unclosed");
 		const result = readValidatedConfig(CFG);
 		expect(result.ok).toBe(false);
 	});
 
-	test("reports a missing file", () => {
+	test("reports a missing file", async () => {
 		const result = readValidatedConfig(join(DIR, "nope.yml"));
 		expect(result.ok).toBe(false);
 	});
@@ -156,7 +156,7 @@ describe("watchConfig pins by path", () => {
 		expect(live.ledger.path).toBe(DEFAULT_CONFIG.ledger.path);
 	});
 
-	test("the pinned path list names only real config keys", () => {
+	test("the pinned path list names only real config keys", async () => {
 		const root = DEFAULT_CONFIG as unknown as Record<string, Record<string, unknown>>;
 		for (const p of PINNED_CONFIG_PATHS) {
 			const [block = "", key] = p.split(".");

@@ -75,7 +75,7 @@ const HARNESSES: Record<string, { headers: Record<string, string>; body: Record<
 
 describe("config-only harness request shapes", () => {
 	for (const [name, h] of Object.entries(HARNESSES)) {
-		test(`${name}: parses, keeps headers and tool calls, and drops OpenAI-only parameters`, () => {
+		test(`${name}: parses, keeps headers and tool calls, and drops OpenAI-only parameters`, async () => {
 			const req = parseChatRequest(structuredClone(h.body), new Headers(h.headers));
 			expect(req.harnessId).toBe(name);
 			expect(req.requestedModel).toBe("auto");
@@ -96,7 +96,7 @@ describe("config-only harness request shapes", () => {
 		});
 	}
 
-	test("hermes headers carry session and subagent identity", () => {
+	test("hermes headers carry session and subagent identity", async () => {
 		const req = parseChatRequest(structuredClone(HARNESSES.hermes!.body), new Headers(HARNESSES.hermes!.headers));
 		expect(req.ompSessionId).toBe("hermes-session-1");
 		expect(req.isSubagent).toBe(true);
@@ -200,7 +200,7 @@ describe("captured harness requests", () => {
 
 describe("digest tool aliases across harnesses", () => {
 	const d = { ...DEFAULT_CONFIG.digest, enabled: true, minBytes: 10, maxBytes: 10_000 };
-	test("harness spellings map onto the canonical tools list on both sides", () => {
+	test("harness spellings map onto the canonical tools list on both sides", async () => {
 		for (const [alias, canonical] of [["read_file", "read"], ["search_files", "grep"], ["terminal", "bash"], ["execute_command", "bash"], ["shell", "bash"], ["list_files", "ls"], ["web_extract", "web_fetch"], ["READ_FILE", "read"]] as const) {
 			expect(canonicalTool(d, alias)).toBe(canonical);
 			expect(digestApplies(d, alias, 500, false, "hard").ok).toBe(true);

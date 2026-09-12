@@ -20,21 +20,21 @@ function withHold(over: { enabled?: boolean; values?: number[] }, enabled = true
 }
 
 describe("hold exploration is opt-in", () => {
-	test("shipped defaults leave the hold alone", () => {
+	test("shipped defaults leave the hold alone", async () => {
 		expect(BASE.exploration.holdTurns.enabled).toBe(false);
 		const got = resolveHoldTurns(BASE, "conv-1", true);
 		expect(got.turns).toBe(BASE.hysteresis.holdTurnsAfterEscalation);
 		expect(got.arm).toBeNull();
 	});
 
-	test("hold exploration stays off while exploration as a whole is off", () => {
+	test("hold exploration stays off while exploration as a whole is off", async () => {
 		const cfg = withHold({ values: [1] }, false);
 		const got = resolveHoldTurns(cfg, "conv-1", true);
 		expect(got.turns).toBe(BASE.hysteresis.holdTurnsAfterEscalation);
 		expect(got.arm).toBeNull();
 	});
 
-	test("an explicitly disabled hold experiment is inert", () => {
+	test("an explicitly disabled hold experiment is inert", async () => {
 		const cfg = withHold({ enabled: false, values: [1] });
 		expect(resolveHoldTurns(cfg, "conv-1", true).arm).toBeNull();
 	});
@@ -43,17 +43,17 @@ describe("hold exploration is opt-in", () => {
 describe("only the post-escalation hold is randomised", () => {
 	const cfg = withHold({ values: [1] });
 
-	test("an escalated turn uses the drawn arm", () => {
+	test("an escalated turn uses the drawn arm", async () => {
 		expect(resolveHoldTurns(cfg, "conv-1", true).turns).toBe(1);
 	});
 
-	test("an ordinary turn keeps the configured hold", () => {
+	test("an ordinary turn keeps the configured hold", async () => {
 		// The experiment targets the hold that governs expensive spend; leaving
 		// the ordinary hold fixed keeps the comparison narrow enough to read.
 		expect(resolveHoldTurns(cfg, "conv-1", false).turns).toBe(BASE.hysteresis.holdTurns);
 	});
 
-	test("but the arm is still recorded on non-escalated turns", () => {
+	test("but the arm is still recorded on non-escalated turns", async () => {
 		// Intention-to-treat: arms are compared on whole-conversation cost, so
 		// every turn of an assigned conversation has to carry its arm.
 		expect(resolveHoldTurns(cfg, "conv-1", false).arm).toBe(1);
@@ -63,20 +63,20 @@ describe("only the post-escalation hold is randomised", () => {
 describe("assignment is per conversation", () => {
 	const cfg = withHold({ values: [2, 3, 4] });
 
-	test("the same conversation always draws the same arm", () => {
+	test("the same conversation always draws the same arm", async () => {
 		const first = resolveHoldTurns(cfg, "conv-stable", true).arm;
 		for (let i = 0; i < 20; i++) {
 			expect(resolveHoldTurns(cfg, "conv-stable", true).arm).toBe(first);
 		}
 	});
 
-	test("the arm never changes mid-hold, whatever the escalation state", () => {
+	test("the arm never changes mid-hold, whatever the escalation state", async () => {
 		const a: number | null = resolveHoldTurns(cfg, "conv-x", true).arm;
 		const b = resolveHoldTurns(cfg, "conv-x", false).arm;
 		expect(a).toEqual(b);
 	});
 
-	test("every drawn arm comes from the configured set", () => {
+	test("every drawn arm comes from the configured set", async () => {
 		for (let i = 0; i < 200; i++) {
 			const arm = resolveHoldTurns(cfg, `conv-${i}`, true).arm;
 			expect(arm).not.toBeNull();
@@ -84,7 +84,7 @@ describe("assignment is per conversation", () => {
 		}
 	});
 
-	test("arms are spread across conversations rather than collapsing to one", () => {
+	test("arms are spread across conversations rather than collapsing to one", async () => {
 		const counts = new Map<number, number>();
 		const N = 600;
 		for (let i = 0; i < N; i++) {
@@ -100,7 +100,7 @@ describe("assignment is per conversation", () => {
 		}
 	});
 
-	test("a single-value set assigns everyone the same arm", () => {
+	test("a single-value set assigns everyone the same arm", async () => {
 		const one = withHold({ values: [3] });
 		for (let i = 0; i < 20; i++) {
 			expect(resolveHoldTurns(one, `conv-${i}`, true).turns).toBe(3);
@@ -109,7 +109,7 @@ describe("assignment is per conversation", () => {
 });
 
 describe("the draw itself", () => {
-	test("is uniform in [0,1) and stable for a seed", () => {
+	test("is uniform in [0,1) and stable for a seed", async () => {
 		expect(explorationDraw("seed-a")).toBe(explorationDraw("seed-a"));
 		expect(explorationDraw("seed-a")).not.toBe(explorationDraw("seed-b"));
 		for (const seed of ["a", "b", "c", "d", "e"]) {
@@ -119,7 +119,7 @@ describe("the draw itself", () => {
 		}
 	});
 
-	test("the tier draw and the hold draw are independent seeds", () => {
+	test("the tier draw and the hold draw are independent seeds", async () => {
 		// Sharing a seed would correlate the two experiments and confound both.
 		expect(explorationDraw("hold:conv-1")).not.toBe(explorationDraw("explore:conv-1:1"));
 	});

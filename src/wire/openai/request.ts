@@ -418,6 +418,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		isSubagent,
 		...(policy === undefined ? {} : { policy }),
 		requestedModel,
+		requestedModelFull: b.model,
 		messages,
 		tools,
 		forcedToolChoice,

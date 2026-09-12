@@ -9,7 +9,7 @@ import { auc, FEATURE_NAMES, LEARNED_MODEL_VERSION, learnedRiskName, learnedVect
  */
 
 describe("learnedVector", () => {
-	test("matches FEATURE_NAMES in length and tolerates missing fields", () => {
+	test("matches FEATURE_NAMES in length and tolerates missing fields", async () => {
 		const v = learnedVector({});
 		expect(v).toHaveLength(FEATURE_NAMES.length);
 		expect(v.every((x) => x === 0)).toBe(true);
@@ -22,7 +22,7 @@ describe("learnedVector", () => {
 });
 
 describe("auc", () => {
-	test("perfect ranking is 1, inverted is 0, ties count half", () => {
+	test("perfect ranking is 1, inverted is 0, ties count half", async () => {
 		expect(auc([0.9, 0.8, 0.1, 0.2], [1, 1, 0, 0])).toBe(1);
 		expect(auc([0.1, 0.2, 0.9, 0.8], [1, 1, 0, 0])).toBe(0);
 		expect(auc([0.5, 0.5], [1, 0])).toBe(0.5);
@@ -31,7 +31,7 @@ describe("auc", () => {
 });
 
 describe("trainLogistic", () => {
-	test("separates a dataset where escalation follows failed tools and long prompts", () => {
+	test("separates a dataset where escalation follows failed tools and long prompts", async () => {
 		const xs: number[][] = [];
 		const ys: number[] = [];
 		let seed = 7;
@@ -55,7 +55,7 @@ describe("trainLogistic", () => {
 		expect(fit.weights[FEATURE_NAMES.indexOf("log_prompt_tokens")]!).toBeGreaterThan(0);
 	});
 
-	test("refuses an empty dataset", () => {
+	test("refuses an empty dataset", async () => {
 		expect(() => trainLogistic([], [])).toThrow();
 	});
 });
@@ -75,7 +75,7 @@ describe("learned label", () => {
 			expect(learnedRiskName(loaded!)).toBe("bad");
 		} finally {
 			resetLearnedModels();
-			await Bun.file(path).delete();
+			(await Bun.file(path)).delete();
 		}
 	});
 });

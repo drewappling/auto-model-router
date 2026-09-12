@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { migrateStore } from "../src/util/schema.ts";
+import { openSqlDb } from "../src/util/sql.ts";
 
 import { type AgentDoxClient, type AssembleLayers, type AssembleLimits, createAgentDoxClient } from "../src/context/agentdox.ts";
 import { createContextBridge } from "../src/context/bridge.ts";
 import { createContextStore } from "../src/context/store.ts";
 import type { ContextResolveInput, TurnRecord } from "../src/context/types.ts";
 import { createLogger } from "../src/util/log.ts";
-import { openDb } from "../src/util/sqlite.ts";
 import { injectForTest } from "./helpers/inject.ts";
 
 const log = createLogger("silent");
@@ -49,8 +53,11 @@ function mkClient(prompt = "MEMORY: player digs in 3/4 top-down"): FakeClient {
 
 type BridgeOpts = Parameters<typeof createContextBridge>[0];
 
-function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
-	const db = openDb(":memory:");
+async function mkBridge(client: AgentDoxClient, over: Partial<BridgeOpts> = {}) {
+	// A file: the shim cannot share `:memory:` between handles. Awaited, so the
+	// tables exist before the bridge's first read rather than racing it.
+	const db = openSqlDb(join(tmpdir(), `ctxbridge-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`));
+	await migrateStore(db);
 	const opts: BridgeOpts = {
 		client,
 		store: createContextStore(db),
@@ -89,7 +96,7 @@ function input(over: Partial<ContextResolveInput> = {}): ContextResolveInput {
 describe("context bridge refresh policy", () => {
 	test("recent sessions ride only on a conversation's first block; refreshes ask for none", async () => {
 		const client = mkClient();
-		const { bridge } = mkBridge(client, { sessionLimit: 6 });
+		const { bridge } = await mkBridge(client, { sessionLimit: 6 });
 		await bridge.resolve(input({ firstFetch: true }));
 		expect(client.lastLimits?.sessionLimit).toBe(6);
 		// A refresh (model switch) on a conversation that already had a block.
@@ -100,7 +107,7 @@ describe("context bridge refresh policy", () => {
 
 	test("fetches on the first turn, then pins without re-fetching", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			expect(first).not.toBeNull();
@@ -126,7 +133,7 @@ describe("context bridge refresh policy", () => {
 		// The REST endpoint also ignores snake_case limit keys, which silently reads
 		// as unbounded, so pin that all four limits actually reach the client.
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { memoryLimit: 5, docsLimit: 1, sessionLimit: 2, briefChars: 9000 });
+		const { bridge, db } = await mkBridge(client, { memoryLimit: 5, docsLimit: 1, sessionLimit: 2, briefChars: 9000 });
 		try {
 			await bridge.resolve(input());
 			expect(client.lastLimits).toEqual({ memoryLimit: 5, docsLimit: 1, sessionLimit: 2, briefChars: 9000 });
@@ -137,7 +144,7 @@ describe("context bridge refresh policy", () => {
 
 	test("refreshes when the model switches, because the cache is already forfeit", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			await bridge.resolve(
@@ -155,7 +162,7 @@ describe("context bridge refresh policy", () => {
 
 	test("refreshes on a retry", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			await bridge.resolve(
@@ -173,7 +180,7 @@ describe("context bridge refresh policy", () => {
 
 	test("refreshes once the staleness TTL elapses", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { maxStalenessMs: 1_000 });
+		const { bridge, db } = await mkBridge(client, { maxStalenessMs: 1_000 });
 		try {
 			const first = await bridge.resolve(input());
 			await bridge.resolve(input({ pinnedVersion: first?.version ?? null, pinnedFetchedAtMs: Date.now() - 5_000 }));
@@ -185,7 +192,7 @@ describe("context bridge refresh policy", () => {
 
 	test("version is a content hash, so an unchanged re-assembly keeps the cache warm", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			// Force a refetch; agentdox returns byte-identical content.
@@ -206,7 +213,7 @@ describe("context bridge refresh policy", () => {
 
 	test("changed content yields a new version", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			client.prompt = "MEMORY: player digs in 3/4 top-down; hard edges only";
@@ -225,7 +232,7 @@ describe("context bridge refresh policy", () => {
 
 	test("an unreachable agentdox keeps serving the pinned block", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const first = await bridge.resolve(input());
 			client.assemble = async () => null; // agentdox goes down
@@ -244,7 +251,7 @@ describe("context bridge refresh policy", () => {
 
 	test("an empty scope is inert", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			expect(await bridge.resolve(input({ scope: "" }))).toBeNull();
 			expect(client.assembleCalls).toBe(0);
@@ -255,7 +262,10 @@ describe("context bridge refresh policy", () => {
 
 	test("blocks survive a restart, so the same bytes are re-injected", async () => {
 		const client = mkClient();
-		const db = openDb(":memory:");
+		// A file, and migrated BEFORE the bridge reads: `void migrateStore(...)`
+		// raced the first query and the table did not exist yet.
+		const db = openSqlDb(join(tmpdir(), `ctxbridge-restart-${process.pid}-${Date.now()}.db`));
+		await migrateStore(db);
 		try {
 			const opts: BridgeOpts = {
 				client,
@@ -271,9 +281,9 @@ describe("context bridge refresh policy", () => {
 				recordTurns: true,
 				maxQueue: 64,
 			};
-			const first = await createContextBridge(opts).resolve(input());
+			const first = await (await createContextBridge(opts)).resolve(input());
 			// A "restart": brand-new bridge over the same store.
-			const after = await createContextBridge(opts).resolve(
+			const after = await (await createContextBridge(opts)).resolve(
 				input({ pinnedVersion: first?.version ?? null, pinnedFetchedAtMs: first?.fetchedAtMs ?? 0 }),
 			);
 			expect(after?.block).toBe(first?.block ?? "");
@@ -287,7 +297,7 @@ describe("context bridge refresh policy", () => {
 describe("context bridge write-back", () => {
 	test("creates one session per conversation and attributes the model", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			bridge.recordTurn({
 				scope: "ashlands",
@@ -325,7 +335,7 @@ describe("context bridge write-back", () => {
 
 	test("recordTurns=false writes nothing", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { recordTurns: false });
+		const { bridge, db } = await mkBridge(client, { recordTurns: false });
 		try {
 			bridge.recordTurn({
 				scope: "ashlands",
@@ -362,7 +372,7 @@ describe("context bridge write-back", () => {
 
 	test("a tool loop records one turn, not one record per dispatch", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			// One user-visible turn: five tool round-trips, then the synthesis.
 			// Every dispatch carries the SAME unchanged user text — recording per
@@ -391,7 +401,7 @@ describe("context bridge write-back", () => {
 
 	test("a tool loop still running writes nothing", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			bridge.recordTurn(mkRecord({ assistantText: "let me look", turnEnded: false }));
 			await bridge.flush();
@@ -406,7 +416,7 @@ describe("context bridge write-back", () => {
 
 	test("interleaved conversations buffer independently", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			bridge.recordTurn(mkRecord({ conversationKey: "k1", assistantText: "k1 narration", turnEnded: false }));
 			bridge.recordTurn(mkRecord({ conversationKey: "k2", assistantText: "k2 narration", turnEnded: false }));
@@ -425,7 +435,7 @@ describe("context bridge write-back", () => {
 
 	test("a silent turn still records the user message", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			bridge.recordTurn(mkRecord({ assistantText: "", turnEnded: true }));
 			await bridge.flush();
@@ -444,7 +454,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 	// layers in headers and the member in the harness id.
 	test("resolve passes the group, personal and user layers to assemble; a lone router passes empties", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			await bridge.resolve(input({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" }));
 			expect(client.lastLayers).toEqual({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" });
@@ -464,7 +474,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 		// agentdox filter the project's recent tail to that harness, dropping
 		// every pre-0.16 message and every other harness's turns.
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			await bridge.resolve(input({ user: "claude-code" }));
 			expect(client.lastLayers).toEqual({ group: "", personal: "", user: "" });
@@ -475,7 +485,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 
 	test("layers: false sends none, whatever the request names", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client, { layers: false });
+		const { bridge, db } = await mkBridge(client, { layers: false });
 		try {
 			const pin = await bridge.resolve(input({ group: "group.g1", personal: "ashlands.u.u1", user: "u1" }));
 			expect(pin).not.toBeNull();
@@ -490,7 +500,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 		// The version is a hash of the block's content, so two members' blocks
 		// never share a version even in one scope; the shared store keys on it.
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const ada = await bridge.resolve(input({ conversationKey: "ada", personal: "ashlands.u.ada", user: "ada" }));
 			const bob = await bridge.resolve(input({ conversationKey: "bob", personal: "ashlands.u.bob", user: "bob" }));
@@ -509,7 +519,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 
 	test("the recorded turn carries user:<harnessId> on both messages only when the harness is set", async () => {
 		const client = mkClient();
-		const { bridge, db } = mkBridge(client);
+		const { bridge, db } = await mkBridge(client);
 		try {
 			const rec = {
 				scope: "ashlands",
@@ -569,7 +579,7 @@ describe("context layers a team names (project memory, phase one)", () => {
 });
 
 describe("context injection into the wire body", () => {
-	test("appends to the last system message, leaving breakpoint indices valid", () => {
+	test("appends to the last system message, leaving breakpoint indices valid", async () => {
 		const body = {
 			model: "auto",
 			messages: [
@@ -589,7 +599,7 @@ describe("context injection into the wire body", () => {
 		expect(text).toContain("cache_control");
 	});
 
-	test("prepends a system message and shifts breakpoints when there is none", () => {
+	test("prepends a system message and shifts breakpoints when there is none", async () => {
 		const body = { model: "auto", messages: [{ role: "user", content: "hi" }] };
 		const out = injectForTest(body, "BLOCK", [0]);
 		const msgs = out.messages as Record<string, unknown>[];
@@ -600,7 +610,7 @@ describe("context injection into the wire body", () => {
 		expect(JSON.stringify(msgs[1]?.content ?? "")).toContain("cache_control");
 	});
 
-	test("no contextBlock leaves the body untouched", () => {
+	test("no contextBlock leaves the body untouched", async () => {
 		const body = {
 			model: "auto",
 			messages: [

@@ -23,7 +23,7 @@ function userBody(content: unknown): Record<string, unknown> {
 }
 
 describe("parseChatRequest normalization", () => {
-	test("string content and equivalent content-part array normalize to the same text", () => {
+	test("string content and equivalent content-part array normalize to the same text", async () => {
 		const fromString = parseChatRequest(userBody("hello world"), HEADERS);
 		const fromParts = parseChatRequest(
 			userBody([{ type: "text", text: "hello world" }]),
@@ -34,7 +34,7 @@ describe("parseChatRequest normalization", () => {
 		expect(fromParts.messages[0]!.images).toBe(0);
 	});
 
-	test("image parts are counted and flag hasImages", () => {
+	test("image parts are counted and flag hasImages", async () => {
 		const req = parseChatRequest(
 			userBody([
 				{ type: "text", text: "look at these" },
@@ -49,7 +49,7 @@ describe("parseChatRequest normalization", () => {
 		expect(parseChatRequest(userBody("plain"), HEADERS).hasImages).toBe(false);
 	});
 
-	test("provider prefix is stripped from model", () => {
+	test("provider prefix is stripped from model", async () => {
 		expect(parseChatRequest(userBody("hi"), HEADERS).requestedModel).toBe("auto");
 		const prefixed = parseChatRequest(
 			{ model: "auto-model-router/auto", messages: [{ role: "user", content: "hi" }] },
@@ -58,18 +58,18 @@ describe("parseChatRequest normalization", () => {
 		expect(prefixed.requestedModel).toBe("auto");
 	});
 
-	test("reads harness and omp session ids from headers, trimmed", () => {
+	test("reads harness and omp session ids from headers, trimmed", async () => {
 		const headers = new Headers({ "x-omp-harness": " prod-a ", "x-omp-session": " sess-1 " });
 		const req = parseChatRequest(userBody("hi"), headers);
 		expect(req.harnessId).toBe("prod-a");
 		expect(req.ompSessionId).toBe("sess-1");
 	});
 
-	test("omp session id defaults to empty when the header is absent", () => {
+	test("omp session id defaults to empty when the header is absent", async () => {
 		expect(parseChatRequest(userBody("hi"), HEADERS).ompSessionId).toBe("");
 	});
 
-	test("tool schemas, names, and descriptions contribute to promptBytes", () => {
+	test("tool schemas, names, and descriptions contribute to promptBytes", async () => {
 		const parameters = { type: "object", properties: { path: { type: "string" } } };
 		const withTools = parseChatRequest(
 			{
@@ -92,7 +92,7 @@ describe("parseChatRequest normalization", () => {
 		);
 	});
 
-	test("tool calls and tool results are carried into NormMessage", () => {
+	test("tool calls and tool results are carried into NormMessage", async () => {
 		const req = parseChatRequest(
 			{
 				model: "auto",
@@ -114,7 +114,7 @@ describe("parseChatRequest normalization", () => {
 		expect(req.messages[1]!.toolName).toBe("read");
 	});
 
-	test("forcedToolChoice only for objects and non-auto/none strings", () => {
+	test("forcedToolChoice only for objects and non-auto/none strings", async () => {
 		const base = userBody("hi");
 		expect(parseChatRequest(base, HEADERS).forcedToolChoice).toBe(false);
 		expect(parseChatRequest({ ...base, tool_choice: "auto" }, HEADERS).forcedToolChoice).toBe(false);
@@ -128,7 +128,7 @@ describe("parseChatRequest normalization", () => {
 		).toBe(true);
 	});
 
-	test("reasoning accepted from both spellings, omitted when absent", () => {
+	test("reasoning accepted from both spellings, omitted when absent", async () => {
 		expect(
 			parseChatRequest({ ...userBody("hi"), reasoning_effort: "high" }, HEADERS).reasoning,
 		).toBe("high");
@@ -142,7 +142,7 @@ describe("parseChatRequest normalization", () => {
 		expect("reasoning" in plain).toBe(false);
 	});
 
-	test("malformed input throws WireErrorException", () => {
+	test("malformed input throws WireErrorException", async () => {
 		expect(() => parseChatRequest(null, HEADERS)).toThrow(WireErrorException);
 		expect(() => parseChatRequest({ model: "auto", messages: [] }, HEADERS)).toThrow(WireErrorException);
 		expect(() => parseChatRequest({ messages: [{ role: "user", content: "hi" }] }, HEADERS)).toThrow(
@@ -163,7 +163,7 @@ describe("conversationKey", () => {
 	const system = { role: "system", content: "You are a coding agent." };
 	const first = { role: "user", content: "Fix the bug in main.ts" };
 
-	test("stable across later turns of the same conversation", () => {
+	test("stable across later turns of the same conversation", async () => {
 		const turn1 = parseChatRequest({ model: "auto", messages: [system, first] }, HEADERS);
 		const turn3 = parseChatRequest(
 			{
@@ -181,7 +181,7 @@ describe("conversationKey", () => {
 		expect(turn1.conversationKey).toMatch(/^[0-9a-f]{32}$/);
 	});
 
-	test("differs when the first non-system message differs", () => {
+	test("differs when the first non-system message differs", async () => {
 		const a = parseChatRequest({ model: "auto", messages: [system, first] }, HEADERS);
 		const b = parseChatRequest(
 			{ model: "auto", messages: [system, { role: "user", content: "Write a poem" }] },
@@ -192,7 +192,7 @@ describe("conversationKey", () => {
 });
 
 describe("renderUpstreamBody", () => {
-	test("two renders are independent and never mutate the original body", () => {
+	test("two renders are independent and never mutate the original body", async () => {
 		const original = {
 			model: "auto",
 			messages: [{ role: "user", content: "hi" }],
@@ -236,7 +236,7 @@ describe("renderUpstreamBody", () => {
 		expect(JSON.stringify(original)).toBe(before);
 	});
 
-	test("maxTokens lands on whichever spelling the client used", () => {
+	test("maxTokens lands on whichever spelling the client used", async () => {
 		const req = parseChatRequest(
 			{ model: "auto", messages: [{ role: "user", content: "hi" }], max_completion_tokens: 200 },
 			HEADERS,
@@ -246,13 +246,13 @@ describe("renderUpstreamBody", () => {
 		expect("max_tokens" in out).toBe(false);
 	});
 
-	test("reasoning off renders as { enabled: false }", () => {
+	test("reasoning off renders as { enabled: false }", async () => {
 		const req = parseChatRequest(userBody("hi"), HEADERS);
 		const out = req.renderUpstreamBody(mutations({ reasoning: "off" }));
 		expect(out.reasoning).toEqual({ enabled: false });
 	});
 
-	test("cache breakpoints land on named messages and promote string content to parts", () => {
+	test("cache breakpoints land on named messages and promote string content to parts", async () => {
 		const req = parseChatRequest(
 			{
 				model: "auto",
@@ -280,7 +280,7 @@ describe("renderUpstreamBody", () => {
 		]);
 	});
 
-	test("stripAssistantReasoning removes all three spellings from assistant messages only", () => {
+	test("stripAssistantReasoning removes all three spellings from assistant messages only", async () => {
 		const req = parseChatRequest(
 			{
 				model: "auto",

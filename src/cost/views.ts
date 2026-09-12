@@ -5,12 +5,13 @@
  * cost export by day, harness and model. Served by `/v1/router/spend`,
  * `GET /v1/router/feedback` and `/v1/router/export`, exported from lib.ts, and
  * behind `auto-model-router export`. All of them read only long-stable ledger
- * columns and accept a read-only database handle.
+ * columns, and they run on either engine through `util/sql.ts`: a front door
+ * may be reading a local file while the router writes a shared database.
  */
 
 import { providerOfSlug } from "./report.ts";
-import type { Database } from "bun:sqlite";
-import { toEntry, type LedgerRow } from "./ledger.ts";
+import { num, type SqlDb } from "../util/sql.ts";
+import { entriesOf } from "./ledger-sql.ts";
 import { harnessFilter } from "./report.ts";
 import type { LedgerEntry } from "./types.ts";
 
@@ -89,7 +90,7 @@ export interface DecisionFilter {
  * reasons, the classifier's view, the cost forecast against the bill, the escalation signal —
  * and the verdicts `/router good|bad` recorded against each turn ride along.
  */
-export function decisionEntries(db: Database, filter: DecisionFilter): DecisionEntry[] {
+export async function decisionEntries(db: SqlDb, filter: DecisionFilter): Promise<DecisionEntry[]> {
 	const s = scope(filter.harness, "harness_id");
 	if (s === null) return [];
 	const where = ["created_at_ms >= $since", ...s.sql];
@@ -107,20 +108,26 @@ export function decisionEntries(db: Database, filter: DecisionFilter): DecisionE
 		bind.$session = filter.ompSessionId;
 	}
 	const limit = Math.min(Math.max(filter.limit ?? 50, 1), 1_000);
-	const rows = db.query(`SELECT * FROM ledger WHERE ${where.join(" AND ")} ORDER BY created_at_ms DESC LIMIT ${limit}`).all(bind) as LedgerRow[];
-	const entries = rows.map(toEntry);
+	const rows = await db.query<unknown>(
+		`SELECT * FROM ledger WHERE ${where.join(" AND ")} ORDER BY created_at_ms DESC LIMIT ${limit}`,
+		bind,
+	);
+	const entries = entriesOf(rows);
 	if (entries.length === 0) return [];
 	// Verdicts, when the feedback table exists (it does not on a ledger no one has judged).
-	const hasFeedback = (db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feedback'").get() as { name: string } | null) !== null;
 	const verdicts = new Map<string, DecisionEntry["feedback"]>();
-	if (hasFeedback) {
+	if (await db.tableExists("feedback")) {
 		const ids = entries.map((e) => e.id);
 		const marks = ids.map((_, i) => `$f${i}`).join(", ");
 		const fb: Record<string, string> = {};
 		ids.forEach((id, i) => (fb[`$f${i}`] = id));
-		for (const r of db.query(`SELECT ledger_id, verdict, note, created_at_ms FROM feedback WHERE ledger_id IN (${marks}) ORDER BY created_at_ms ASC`).all(fb) as { ledger_id: string; verdict: string; note: string; created_at_ms: number }[]) {
+		const rows = await db.query<{ ledger_id: string; verdict: string; note: string; created_at_ms: number }>(
+			`SELECT ledger_id, verdict, note, created_at_ms FROM feedback WHERE ledger_id IN (${marks}) ORDER BY created_at_ms ASC`,
+			fb,
+		);
+		for (const r of rows) {
 			const list = verdicts.get(r.ledger_id) ?? [];
-			list.push({ verdict: r.verdict === "good" ? "good" : "bad", note: r.note, createdAtMs: r.created_at_ms });
+			list.push({ verdict: r.verdict === "good" ? "good" : "bad", note: r.note, createdAtMs: num(r.created_at_ms) });
 			verdicts.set(r.ledger_id, list);
 		}
 	}
@@ -132,7 +139,7 @@ export function decisionEntries(db: Database, filter: DecisionFilter): DecisionE
  * as the ledger counts them. `contextScope`, when given, narrows to the turns that carried
  * exactly that agentdox scope — what a front door charges back to one project.
  */
-export function spendUsdSince(db: Database, sinceMs: number, harness: HarnessScope, contextScope?: string): number {
+export async function spendUsdSince(db: SqlDb, sinceMs: number, harness: HarnessScope, contextScope?: string): Promise<number> {
 	const s = scope(harness, "harness_id");
 	if (s === null) return 0;
 	const where = ["created_at_ms >= $since", ...s.sql];
@@ -141,36 +148,42 @@ export function spendUsdSince(db: Database, sinceMs: number, harness: HarnessSco
 		where.push("scope = $scope");
 		bind.$scope = contextScope;
 	}
-	const row = db.query(`SELECT COALESCE(SUM(${USD}), 0) AS usd FROM ledger WHERE ${where.join(" AND ")}`).get(bind) as { usd: number };
-	return row.usd;
+	const row = await db.one<{ usd: unknown }>(
+		`SELECT COALESCE(SUM(${USD}), 0) AS usd FROM ledger WHERE ${where.join(" AND ")}`,
+		bind,
+	);
+	return num(row?.usd);
 }
 
 /** Verdicts since `sinceMs`, by model and the most recent 200, joined to the ledger for the judging harness. */
-export function feedbackView(db: Database, sinceMs: number, harness: HarnessScope): FeedbackView {
-	const exists = (db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feedback'").get() as { name: string } | null) !== null;
-	if (!exists) return { byModel: [], recent: [] };
+export async function feedbackView(db: SqlDb, sinceMs: number, harness: HarnessScope): Promise<FeedbackView> {
+	if (!(await db.tableExists("feedback"))) return { byModel: [], recent: [] };
 	const s = scope(harness, "l.harness_id");
 	if (s === null) return { byModel: [], recent: [] };
 	const where = ["f.created_at_ms >= $since", ...s.sql].join(" AND ");
 	const bind = { $since: sinceMs, ...s.bind };
 	const recent = (
-		db.query(`SELECT f.created_at_ms AS at_ms, f.slug, f.tier, f.verdict, f.note, COALESCE(l.harness_id, '') AS harness_id FROM feedback f LEFT JOIN ledger l ON l.id = f.ledger_id WHERE ${where} ORDER BY f.created_at_ms DESC LIMIT 200`).all(bind) as {
-			at_ms: number;
-			slug: string;
-			tier: string;
-			verdict: string;
-			note: string;
-			harness_id: string;
-		}[]
-	).map((r) => ({ atMs: r.at_ms, slug: r.slug, tier: r.tier, verdict: (r.verdict === "good" ? "good" : "bad") as "good" | "bad", note: r.note, harnessId: r.harness_id }));
+		await db.query<{ at_ms: number; slug: string; tier: string; verdict: string; note: string; harness_id: string }>(
+			`SELECT f.created_at_ms AS at_ms, f.slug, f.tier, f.verdict, f.note, COALESCE(l.harness_id, '') AS harness_id
+			 FROM feedback f LEFT JOIN ledger l ON l.id = f.ledger_id WHERE ${where} ORDER BY f.created_at_ms DESC LIMIT 200`,
+			bind,
+		)
+	).map((r) => ({
+		atMs: num(r.at_ms),
+		slug: r.slug,
+		tier: r.tier,
+		verdict: (r.verdict === "good" ? "good" : "bad") as "good" | "bad",
+		note: r.note,
+		harnessId: r.harness_id,
+	}));
 	const byModel = (
-		db
-			.query(
-				`SELECT f.slug, SUM(CASE WHEN f.verdict = 'good' THEN 1 ELSE 0 END) AS good, SUM(CASE WHEN f.verdict = 'bad' THEN 1 ELSE 0 END) AS bad, COUNT(DISTINCT COALESCE(l.harness_id, '')) AS judges
-				 FROM feedback f LEFT JOIN ledger l ON l.id = f.ledger_id WHERE ${where} GROUP BY f.slug ORDER BY bad DESC, good DESC, f.slug ASC`,
-			)
-			.all(bind) as { slug: string; good: number; bad: number; judges: number }[]
-	).map((r) => ({ slug: r.slug, good: r.good, bad: r.bad, judges: r.judges }));
+		await db.query<{ slug: string; good: unknown; bad: unknown; judges: unknown }>(
+			`SELECT f.slug, SUM(CASE WHEN f.verdict = 'good' THEN 1 ELSE 0 END) AS good, SUM(CASE WHEN f.verdict = 'bad' THEN 1 ELSE 0 END) AS bad,
+				COUNT(DISTINCT COALESCE(l.harness_id, '')) AS judges
+			 FROM feedback f LEFT JOIN ledger l ON l.id = f.ledger_id WHERE ${where} GROUP BY f.slug ORDER BY bad DESC, good DESC, f.slug ASC`,
+			bind,
+		)
+	).map((r) => ({ slug: r.slug, good: num(r.good), bad: num(r.bad), judges: num(r.judges) }));
 	return { byModel, recent };
 }
 
@@ -180,36 +193,53 @@ export function feedbackView(db: Database, sinceMs: number, harness: HarnessScop
  * can charge each project its own share; rows from before v18 (and turns that carried no
  * scope) group under "".
  */
-export function exportRows(db: Database, sinceMs: number, harness: HarnessScope): ExportRow[] {
+export async function exportRows(db: SqlDb, sinceMs: number, harness: HarnessScope): Promise<ExportRow[]> {
 	const s = scope(harness, "harness_id");
 	if (s === null) return [];
 	const where = ["created_at_ms >= $since", "requested_model <> 'digest'", ...s.sql].join(" AND ");
-	const rows = db
-		.query(
-			`SELECT strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') AS day, harness_id, COALESCE(served_slug, slug) AS slug, COALESCE(scope, '') AS scope,
+	// GROUP BY names the day expression rather than its alias: Postgres does not
+	// allow a select alias in GROUP BY, and repeating it keeps one statement for
+	// both engines.
+	const day = db.utcDay("created_at_ms");
+	const rows = await db.query<{
+		day: string;
+		harness_id: string;
+		slug: string;
+		scope: string;
+		dispatches: unknown;
+		prompt_tokens: unknown;
+		cached_tokens: unknown;
+		completion_tokens: unknown;
+		spend: unknown;
+		escalations: unknown;
+		errors: unknown;
+	}>(
+		`SELECT ${day} AS day, harness_id, COALESCE(served_slug, slug) AS slug, COALESCE(scope, '') AS scope,
 				COUNT(*) AS dispatches,
-				COALESCE(SUM(json_extract(usage, '$.promptTokens')), 0) AS prompt_tokens,
-				COALESCE(SUM(json_extract(usage, '$.cachedTokens')), 0) AS cached_tokens,
-				COALESCE(SUM(json_extract(usage, '$.completionTokens')), 0) AS completion_tokens,
+				COALESCE(SUM(${db.jsonNum("usage", "promptTokens")}), 0) AS prompt_tokens,
+				COALESCE(SUM(${db.jsonNum("usage", "cachedTokens")}), 0) AS cached_tokens,
+				COALESCE(SUM(${db.jsonNum("usage", "completionTokens")}), 0) AS completion_tokens,
 				COALESCE(SUM(${USD}), 0) AS spend,
 				SUM(CASE WHEN escalation_signal IS NOT NULL THEN 1 ELSE 0 END) AS escalations,
 				SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
-			 FROM ledger WHERE ${where} GROUP BY day, harness_id, slug, scope ORDER BY day ASC, harness_id ASC, spend DESC`,
-		)
-		.all({ $since: sinceMs, ...s.bind }) as { day: string; harness_id: string; slug: string; scope: string; dispatches: number; prompt_tokens: number; cached_tokens: number; completion_tokens: number; spend: number; escalations: number; errors: number }[];
+			 FROM ledger WHERE ${where}
+			 GROUP BY ${day}, harness_id, COALESCE(served_slug, slug), COALESCE(scope, '')
+			 ORDER BY 1 ASC, harness_id ASC, spend DESC`,
+		{ $since: sinceMs, ...s.bind },
+	);
 	return rows.map((r) => ({
 		day: r.day,
 		harnessId: r.harness_id,
 		slug: r.slug,
 		scope: r.scope,
 		provider: providerOfSlug(r.slug),
-		dispatches: r.dispatches,
-		promptTokens: r.prompt_tokens,
-		cachedTokens: r.cached_tokens,
-		completionTokens: r.completion_tokens,
-		spendUsd: r.spend,
-		escalations: r.escalations,
-		errors: r.errors,
+		dispatches: num(r.dispatches),
+		promptTokens: num(r.prompt_tokens),
+		cachedTokens: num(r.cached_tokens),
+		completionTokens: num(r.completion_tokens),
+		spendUsd: num(r.spend),
+		escalations: num(r.escalations),
+		errors: num(r.errors),
 	}));
 }
 

@@ -10,7 +10,7 @@ import { parseRemoteRouter } from "../omp-extension/remote-logic.ts";
 const NL = String.fromCharCode(10);
 
 describe("the single-file member install", () => {
-	test("the embedded package is the install: CLI, harness integrations, runtime deps; no tests, no caches", () => {
+	test("the embedded package is the install: CLI, harness integrations, runtime deps; no tests, no caches", async () => {
 		const pkg = collectPackageFiles(process.cwd());
 		expect(pkg.version).toBe((JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version);
 		expect(pkg.files["src/index.ts"]).toContain("connect");
@@ -28,7 +28,7 @@ describe("the single-file member install", () => {
 		expect(names.some((n) => /\.d\.ts$/.test(n) && n.startsWith("node_modules/"))).toBe(false);
 	});
 
-	test("targets and file names", () => {
+	test("targets and file names", async () => {
 		expect(isExecutableTarget("linux-x64")).toBe(true);
 		expect(isExecutableTarget("linux-x86")).toBe(false);
 		expect(executableFileName("windows-x64")).toBe("auto-model-router-windows-x64.exe");
@@ -44,7 +44,7 @@ describe("the single-file member install", () => {
 		expect(await readEmbeddedPackage()).toBeNull();
 	});
 
-	test("materializing writes the files once, keyed by content, under the router home", () => {
+	test("materializing writes the files once, keyed by content, under the router home", async () => {
 		const home = mkdtempSync(join(tmpdir(), "amr-mat-"));
 		try {
 			const pkg = { version: "9.9.9", files: { "package.json": `{"version":"9.9.9"}${NL}`, "src/index.ts": `console.log(1)${NL}`, "omp-extension/x.ts": "export {}" } };
@@ -63,7 +63,7 @@ describe("the single-file member install", () => {
 		}
 	});
 
-	test("connect from the executable: it is Claude Code's key helper, goes on PATH, and remote.json names it", () => {
+	test("connect from the executable: it is Claude Code's key helper, goes on PATH, and remote.json names it", async () => {
 		const home = mkdtempSync(join(tmpdir(), "amr-exe-connect-"));
 		const claude = join(home, ".claude");
 		mkdirSync(claude, { recursive: true });
@@ -98,7 +98,7 @@ describe("the single-file member install", () => {
 		expect(seen[0]?.url).toBe("https://team.example/setup/exchange");
 		expect(JSON.parse(seen[0]?.body ?? "{}")).toEqual({ token: "amrs_t", device: "laptop" });
 		const refused = (async () => Response.json({ error: "invalid_token" }, { status: 401 })) as unknown as typeof fetch;
-		await expect(exchangeSetupToken("https://team.example", "amrs_old", "laptop", refused)).rejects.toThrow("refused");
+		(await expect(exchangeSetupToken("https://team.example", "amrs_old", "laptop", refused))).rejects.toThrow("refused");
 	});
 
 	test("the executable builds for this host and knows its version from the embedded package", async () => {
@@ -118,7 +118,7 @@ describe("the single-file member install", () => {
 		}
 	}, 120_000);
 
-	test("the global handle is what marks a compiled process", () => {
+	test("the global handle is what marks a compiled process", async () => {
 		const g = globalThis as Record<string, unknown>;
 		g[EMBEDDED_GLOBAL] = { manifestPath: "/$bunfs/root/manifest.json" };
 		try {
