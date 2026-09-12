@@ -18,7 +18,7 @@ import { runEval, type Completer } from "../eval/run.ts";
 import type { ToolSpec } from "../eval/agentic.ts";
 import type { ToolCall } from "../upstream/types.ts";
 import type { QualityAxis } from "../config/types.ts";
-import { fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../eval/calibrate.ts";
+import { fitCalibration, hardRaw, pickAnchors, toLocalFeedScores, MIN_ANCHORS, PUBLISH_MIN_R } from "../eval/calibrate.ts";
 import { makeJudge } from "../eval/judge.ts";
 import { loadLocalScores, saveLocalScores } from "../catalog/benchmark-feeds.ts";
 import { advise } from "./advise.ts";
@@ -812,12 +812,15 @@ export function startServer(cfg: RouterConfig): StartedServer {
 							});
 							const target = results[0]!;
 							const published = (s: string, axis: QualityAxis): number | undefined => models.find((m) => m.slug === s)?.quality[axis];
-							const cal = fitCalibration(results.slice(1), published);
+							const cal = fitCalibration(results.slice(1), published, hardRaw);
 							const authorOf = (s: string): string => models.find((m) => m.slug === s)?.author ?? "";
-							const fresh = toLocalFeedScores([target], cal, authorOf);
-							const shared = { slug, anchors, raw: target.axes, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, tookMs: Date.now() - started };
+							const fresh = toLocalFeedScores([target], cal, authorOf, hardRaw);
+							// The fit is reported, not just used: `r` and `n` say whether the numbers deserve
+							// belief, and an axis dropped for a weak fit should say so rather than vanish.
+							const fitDetail = Object.fromEntries(Object.entries(cal).map(([axis, f]) => [axis, { r: Number(f.r.toFixed(3)), n: f.n, published: f.r >= PUBLISH_MIN_R }]));
+							const shared = { slug, anchors, raw: target.axes, rawHard: target.axesHard, byComplexity: target.byComplexity, repeats: target.repeats, spread: target.spread, errors: target.errors, fit: fitDetail, publishMinR: PUBLISH_MIN_R, tookMs: Date.now() - started };
 							if (fresh.length === 0) {
-								benchmarkJobs.set(jobId, { ...benchmarkJobs.get(jobId)!, state: "done", result: { ...shared, calibrated: null, applied: false, reason: "no axis produced a usable fit; try more or better-spread anchors" } });
+								benchmarkJobs.set(jobId, { ...benchmarkJobs.get(jobId)!, state: "done", result: { ...shared, calibrated: null, applied: false, reason: `no axis produced a fit at r >= ${PUBLISH_MIN_R} on the hard band; try more or better-spread anchors` } });
 								return;
 							}
 							// Merge, never replace: other models' measurements are not this run's to discard.

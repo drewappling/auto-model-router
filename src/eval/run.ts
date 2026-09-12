@@ -40,6 +40,14 @@ export interface EvalResult {
 	 */
 	byComplexity: Partial<Record<Complexity, AxisScore>>;
 	/**
+	 * Per-axis scores from the HARD band alone. Calibration fits against these: the easy and
+	 * moderate bands sit at ~1.0 for every model worth ranking, so including them gives the
+	 * regression almost no variation in x against a wide spread in published y — the fitted
+	 * slope goes shallow and every target is dragged toward the middle. Measured: a model
+	 * published at intelligence 39.5 calibrated to 22.8 across 10 passes.
+	 */
+	axesHard: Record<QualityAxis, AxisScore>;
+	/**
 	 * Per-axis spread across passes: max pass mean minus min pass mean, or null under two
 	 * passes. A wide spread means the headline is one sample of a noisy quantity, and is the
 	 * honest counterpart to reporting a score at all.
@@ -144,6 +152,7 @@ async function scorePass(slug: string, args: RunEvalArgs): Promise<EvalResult> {
 		}
 	}
 	const byComplexity: Partial<Record<Complexity, AxisScore>> = {};
+	const axesHard: Record<QualityAxis, AxisScore> = { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } };
 	for (const o of [...objective, ...judgedOutcomes, ...scenarioOutcomes]) {
 		if (!o.ok) {
 			// An unobserved task is NOT a zero: a provider's throttle or outage would otherwise
@@ -154,11 +163,15 @@ async function scorePass(slug: string, args: RunEvalArgs): Promise<EvalResult> {
 		}
 		axes[o.axis].sum += o.grade;
 		axes[o.axis].n += 1;
+		if (o.complexity === "hard") {
+			axesHard[o.axis].sum += o.grade;
+			axesHard[o.axis].n += 1;
+		}
 		const band = (byComplexity[o.complexity] ??= { sum: 0, n: 0 });
 		band.sum += o.grade;
 		band.n += 1;
 	}
-	return { slug, axes, errors, repeats: 1, spread: {}, byComplexity };
+	return { slug, axes, errors, repeats: 1, spread: {}, byComplexity, axesHard };
 }
 
 const AXES: readonly QualityAxis[] = ["coding", "intelligence", "agentic"];
@@ -174,6 +187,7 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 	const axes: Record<QualityAxis, AxisScore> = { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } };
 	const means: Record<QualityAxis, number[]> = { coding: [], intelligence: [], agentic: [] };
 	const byComplexity: Partial<Record<Complexity, AxisScore>> = {};
+	const axesHard: Record<QualityAxis, AxisScore> = { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } };
 	let errors = 0;
 	for (let i = 0; i < passes; i++) {
 		const pass = await scorePass(slug, args);
@@ -182,6 +196,8 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 		for (const axis of AXES) {
 			axes[axis].sum += pass.axes[axis].sum;
 			axes[axis].n += pass.axes[axis].n;
+			axesHard[axis].sum += pass.axesHard[axis].sum;
+			axesHard[axis].n += pass.axesHard[axis].n;
 			if (pass.axes[axis].n > 0) means[axis].push(pass.axes[axis].sum / pass.axes[axis].n);
 		}
 		for (const [band, score] of Object.entries(pass.byComplexity) as [Complexity, AxisScore][]) {
@@ -195,7 +211,7 @@ async function scoreModel(slug: string, args: RunEvalArgs): Promise<EvalResult> 
 		const m = means[axis];
 		if (m.length > 1) spread[axis] = Math.max(...m) - Math.min(...m);
 	}
-	return { slug, axes, errors, repeats: passes, spread, byComplexity };
+	return { slug, axes, errors, repeats: passes, spread, byComplexity, axesHard };
 }
 
 export async function runEval(args: RunEvalArgs): Promise<EvalResult[]> {

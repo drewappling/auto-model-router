@@ -3,9 +3,10 @@ import { describe, expect, test } from "bun:test";
 import { normalizeCatalogModel } from "../src/catalog/openrouter-catalog.ts";
 import { applyFeedScores, loadLocalScores, saveLocalScores, type FeedScore } from "../src/catalog/benchmark-feeds.ts";
 import { answerScore, extractJson, isRefusalOrEmpty, jsonField, tokenCoverage } from "../src/eval/grade.ts";
-import { applyFit, fitAxis, fitCalibration, pickAnchors, toLocalFeedScores, MIN_ANCHORS } from "../src/eval/calibrate.ts";
+import { applyFit, fitAxis, fitCalibration, hardRaw, pickAnchors, toLocalFeedScores, MIN_ANCHORS, MIN_R, PUBLISH_MIN_R } from "../src/eval/calibrate.ts";
 import { runEval, type EvalResult } from "../src/eval/run.ts";
 import { EVAL_TASKS } from "../src/eval/tasks.ts";
+import type { QualityAxis } from "../src/config/types.ts";
 import { makeJudge, parseScore } from "../src/eval/judge.ts";
 import type { EvalTask, JudgedTask } from "../src/eval/tasks.ts";
 import { openDb } from "../src/util/sqlite.ts";
@@ -130,9 +131,9 @@ describe("calibration", () => {
 	test("fitCalibration + toLocalFeedScores place a target on the AA scale", () => {
 		expect(MIN_ANCHORS).toBe(3);
 		const anchors: EvalResult[] = [
-			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
-			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
-			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
+			{ slug: "a/one", axes: { coding: { sum: 0.2, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {}, axesHard: { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
+			{ slug: "a/two", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {}, axesHard: { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
+			{ slug: "a/three", axes: { coding: { sum: 0.8, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {}, axesHard: { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
 		];
 		const aaOf: Record<string, number> = { "a/one": 40, "a/two": 60, "a/three": 80 };
 		const cal = fitCalibration(anchors, (slug, axis) => (axis === "coding" ? aaOf[slug] : undefined));
@@ -140,13 +141,69 @@ describe("calibration", () => {
 		expect(cal.intelligence).toBeUndefined(); // no anchor data on that axis
 
 		const targets: EvalResult[] = [
-			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {} },
+			{ slug: "z/gap", axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0.9, n: 1 }, agentic: { sum: 0, n: 0 } }, errors: 0, repeats: 1, spread: {}, byComplexity: {}, axesHard: { coding: { sum: 0, n: 0 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } } },
 		];
 		const local = toLocalFeedScores(targets, cal, (s) => s.slice(0, s.indexOf("/")));
 		expect(local).toHaveLength(1);
 		expect(local[0]).toMatchObject({ key: "gap", creator: "z", source: "local" });
 		expect(local[0]!.coding).toBeCloseTo(60, 5); // calibrated from raw 0.5
 		expect(local[0]!.intelligence).toBeUndefined(); // axis had no fit, so not emitted
+	});
+
+	test("calibrating on the hard band beats calibrating on everything", () => {
+		// Three anchors published 20/50/80 apart. On the FULL suite they all score ~0.97
+		// because easy and moderate pin everyone at the ceiling; on the hard band alone they
+		// separate. Same models, same publishing, different x — and only one of them can fit.
+		const mk = (slug: string, full: number, hard: number): EvalResult => ({
+			slug,
+			axes: { coding: { sum: full, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } },
+			axesHard: { coding: { sum: hard, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } },
+			errors: 0,
+			repeats: 1,
+			spread: {},
+			byComplexity: {},
+		});
+		const anchors = [mk("a/low", 0.96, 0.2), mk("a/mid", 0.97, 0.5), mk("a/high", 0.98, 0.8)];
+		const aa: Record<string, number> = { "a/low": 20, "a/mid": 50, "a/high": 80 };
+		const published = (slug: string, axis: QualityAxis) => (axis === "coding" ? aa[slug] : undefined);
+		const target = mk("z/target", 0.97, 0.5);
+
+		const onHard = toLocalFeedScores([target], fitCalibration(anchors, published, hardRaw), () => "z", hardRaw);
+		// The hard band spans 0.2-0.8 against 20-80, so the fit is a real line: raw 0.5 ⇒ ~50.
+		expect(onHard[0]!.coding).toBeCloseTo(50, 0);
+
+		// On the full suite the anchors span 0.96-0.98: the same published spread compressed into
+		// a fiftieth of the range. That is the shallow slope that produced 22.8 for a model
+		// published at 39.5, so the fit must be refused rather than published.
+		const pooledFit = fitCalibration(anchors, published);
+		const pooled = toLocalFeedScores([target], pooledFit, () => "z");
+		expect(pooled).toEqual([]);
+	});
+
+	test("a weak fit is refused, not published", () => {
+		// Points with a real but noisy relationship: computable (r >= MIN_R) yet not worth
+		// acting on. `r` and `n` used to be computed and then thrown away.
+		const noisy = [
+			{ raw: 0.1, aa: 20 },
+			{ raw: 0.5, aa: 70 },
+			{ raw: 0.6, aa: 30 },
+			{ raw: 0.9, aa: 60 },
+		];
+		const fit = fitAxis(noisy)!;
+		expect(fit.r).toBeGreaterThanOrEqual(MIN_R);
+		expect(fit.r).toBeLessThan(PUBLISH_MIN_R);
+		const target: EvalResult = {
+			slug: "z/t",
+			axes: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } },
+			axesHard: { coding: { sum: 0.5, n: 1 }, intelligence: { sum: 0, n: 0 }, agentic: { sum: 0, n: 0 } },
+			errors: 0,
+			repeats: 1,
+			spread: {},
+			byComplexity: {},
+		};
+		expect(toLocalFeedScores([target], { coding: fit }, () => "z", hardRaw)).toEqual([]);
+		// A caller that deliberately lowers the bar still can, so the gate is policy not dogma.
+		expect(toLocalFeedScores([target], { coding: fit }, () => "z", hardRaw, MIN_R)[0]!.coding).toBeGreaterThan(0);
 	});
 });
 

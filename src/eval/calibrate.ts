@@ -58,13 +58,26 @@ export interface AnchorPoint {
 }
 
 /**
- * OLS fit, or null when the calibration cannot be trusted: too few points, no
- * spread, a non-positive slope, or weak correlation. A suite that does not track
- * AA positively and with real correlation would turn a target's score into noise
- * dressed as signal, so we refuse it and emit nothing for that axis.
+ * The raw range the anchors must actually cover before a line through them means anything.
+ *
+ * Correlation alone does NOT catch a compressed fit: three anchors published 20/50/80 that
+ * our suite scores 0.96/0.97/0.98 correlate at r = 1.0, and the line they define has a slope
+ * of ~3000 index points per unit of raw score. That fit is arithmetically perfect and
+ * completely useless — it is how a model published at 39.5 was calibrated to 22.8. If the
+ * anchors barely differ on our suite, our suite cannot place anything between them.
+ */
+export const MIN_RAW_SPREAD = 0.15;
+
+/**
+ * OLS fit, or null when the calibration cannot be trusted: too few points, too narrow a raw
+ * range, no spread, a non-positive slope, or weak correlation. A suite that does not track
+ * AA positively, with real correlation, over a real range would turn a target's score into
+ * noise dressed as signal, so we refuse it and emit nothing for that axis.
  */
 export function fitAxis(points: readonly AnchorPoint[]): LineFit | null {
 	if (points.length < MIN_ANCHORS) return null;
+	const raws = points.map((p) => p.raw);
+	if (Math.max(...raws) - Math.min(...raws) < MIN_RAW_SPREAD) return null;
 	const n = points.length;
 	let sx = 0;
 	let sy = 0;
@@ -101,19 +114,32 @@ export function applyFit(fit: LineFit, raw: number): number {
 const AXES: readonly QualityAxis[] = ["coding", "intelligence", "agentic"];
 
 /**
- * Fit every axis from the anchors' raw suite scores paired with their known AA
- * scores. `anchorAa` supplies the AA index per slug+axis (absent ⇒ that anchor
- * is not used on that axis).
+ * The correlation a fit must reach before its numbers are published as scores. `MIN_R` (0.5)
+ * is the bar for a fit being computable at all; this is the bar for TRUSTING one. The fit's
+ * `r` and `n` were previously computed and then discarded, so an r of 0.51 and one of 0.99
+ * produced indistinguishable output — and a shallow fit silently compressed every target.
+ */
+export const PUBLISH_MIN_R = 0.8;
+
+/**
+ * Fit every axis from the anchors' raw suite scores paired with their known AA scores.
+ * `anchorAa` supplies the AA index per slug+axis (absent ⇒ that anchor is not used there).
+ *
+ * `rawOf` selects which observations the fit is built from. It defaults to every band, but
+ * callers should pass the HARD band: easy and moderate sit at ~1.0 for every model worth
+ * ranking, so including them leaves the regression almost no variation in x against a wide
+ * spread in published y, and the slope collapses toward flat.
  */
 export function fitCalibration(
 	anchors: readonly EvalResult[],
 	anchorAa: (slug: string, axis: QualityAxis) => number | undefined,
+	rawOf: (result: EvalResult, axis: QualityAxis) => number | null = (r, axis) => axisMean(r.axes[axis]),
 ): Calibration {
 	const cal: Calibration = {};
 	for (const axis of AXES) {
 		const points: AnchorPoint[] = [];
 		for (const r of anchors) {
-			const raw = axisMean(r.axes[axis]);
+			const raw = rawOf(r, axis);
 			const aa = anchorAa(r.slug, axis);
 			if (raw !== null && aa !== undefined) points.push({ raw, aa });
 		}
@@ -123,15 +149,24 @@ export function fitCalibration(
 	return cal;
 }
 
-function axisMean(a: AxisScore | undefined): number | null {
+export function axisMean(a: AxisScore | undefined): number | null {
 	return a === undefined || a.n === 0 ? null : a.sum / a.n;
 }
 
-/** Calibrated local FeedScores for the targets, one axis at a time, skipping axes with no fit. */
+/** The hard band alone, for calibration. */
+export const hardRaw = (r: EvalResult, axis: QualityAxis): number | null => axisMean(r.axesHard[axis]);
+
+/**
+ * Calibrated local FeedScores for the targets, one axis at a time. An axis is skipped when it
+ * has no fit, when the fit is weaker than `minR`, or when the target made no observation on
+ * it — honest silence rather than a number nobody should act on.
+ */
 export function toLocalFeedScores(
 	targets: readonly EvalResult[],
 	cal: Calibration,
 	authorOf: (slug: string) => string,
+	rawOf: (result: EvalResult, axis: QualityAxis) => number | null = (r, axis) => axisMean(r.axes[axis]),
+	minR = PUBLISH_MIN_R,
 ): FeedScore[] {
 	const out: FeedScore[] = [];
 	for (const r of targets) {
@@ -139,8 +174,8 @@ export function toLocalFeedScores(
 		let any = false;
 		for (const axis of AXES) {
 			const fit = cal[axis];
-			const raw = axisMean(r.axes[axis]);
-			if (fit === undefined || raw === null) continue;
+			const raw = rawOf(r, axis);
+			if (fit === undefined || raw === null || fit.r < minR) continue;
 			entry[axis] = applyFit(fit, raw);
 			any = true;
 		}
