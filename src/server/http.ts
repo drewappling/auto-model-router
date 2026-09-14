@@ -918,6 +918,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 					const snap = catalog.peek();
 					return json({
 						status: "ok",
+						// What a front door may rely on, by name rather than by version: a
+						// team edition that sends per-turn credentials to a router without
+						// `upstream-keys` would have them ignored, and its tenants served on
+						// the deployment's own credential — a silent cross-charge. A name it
+						// can check turns that into a refusal it can explain.
+						features: ["upstream-keys"],
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
 						// Which upstreams turns can actually be served from: OpenRouter needs
 						// its key; Ollama needs to be on and out of cooldown.
