@@ -146,9 +146,9 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 		log.warn("ollama cloud unavailable; routing around it", { kind: err.kind, cooldownMs: ms, message: err.message });
 	};
 
-	function headers(extra: Record<string, string> = {}): Record<string, string> {
+	function headers(extra: Record<string, string> = {}, apiKey: string = o.apiKey): Record<string, string> {
 		const h: Record<string, string> = { "content-type": "application/json", ...extra };
-		if (o.apiKey !== "") h.authorization = `Bearer ${o.apiKey}`;
+		if (apiKey !== "") h.authorization = `Bearer ${apiKey}`;
 		return h;
 	}
 
@@ -195,7 +195,8 @@ export function createOllamaClient(cfg: RouterConfig, fetchImpl: FetchLike = fet
 			try {
 				res = await fetchImpl(`${baseUrl()}/chat/completions`, {
 					method: "POST",
-					headers: headers(),
+					// A per-turn credential wins for this dispatch only; cfg is never written to.
+					headers: headers({}, opts.upstreamKeys?.ollama ?? o.apiKey),
 					body: JSON.stringify(body),
 					signal: composeSignal(opts.signal),
 				});

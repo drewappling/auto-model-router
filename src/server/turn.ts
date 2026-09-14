@@ -472,7 +472,9 @@ export async function runTurn(
 		let streamEnded = false;
 
 		try {
-			dispatch = await upstream.dispatch({ body, sessionId: decision.sessionId, signal: attemptSignal });
+			// Inside the attempt loop, so a retry, a same-tier failover and a tier
+			// escalation all dispatch with the same per-turn credentials.
+			dispatch = await upstream.dispatch({ body, sessionId: decision.sessionId, signal: attemptSignal, ...(req.upstreamKeys === undefined ? {} : { upstreamKeys: req.upstreamKeys }) });
 		} catch (err) {
 			streamError = err;
 		}

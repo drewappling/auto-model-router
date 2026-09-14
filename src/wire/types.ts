@@ -126,6 +126,21 @@ export interface NormRequest {
 	 * to. Absent ⇒ the configured profile and filters alone.
 	 */
 	policy?: RequestPolicy;
+	/**
+	 * Per-turn upstream credentials from the `X-Omp-Upstream-Keys` header
+	 * (JSON `{ "<upstream id>": "<credential>" }`), set by a front door whose
+	 * callers bring their own keys: one router fleet then serves every tenant
+	 * instead of one process per credential set. Keyed by upstream id —
+	 * `openrouter`, `ollama`, or a named entry's `id`.
+	 *
+	 * An upstream named here dispatches with this credential for the whole
+	 * turn, every retry and failover included; one not named keeps its
+	 * configured `apiKey`; one named with `""` carries no credential and is
+	 * excluded from candidate selection rather than dispatched keyless.
+	 *
+	 * A secret: never logged, recorded, or repeated in an error.
+	 */
+	upstreamKeys?: Readonly<Record<string, string>>;
 	/** Virtual model the client selected, e.g. `auto`, `auto-cheap`, `auto-max`. */
 	requestedModel: string;
 	/**

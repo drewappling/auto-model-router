@@ -113,15 +113,20 @@ function transportError(id: string, err: unknown): UpstreamError {
 	return new UpstreamError("network", 0, err instanceof Error ? err.message : String(err), true);
 }
 
-/** The chat-completions URL and auth for an entry: Azure names the deployment in the path and keys with `api-key`. */
-export function compatEndpoint(entry: UpstreamEntry, modelId: string): { url: string; headers: Record<string, string> } {
+/**
+ * The chat-completions URL and auth for an entry: Azure names the deployment in the path and keys with `api-key`.
+ *
+ * `apiKey` overrides the entry's own credential for one dispatch (a per-turn
+ * key from the front door). The entry itself is never written to.
+ */
+export function compatEndpoint(entry: UpstreamEntry, modelId: string, apiKey: string = entry.apiKey): { url: string; headers: Record<string, string> } {
 	const base = entry.baseUrl.replace(/\/+$/, "");
 	const headers: Record<string, string> = { "content-type": "application/json", ...entry.headers };
 	if (entry.kind === "azure") {
-		if (entry.apiKey !== "") headers["api-key"] = entry.apiKey;
+		if (apiKey !== "") headers["api-key"] = apiKey;
 		return { url: `${base}/openai/deployments/${encodeURIComponent(modelId)}/chat/completions?api-version=${encodeURIComponent(entry.apiVersion)}`, headers };
 	}
-	if (entry.apiKey !== "") headers.authorization = `Bearer ${entry.apiKey}`;
+	if (apiKey !== "") headers.authorization = `Bearer ${apiKey}`;
 	return { url: `${base}/chat/completions`, headers };
 }
 
@@ -195,8 +200,8 @@ export function createCompatClient(cfg: RouterConfig, id: string, fetchImpl: Fet
 		return err;
 	}
 
-	async function post(e: UpstreamEntry, body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<Response> {
-		const { url, headers } = compatEndpoint(e, typeof body.model === "string" ? body.model : "");
+	async function post(e: UpstreamEntry, body: Record<string, unknown>, signal: AbortSignal | undefined, apiKey: string = e.apiKey): Promise<Response> {
+		const { url, headers } = compatEndpoint(e, typeof body.model === "string" ? body.model : "", apiKey);
 		try {
 			return await fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body), signal: composeSignal(e, signal) });
 		} catch (err) {
@@ -212,7 +217,8 @@ export function createCompatClient(cfg: RouterConfig, id: string, fetchImpl: Fet
 
 		async dispatch(opts: DispatchOptions): Promise<Dispatch> {
 			const e = entry();
-			const res = await post(e, toCompatBody(id, { ...opts.body, stream: true }), opts.signal);
+			// A per-turn credential for this upstream wins for this dispatch only; the shared entry is never touched.
+			const res = await post(e, toCompatBody(id, { ...opts.body, stream: true }), opts.signal, opts.upstreamKeys?.[id] ?? e.apiKey);
 			if (!res.ok) throw await httpError(res);
 			if (!res.body) throw new UpstreamError("upstream_error", res.status, "response had no body", true);
 			const parsed = parseSse(res.body, (msg, fields) => log.warn(msg, fields));

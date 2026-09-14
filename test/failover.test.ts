@@ -703,3 +703,44 @@ describe("400 classification (review 2026-09-05 follow-up)", () => {
 	});
 });
 
+describe("per-turn upstream credentials", () => {
+	test("the turn's credentials reach the first dispatch, the failover retry, and nothing else", async () => {
+		const { router } = mkRouter([mkDecision("moderate", "a/model"), mkDecision("moderate", "b/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("model_unavailable", 404, "no endpoints found", true) },
+			{ kind: "chunks", chunks: okChunks("b/model") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+		const upstreamKeys = { "up-a": "sk-tenant-secret", "up-b": "sk-other-secret" };
+
+		await runTurn({ ...mkReq(), upstreamKeys }, sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(finishes).toHaveLength(1);
+		// Both attempts carry them: a retry that dropped the credential would 401.
+		expect(dispatches).toHaveLength(2);
+		for (const d of dispatches) expect(d.upstreamKeys).toEqual(upstreamKeys);
+
+		// A secret: it is in no ledger row, no decision reason, and no error text.
+		const recorded = JSON.stringify(entries);
+		expect(recorded).not.toContain("sk-tenant-secret");
+		expect(recorded).not.toContain("sk-other-secret");
+		expect(JSON.stringify(finishes)).not.toContain("sk-tenant-secret");
+	});
+
+	test("a turn without the header dispatches with no override at all", async () => {
+		const { router } = mkRouter([mkDecision("moderate", "a/model")]);
+		const { upstream, calls: dispatches } = mkUpstream([{ kind: "chunks", chunks: okChunks("a/model") }]);
+		const { ledger } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect("upstreamKeys" in dispatches[0]!).toBe(false);
+	});
+});
+

@@ -164,6 +164,8 @@ export type RejectionReason =
 	| "free_tier_excluded"
 	| "reasoning_mandatory"
 	| "untrusted"
+	/** The turn's `X-Omp-Upstream-Keys` names this model's upstream with an empty credential: it cannot be dispatched to. */
+	| "no_credential"
 	/** Already failed on this turn; excluded so failover picks a different model. */
 	| "failed_this_turn";
 

@@ -43,6 +43,13 @@ export interface DispatchOptions {
 	body: Record<string, unknown>;
 	/** Forwarded as the `x-session-id` header, mirroring body `session_id`. */
 	sessionId: string;
+	/**
+	 * Per-turn credentials by upstream id (`NormRequest.upstreamKeys`). The
+	 * client dispatching this body prefers its own entry over the configured
+	 * `apiKey`, without ever writing to the shared config: concurrent turns
+	 * carry different tenants' keys over the same `UpstreamEntry`.
+	 */
+	upstreamKeys?: Readonly<Record<string, string>>;
 	signal: AbortSignal;
 }
 

@@ -214,6 +214,15 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 			continue;
 		}
 
+		// A per-turn credential map that names this model's upstream with an
+		// empty string says the turn HAS no key for it: dispatching would 401,
+		// so it is not a candidate this turn (and is a candidate again on the
+		// next turn that does carry one).
+		if (req.upstreamKeys?.[model.provider] === "") {
+			rejected.push({ slug, reason: "no_credential", detail: `upstream ${model.provider} has no credential on this turn` });
+			continue;
+		}
+
 		// Hard-coded denials, before any user configuration.
 		const builtIn = builtInDenial(model);
 		if (builtIn !== null) {

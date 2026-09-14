@@ -114,14 +114,14 @@ export function createOpenRouterClient(cfg: RouterConfig): UpstreamClient {
 		return caller ?? timeout;
 	}
 
-	function headers(extra: Record<string, string>): Record<string, string> {
+	function headers(extra: Record<string, string>, apiKey: string = cfg.openrouter.apiKey): Record<string, string> {
 		const h: Record<string, string> = {
 			"content-type": "application/json",
 			"x-title": cfg.openrouter.title,
 			...extra,
 		};
 		// /models is public; an empty key must not produce a broken Bearer header.
-		if (cfg.openrouter.apiKey !== "") h.authorization = `Bearer ${cfg.openrouter.apiKey}`;
+		if (apiKey !== "") h.authorization = `Bearer ${apiKey}`;
 		if (cfg.openrouter.referer) h["http-referer"] = cfg.openrouter.referer;
 		return h;
 	}
@@ -139,7 +139,8 @@ export function createOpenRouterClient(cfg: RouterConfig): UpstreamClient {
 			try {
 				res = await fetch(`${baseUrl}/chat/completions`, {
 					method: "POST",
-					headers: headers({ "x-session-id": opts.sessionId }),
+					// A per-turn credential wins for this dispatch only; cfg is never written to.
+					headers: headers({ "x-session-id": opts.sessionId }, opts.upstreamKeys?.openrouter ?? cfg.openrouter.apiKey),
 					body: JSON.stringify(body),
 					signal,
 				});

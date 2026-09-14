@@ -410,13 +410,13 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 		if (caller && timeout) return AbortSignal.any([caller, timeout]);
 		return caller ?? timeout;
 	}
-	async function post(e: UpstreamEntry, body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<Response> {
+	async function post(e: UpstreamEntry, body: Record<string, unknown>, signal: AbortSignal | undefined, apiKey: string = e.apiKey): Promise<Response> {
 		const headers: Record<string, string> = { "content-type": "application/json", "anthropic-version": ANTHROPIC_VERSION, ...e.headers };
 		if (e.auth === "oauth-bearer") {
 			// A Claude Pro/Max subscription token: Bearer auth at the first-party API, with the OAuth beta. No per-token cost is reported.
-			headers["authorization"] = `Bearer ${e.apiKey}`;
+			headers["authorization"] = `Bearer ${apiKey}`;
 			headers["anthropic-beta"] = e.headers["anthropic-beta"] ?? "oauth-2025-04-20,claude-code-20250219";
-		} else if (e.apiKey !== "") headers["x-api-key"] = e.apiKey;
+		} else if (apiKey !== "") headers["x-api-key"] = apiKey;
 		try {
 			return await fetchImpl(`${e.baseUrl.replace(/\/+$/, "")}/v1/messages`, { method: "POST", headers, body: JSON.stringify(body), signal: composeSignal(e, signal) });
 		} catch (err) {
@@ -444,7 +444,8 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 		async dispatch(opts: DispatchOptions): Promise<Dispatch> {
 			const e = entry();
 			const { rendered, servedSlug } = render(e, { ...opts.body, stream: true });
-			const res = await post(e, rendered, opts.signal);
+			// A per-turn credential for this upstream wins for this dispatch only; the shared entry is never touched.
+			const res = await post(e, rendered, opts.signal, opts.upstreamKeys?.[id] ?? e.apiKey);
 			if (!res.ok) throw await httpError(res);
 			if (!res.body) throw new UpstreamError("upstream_error", res.status, "response had no body", true);
 			const translator = createAnthropicTranslator(servedSlug);

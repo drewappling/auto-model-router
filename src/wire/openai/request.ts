@@ -315,6 +315,31 @@ export function parsePolicyHeader(raw: string | null): RequestPolicy | undefined
 	return Object.keys(out).length === 0 ? undefined : out;
 }
 
+/**
+ * Parses the X-Omp-Upstream-Keys header: `{ "<upstream id>": "<credential>" }`.
+ * Malformed, not an object, or empty ⇒ no overrides, exactly like a malformed
+ * X-Omp-Policy (never a rejected turn — the configured keys still serve).
+ * Non-string values are dropped; `""` is KEPT, meaning "this turn has no
+ * credential for that upstream", which excludes it from selection.
+ */
+export function parseUpstreamKeysHeader(raw: string | null): Record<string, string> | undefined {
+	if (raw === null || raw.trim() === "") return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+	const out: Record<string, string> = {};
+	for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+		// The id is config-shaped, so trim it; the credential is copied verbatim.
+		const key = id.trim();
+		if (key !== "" && typeof value === "string") out[key] = value;
+	}
+	return Object.keys(out).length === 0 ? undefined : out;
+}
+
 export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		throw invalidRequest("Request body must be a JSON object");
@@ -351,6 +376,9 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 
 	// Per-request routing policy (team edition): JSON in X-Omp-Policy.
 	const policy = parsePolicyHeader(headers.get("x-omp-policy"));
+
+	// Per-turn upstream credentials (team edition): JSON in X-Omp-Upstream-Keys.
+	const upstreamKeys = parseUpstreamKeysHeader(headers.get("x-omp-upstream-keys"));
 
 	if (typeof b.model !== "string" || b.model.length === 0) {
 		throw invalidRequest("model must be a non-empty string");
@@ -417,6 +445,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		agentdoxOrigin,
 		isSubagent,
 		...(policy === undefined ? {} : { policy }),
+		...(upstreamKeys === undefined ? {} : { upstreamKeys }),
 		requestedModel,
 		requestedModelFull: b.model,
 		messages,

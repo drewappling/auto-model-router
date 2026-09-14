@@ -1426,6 +1426,35 @@ ignored rather than failing the turn. The decision trail records what the
 policy changed (`policy: …`), and `GET /v1/router/catalog?policy=…` shows what a
 policy admits, model by model, without routing a turn.
 
+## Per-turn upstream credentials
+
+The same front door can also send the credentials one turn dispatches with, in
+an `X-Omp-Upstream-Keys` header carrying JSON that maps an upstream id to a
+credential:
+
+```json
+{ "openrouter": "sk-or-v1-…", "azure-eu": "…" }
+```
+
+The ids are the ones the catalog and `/health` use: `openrouter`, `ollama`, or
+a named entry's `id`. An upstream named here dispatches with that credential
+for the whole turn — every retry, same-tier failover and tier escalation
+included — instead of its configured `apiKey`; one not named keeps the
+configured key. An upstream mapped to `""` has **no** credential this turn and
+is excluded from selection rather than dispatched keyless, so a turn that
+carries nothing usable for a provider simply routes elsewhere.
+
+Nothing is stored: the override lives on the parsed request and is read when a
+header is built, so the shared configuration is never written to and concurrent
+turns carrying different callers' keys cannot see each other's. The credential
+is a secret and is treated as one — it is never logged, never recorded in the
+ledger, and never repeated in an error or a decision reason. A malformed header
+is ignored like a malformed `X-Omp-Policy`, leaving the configured keys in
+force.
+
+This is what lets one router serve callers who bring their own keys — the team
+edition's per-user credentials — without a process per credential set.
+
 ## Data governance
 
 Two things an operator with a compliance obligation needs from a router: that
