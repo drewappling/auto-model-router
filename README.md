@@ -1192,6 +1192,16 @@ it lands on the other (`cache: keeping warm …`), and a replica that has served
 nothing refuses with `402 budget_exceeded` once the shared spend is past its
 cap — where the same cap against an empty store serves.
 
+On Postgres the `ledger` table is partitioned by UTC day
+(`PARTITION BY RANGE (created_at_ms)`), so `ledger.retentionDays` drops whole
+days as partitions instead of deleting rows — at the write rates a shared store
+is for, a bulk `DELETE` competes for I/O with the inserts it is making room
+for. Partitions are provisioned a few days ahead on every boot and created on
+demand if a turn arrives for a day nobody provisioned, so a write never fails
+for a missing partition. A Postgres ledger created before this is left exactly
+as it is (Postgres cannot convert a populated table in place) and logs how to
+convert; see [Data governance](docs/data-governance.md).
+
 A SQLite deployment is unchanged: the file is still migrated in place through
 the nineteen shipped versions, and both halves live in the one file.
 

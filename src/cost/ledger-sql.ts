@@ -22,6 +22,7 @@
 import type { CatalogModel } from "../catalog/types.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { consumePendingEstimate } from "../tokens/estimate.ts";
+import { droppableLedgerPartitions, ensureLedgerPartitions } from "../util/schema.ts";
 import { jsonParam, jsonValue, num, numOrNull, type SqlDb } from "../util/sql.ts";
 import { foldBlendSamples, type BlendSample } from "./blended.ts";
 import { computeCost } from "./forecast.ts";
@@ -290,7 +291,12 @@ export function createSqlLedger(db: SqlDb, cfg: RouterConfig, deps: LedgerDeps):
 				deps.findModel(entry.slug) ??
 				null;
 			const breakdown = model !== null ? computeCost(model, entry.usage) : null;
-			await sql`
+			// No conflict target: on Postgres the ledger is partitioned by day, so
+			// its unique index has to include `created_at_ms` and `(id)` alone is
+			// not an arbiter. A re-recorded entry carries the same instant, which
+			// is the case this guard exists for.
+			const insert = async (): Promise<void> => {
+				await sql`
 				INSERT INTO ledger (
 					id, created_at_ms, conversation_key, session_id, turn, requested_model, harness_id, omp_session_id,
 					slug, served_slug, tier, classification_source, reasons, predicted_usd, reported_usd, usage,
@@ -309,7 +315,22 @@ export function createSqlLedger(db: SqlDb, cfg: RouterConfig, deps: LedgerDeps):
 					${entry.promptTokensSaved},
 					${entry.scope === undefined || entry.scope === "" ? null : entry.scope}, ${entry.redactions ?? null}
 				)
-				ON CONFLICT (id) DO NOTHING`;
+				ON CONFLICT DO NOTHING`;
+			};
+			try {
+				await insert();
+			} catch (err) {
+				// A day nobody provisioned: Postgres refuses the row with 23514
+				// ("no partition of relation ledger found for row"). The ledger has
+				// no CHECK constraints of its own, so on this statement that code
+				// can only mean partition routing. Create the day — and the next
+				// few, so this happens once rather than daily — and write again. A
+				// turn is never lost because a partition was late.
+				const code = err !== null && typeof err === "object" && "errno" in err ? String(err.errno) : "";
+				if (code !== "23514") throw err;
+				await ensureLedgerPartitions(db, entry.createdAtMs);
+				await insert();
+			}
 			// Always consume the pending estimate, even when the turn failed, so a
 			// dead turn's bytes can never pair with a later turn's tokens.
 			const pending = consumePendingEstimate(entry.conversationKey);
@@ -520,8 +541,25 @@ export function createSqlLedger(db: SqlDb, cfg: RouterConfig, deps: LedgerDeps):
 			// swept up too.
 			await sql`DELETE FROM feedback WHERE created_at_ms < ${cutoff} OR ledger_id IN (SELECT id FROM ledger WHERE created_at_ms < ${cutoff})`;
 			await sql`DELETE FROM ollama_meter_samples WHERE at_ms < ${cutoff}`;
+			// Whole days the cutoff covers go as metadata: a DROP of a day's
+			// partition is O(1) where deleting its rows is hours of I/O competing
+			// with the inserts it is making room for. Counted before the drop, so
+			// `deleted` still means rows, not partitions.
+			//
+			// ponytail: an exact COUNT(*) scans each doomed day once — a fraction of
+			// what deleting it costs, but not free. If that scan ever matters, read
+			// pg_class.reltuples instead and report the count as an estimate.
+			let dropped = 0;
+			for (const partition of await droppableLedgerPartitions(db, cutoff)) {
+				const rows = (await sql.unsafe(`SELECT COUNT(*) AS n FROM ${partition}`)) as { n: unknown }[];
+				dropped += num(rows[0]?.n);
+				await sql.unsafe(`DROP TABLE ${partition}`);
+			}
+			// What the drops could not cover: the boundary day the cutoff falls
+			// inside (a partial day, so row-wise), anything in a partition whose
+			// bounds could not be read, and every row on SQLite.
 			const deleted = (await sql`DELETE FROM ledger WHERE created_at_ms < ${cutoff} RETURNING id`) as { id: string }[];
-			return { deleted: deleted.length, oldestKeptMs: await oldest() };
+			return { deleted: dropped + deleted.length, oldestKeptMs: await oldest() };
 		},
 
 		async markWasted(id: string): Promise<void> {

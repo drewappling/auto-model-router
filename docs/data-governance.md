@@ -166,7 +166,12 @@ one a library default should make for them. (Before v0.21.0 the default was
    because the subquery needs the rows that are about to be deleted.
 2. `ollama_meter_samples` past the cutoff. They only calibrate the ledger's own
    Ollama estimate, so they age out with the rows they calibrate.
-3. `ledger` rows past the cutoff.
+3. `ledger` rows past the cutoff. On Postgres the ledger is partitioned by UTC
+   day, so every day the cutoff covers *completely* is dropped as a partition —
+   a metadata operation — and only the boundary day the cutoff falls inside is
+   deleted row by row. `deleted` still counts ROWS: each partition is counted
+   before it is dropped, so the number means turns, not tables. SQLite has no
+   declarative partitioning and deletes rows as it always has.
 
 Then, when anything was deleted, `PRAGMA incremental_vacuum` hands freed pages
 back to the filesystem and `PRAGMA wal_checkpoint(TRUNCATE)` folds the WAL so
@@ -181,6 +186,42 @@ behaviour and is fine.
 `MIN(created_at_ms)` over what remains (null when the ledger is empty) — the
 honest answer to "how far back does this ledger go now", which is what the
 question was actually about, and it is reported even when nothing was deleted.
+
+### Partitions, on Postgres
+
+A ledger row is ~2.6 kB, and a thousand-tenant deployment writes 33-165 GB a
+day at 440-2200 writes a second. Deleting that competes for I/O with the
+inserts it is trying to make room for, and leaves bloat autovacuum has to
+chase. So on Postgres `ledger` is `PARTITION BY RANGE (created_at_ms)`, one
+partition per UTC day, and retention becomes a `DROP TABLE` per day.
+
+The bounds are the ms-epoch integers the column already holds, not a derived
+timestamp, so every existing query (`created_at_ms >= ?`) prunes partitions on
+its own: no read — export, spend, the caps, the decision trail — knows the
+table is partitioned. The one visible consequence is the primary key, which a
+partitioned table requires to include the partition key: it is
+`(id, created_at_ms)` there. Ids are per-row UUIDs and a re-recorded entry
+carries the same instant, so the `ON CONFLICT DO NOTHING` guard still collapses
+a duplicate write.
+
+`migrateStore` provisions yesterday through three days ahead on every boot. A
+row for a day nobody provisioned is not an error either: the insert is retried
+once after `ensureLedgerPartitions` creates that day (and the next few), so a
+turn is never lost because a partition was late.
+
+A Postgres ledger created before this shipped **stays exactly as it is**.
+Postgres cannot convert a populated table to a partitioned one in place, and
+copying a billing table at boot is not a failure mode a ledger can have — there
+is no second copy of it. The router logs one line saying retention will keep
+deleting rows there, with the conversion an operator can run deliberately, with
+the router stopped:
+
+```sql
+ALTER TABLE ledger RENAME TO ledger_legacy;      -- then start the router:
+                                                 -- boot recreates it partitioned
+INSERT INTO ledger SELECT * FROM ledger_legacy;  -- verify the counts, then
+DROP TABLE ledger_legacy;
+```
 
 ### The schedule, and the route
 

@@ -282,7 +282,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	// A Postgres store has no bootstrap of its own to run synchronously, so the
 	// shape is created on the way up and every entry point waits for it once.
 	// Resolved already on SQLite, where `openDb` just did it.
-	const storeReady = postgres ? migrateStore(sqlDb) : Promise.resolve();
+	const storeReady = postgres ? migrateStore(sqlDb, log) : Promise.resolve();
 	// The ledger reads and writes through the engine-agnostic handle. `findModel`
 	// closes over the catalog built just below: a shared store has no catalog
 	// cache of its own to price a row from.
