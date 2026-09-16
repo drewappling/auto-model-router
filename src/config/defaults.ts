@@ -32,6 +32,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 		// Refetch the key-scoped catalog every 5 minutes in the background so
 		// guardrail changes are picked up without waiting for traffic + TTL.
 		catalogRefreshMs: 5 * 60 * 1000,
+		// Stop serving OpenRouter at/below this balance (USD); top up to rejoin.
+		// 0 disables the gate. Mirrors ollama.blockBelowUsage's intent.
+		minCreditsUsd: 5,
+		// Balance moves slowly; 10 minutes matches the Ollama usage poll.
+		usagePollMs: 10 * 60 * 1000,
 	},
 	ollama: {
 		// Off: a second upstream changes what every turn can route to.

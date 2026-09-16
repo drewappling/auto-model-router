@@ -70,6 +70,15 @@ export interface OpenRouterConfig {
 	catalogTtlMs: number;
 	/** Background catalog refresh cadence, ms. 0 disables the periodic refresh. */
 	catalogRefreshMs: number;
+	/**
+	 * Balance (USD, `total_credits − total_usage`) at or below which OpenRouter
+	 * stops serving: its models drop from the catalog until the account is
+	 * topped up. 0 disables the gate — the 402 breaker still catches the real
+	 * thing. Default 5.
+	 */
+	minCreditsUsd: number;
+	/** Credits poll interval, ms. 0 disables the poll (and the gate never fires). */
+	usagePollMs: number;
 }
 
 /**

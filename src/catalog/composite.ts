@@ -21,6 +21,7 @@
 
 import type { OllamaAvailability } from "../upstream/ollama.ts";
 import { effectiveOllamaBias, NO_USAGE, type OllamaUsageSource } from "../upstream/ollama-usage.ts";
+import { openRouterServing, type OpenRouterCredits } from "../upstream/openrouter-usage.ts";
 import { mergeSnapshots, type OllamaCatalogSource } from "./ollama-catalog.ts";
 import type { CatalogModel, CatalogShrink, CatalogSnapshot, CatalogSource } from "./types.ts";
 
@@ -34,6 +35,10 @@ export interface CompositeBias {
 	live?: () => { costBias: number; biasUntilUsage: number };
 	/** False when OpenRouter cannot dispatch (no key): its models are listed for metadata only, never served. Default true. */
 	serveOpenRouter?: () => boolean;
+	/** Last known OpenRouter credit balance (USD), or null when never fetched. Read every combine, no network. */
+	openRouterCredits?: () => OpenRouterCredits | null;
+	/** Balance at or below which OpenRouter stops serving. 0 disables the gate. */
+	minCreditsUsd?: number;
 	/** Named upstreams' models, built from the OpenRouter models (twins) and filtered by each upstream's breaker. */
 	named?: {
 		models(openrouter: readonly CatalogModel[]): readonly CatalogModel[];
@@ -69,7 +74,7 @@ export function createCompositeCatalog(
 
 	function combine(base: CatalogSnapshot, models: readonly CatalogModel[]): CatalogSnapshot {
 		const available = availability.available();
-		const serveBase = bias.serveOpenRouter?.() ?? true;
+		const serveBase = (bias.serveOpenRouter?.() ?? true) && openRouterServing(bias.openRouterCredits?.() ?? null, bias.minCreditsUsd ?? 0);
 		const providerBias = currentBias();
 		// Named upstreams: every enabled entry's models, minus those of an upstream in cooldown.
 		const namedAll = bias.named?.models(base.models) ?? NO_NAMED;

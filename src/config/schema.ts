@@ -33,6 +33,8 @@ const openrouter = z.strictObject({
 	timeoutMs: z.number().positive().optional(),
 	catalogTtlMs: z.number().positive().optional(),
 	catalogRefreshMs: z.number().nonnegative().optional(),
+	minCreditsUsd: z.number().nonnegative().optional(),
+	usagePollMs: z.number().nonnegative().optional(),
 });
 
 const ollamaRate = z.strictObject({

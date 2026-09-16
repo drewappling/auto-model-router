@@ -19,6 +19,7 @@ import { createOllamaClient, type OllamaClient } from "../upstream/ollama.ts";
 import { setKnownUpstreamIds } from "../cost/report.ts";
 import { createOllamaUsageSource, type OllamaUsageSource } from "../upstream/ollama-usage.ts";
 import { createOpenRouterClient } from "../upstream/openrouter.ts";
+import { createOpenRouterUsageSource } from "../upstream/openrouter-usage.ts";
 import type { UpstreamClient } from "../upstream/types.ts";
 import { createLogger, type Logger } from "../util/log.ts";
 
@@ -75,6 +76,15 @@ export function createProviders(
 		// estimate can be scaled to what ollama.com actually bills.
 		calibration: { db: sqlDb, ledgerUsd: ollamaLedgerUsd, planCreditsOverrideUsd: cfg.ollama.planCreditsUsd },
 	});
+	// OpenRouter's credit balance on the same slow cadence: at/below
+	// `openrouter.minCreditsUsd` its models drop from the catalog until the
+	// account is topped up (a 402 trip only blocks for the rate-limit minute).
+	const openrouterUsage = createOpenRouterUsageSource({
+		apiKey: () => cfg.openrouter.apiKey,
+		pollMs: cfg.openrouter.usagePollMs,
+		timeoutMs: 15_000,
+		log,
+	});
 	// Named upstreams (OpenAI, Azure, Anthropic, vLLM…): a client per id, built when
 	// first needed and kept — its breaker state must survive config reloads — while
 	// the entry it reads is looked up live, so a changed key or URL applies at once.
@@ -105,6 +115,8 @@ export function createProviders(
 			usage: ollamaUsage,
 			live: () => ({ costBias: cfg.ollama.costBias, biasUntilUsage: cfg.ollama.biasUntilUsage }),
 			serveOpenRouter: () => cfg.openrouter.apiKey !== "",
+			openRouterCredits: () => openrouterUsage.peek(),
+			minCreditsUsd: cfg.openrouter.minCreditsUsd,
 			named: { models: (base) => staticCatalog.get(base), serving: namedServingOne, bias: (id) => cfg.upstreams.find((u) => u.id === id)?.costBias ?? 1 },
 		}),
 		ollama,

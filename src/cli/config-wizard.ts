@@ -128,6 +128,8 @@ export const WIZARD_SECTIONS: readonly SectionSpec[] = [
 			{ path: "openrouter.timeoutMs", label: "Request timeout", kind: "number", min: 1, hint: "ms" },
 			{ path: "openrouter.catalogTtlMs", label: "Catalog TTL", kind: "number", min: 1, hint: "ms" },
 			{ path: "openrouter.catalogRefreshMs", label: "Catalog refresh", kind: "number", min: 0, hint: "ms, 0=off" },
+			{ path: "openrouter.minCreditsUsd", label: "Credit floor USD", kind: "number", min: 0, hint: "0=serve regardless of balance" },
+			{ path: "openrouter.usagePollMs", label: "Credits poll", kind: "number", min: 0, hint: "ms, 0=off" },
 		],
 	},
 	{
