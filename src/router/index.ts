@@ -65,6 +65,10 @@ export function applyRequestPolicy(
 	const outProfile = narrowed ? { ...profile, id: `${profile.id}+policy`, minTier, maxTier } : profile;
 	if (narrowed) reasons.push(`policy: tiers narrowed to [${minTier}..${maxTier}]`);
 	let outCfg = cfg;
+	if (policy.providerLocks !== undefined) {
+		outCfg = { ...cfg, filters: { ...cfg.filters, providerLocks: { ...cfg.filters.providerLocks, ...policy.providerLocks } } };
+		reasons.push(`policy: provider locks ${Object.entries(policy.providerLocks).map(([m, p]) => `${m}→${p}`).join(" ")}`);
+	}
 	if (policy.allow !== undefined || policy.deny !== undefined) {
 		outCfg = { ...cfg, filters: { ...cfg.filters, ...(policy.allow === undefined ? {} : { allow: policy.allow }), ...(policy.deny === undefined ? {} : { deny: [...cfg.filters.deny, ...policy.deny] }) } };
 		reasons.push(`policy: ${policy.allow === undefined ? "" : `allow ${policy.allow.join("|")} `}${policy.deny === undefined ? "" : `deny ${policy.deny.join("|")}`}`.trim());
