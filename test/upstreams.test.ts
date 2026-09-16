@@ -193,6 +193,8 @@ describe("the OpenAI-compatible client", () => {
 	test("statuses: OpenAI's insufficient_quota 429 is the account, a plain 429 the moment; 400 context is final", async () => {
 		expect(classifyCompatStatus("x", 429, { error: { code: "insufficient_quota", message: "You exceeded your current quota" } })).toMatchObject({ kind: "quota", retryable: true });
 		expect(classifyCompatStatus("x", 429, { error: { message: "Rate limit reached" } })).toMatchObject({ kind: "rate_limit", retryable: true });
+		// Kimi's balance wording: 429 but the account, so the 15-minute quota cooldown hides the whole upstream.
+		expect(classifyCompatStatus("kimi", 429, { error: { message: "This request would exceed your available credits given your current in-flight requests" } })).toMatchObject({ kind: "quota", retryable: true });
 		expect(classifyCompatStatus("x", 400, { error: { message: "This model's maximum context length is 8192 tokens" } })).toMatchObject({ kind: "context_length", retryable: false });
 		expect(classifyCompatStatus("x", 401, {})).toMatchObject({ kind: "auth", retryable: false });
 		expect(classifyCompatStatus("x", 503, {})).toMatchObject({ kind: "upstream_error", retryable: true });

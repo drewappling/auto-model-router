@@ -94,8 +94,10 @@ export function classifyCompatStatus(id: string, status: number, body: unknown):
 	if (status === 401) return fail("auth", false);
 	if (status === 402) return fail("quota", true);
 	if (status === 403) return /credit|quota|plan|limit|billing/i.test(message) ? fail("quota", true) : fail("moderation", true);
-	// OpenAI reports an exhausted balance as a 429 with insufficient_quota: the account, not the moment.
-	if (status === 429) return /insufficient_quota|exceeded your current quota/i.test(`${code} ${message}`) ? fail("quota", true) : fail("rate_limit", true);
+	// OpenAI reports an exhausted balance as a 429 with insufficient_quota; Kimi
+	// ("exceed your available credits given your current in-flight requests") says
+	// credits. Both are the account, not the moment.
+	if (status === 429) return /insufficient_quota|exceeded your current quota|available credits|in-flight requests/i.test(`${code} ${message}`) ? fail("quota", true) : fail("rate_limit", true);
 	if (status === 404) return fail("model_unavailable", true);
 	if (status === 400 || status === 413 || status === 422) {
 		if (/context|too many tokens|token limit|maximum context|too long/i.test(message)) return fail("context_length", false);
