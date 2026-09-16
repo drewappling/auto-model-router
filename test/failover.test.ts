@@ -691,6 +691,7 @@ describe("same-tier failover", () => {
 
 });
 
+
 describe("400 classification (review 2026-09-05 follow-up)", () => {
 	test("a 400 naming a model capability limit is retryable, so failover picks a sibling", async () => {
 		const e = classifyUpstreamStatus(400, { error: { message: "This model only supports single tool-calls at once!" } });
@@ -702,6 +703,19 @@ describe("400 classification (review 2026-09-05 follow-up)", () => {
 		const e = classifyUpstreamStatus(400, { error: { message: "messages[3].content: invalid type" } });
 		expect(e.kind).toBe("invalid_request");
 		expect(e.retryable).toBe(false);
+	});
+
+	test("an OpenRouter 402 naming in-flight requests is a concurrency throttle, retryable like a rate limit", async () => {
+		// OpenRouter reserves credits per in-flight request: a burst can exhaust
+		// the UNRESERVED balance on an account with plenty left. It clears when
+		// the streams settle — fail over, never surface to the client.
+		const e = classifyUpstreamStatus(402, { error: { message: "This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits." } });
+		expect(e.kind).toBe("rate_limit");
+		expect(e.retryable).toBe(true);
+		// A plain 402 (balance actually gone) stays final.
+		const broke = classifyUpstreamStatus(402, { error: { message: "Insufficient credits" } });
+		expect(broke.kind).toBe("auth");
+		expect(broke.retryable).toBe(false);
 	});
 
 	test("a 400 for context overflow is still context_length", async () => {

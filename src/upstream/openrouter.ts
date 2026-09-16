@@ -55,7 +55,12 @@ function classifyStatus(status: number, body: unknown): UpstreamError {
 	// retrying is pointless.
 	if (status === 401) return fail("auth", false);
 	// 402 = out of credits; retrying changes nothing, only topping up does.
-	if (status === 402) return fail("auth", false);
+	// EXCEPT the concurrency shape: OpenRouter reserves credits for in-flight
+	// requests, so a burst can exhaust the UNRESERVED balance on an account
+	// with plenty left ("would exceed your available credits given your
+	// current in-flight requests"). That clears when the streams settle —
+	// a moment, not an account state — so fail over like a rate limit.
+	if (status === 402) return /in-flight requests/i.test(message) ? fail("rate_limit", true) : fail("auth", false);
 	// 403 = provider content-moderation or per-model policy gate (prompt-injection
 	// block, age/data-policy confirmation). This indicts the model/provider, NOT
 	// the key: siblings routinely serve the same content. Retryable so the turn
