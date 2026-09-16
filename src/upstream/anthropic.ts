@@ -340,6 +340,7 @@ export function classifyAnthropicStatus(id: string, status: number, body: unknow
 	const message = typeof msg === "string" && msg !== "" ? msg : `${id} HTTP ${status}`;
 	const fail = (kind: UpstreamErrorKind, retryable: boolean): UpstreamError => new UpstreamError(kind, status, message, retryable, body);
 	if (status === 401 || status === 403) return fail("auth", false);
+	if (status === 402) return fail("quota", true);
 	if (status === 404) return fail("model_unavailable", true);
 	if (status === 413) return fail("context_length", false);
 	if (status === 429) return fail("rate_limit", true);
@@ -431,7 +432,7 @@ export function createAnthropicClient(cfg: RouterConfig, id: string, fetchImpl: 
 			/* status alone */
 		}
 		const err = classifyAnthropicStatus(id, res.status, body);
-		if (err.kind === "rate_limit" || res.status === 529) breaker.trip(err);
+		if (err.kind === "rate_limit" || err.kind === "quota" || res.status === 529) breaker.trip(err);
 		return err;
 	}
 

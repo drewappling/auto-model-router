@@ -380,6 +380,33 @@ describe("same-tier failover", () => {
 		expect(finishes[0]!.attempts).toBe(2);
 	});
 
+	test("a Kimi credit 429 fails over to another provider's model in the SAME turn", async () => {
+		// Moonshot's balance wording misclassified as rate_limit used to let the
+		// raw 429 (Retry-After 30 min) reach the client. Quota is retryable
+		// elsewhere: the retry re-routes with the failed slug excluded.
+		const { router, calls } = mkRouter([mkDecision("moderate", "kimi/kimi-k3"), mkDecision("moderate", "openrouter/grok-4")]);
+		const { upstream, calls: dispatches } = mkUpstream([
+			{ kind: "fail", error: new UpstreamError("quota", 429, "This request would exceed your available credits given your current in-flight requests", true) },
+			{ kind: "chunks", chunks: okChunks("openrouter/grok-4") },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink, errors, finishes } = mkSink();
+
+		await runTurn(mkReq(), sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(errors).toHaveLength(0);
+		expect(finishes).toHaveLength(1);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ attempt: 1, excludeSlugs: ["kimi/kimi-k3"] });
+		expect(dispatches.map((d) => d.body.model)).toEqual(["kimi/kimi-k3", "openrouter/grok-4"]);
+		expect(entries[0]!.error).toContain("available credits");
+		expect(entries[0]!.wasted).toBe(true);
+		expect(entries[1]!.wasted).toBe(false);
+		expect(finishes[0]!.servedSlug).toBe("openrouter/grok-4");
+		expect(finishes[0]!.escalated).toBe(false);
+	});
+
 	test("a 403 moderation block fails over to a different model in the same tier", async () => {
 		const { router, calls } = mkRouter([mkDecision("trivial", "a/model"), mkDecision("trivial", "b/model")]);
 		const { upstream, calls: dispatches } = mkUpstream([

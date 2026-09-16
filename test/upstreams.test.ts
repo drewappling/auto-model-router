@@ -240,6 +240,18 @@ describe("the OpenAI-compatible client", () => {
 		expect(caught).toMatchObject({ kind: "quota", retryable: true });
 		expect(broke.available()).toBe(false);
 		expect(broke.lastTrip()?.kind).toBe("quota");
+		const kimiBroke = createCompatClient(cfg, "openai-direct", async () =>
+			Response.json({ error: { message: "This request would exceed your available credits given your current in-flight requests" } }, { status: 429 }),
+		);
+		caught = null;
+		try {
+			await kimiBroke.dispatch({ body: { model: "openai-direct/gpt-4o", messages: [] }, sessionId: "s", signal: new AbortController().signal });
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toMatchObject({ kind: "quota", retryable: true });
+		expect(kimiBroke.available()).toBe(false);
+		expect(kimiBroke.lastTrip()?.kind).toBe("quota");
 		// The live key applies to the next call without a new client.
 		applyConfigPatch(cfg, { upstreams: [{ id: "openai-direct", kind: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "sk-new", models: [{ id: "gpt-4o", input: 2.5, output: 10 }] }] } as never);
 		await client.dispatch({ body: { model: "openai-direct/gpt-4o", messages: [], stream: true }, sessionId: "s", signal: new AbortController().signal });
@@ -365,8 +377,20 @@ describe("the Anthropic client", () => {
 		}
 		expect(caught).toMatchObject({ kind: "upstream_error", retryable: true });
 		expect(overloaded.available()).toBe(false);
+		const billedOut = createAnthropicClient(cfg, "anthropic-direct", async () => Response.json({ error: { message: "Your credit balance is too low" } }, { status: 402 }));
+		caught = null;
+		try {
+			await billedOut.dispatch({ body: { model: "anthropic-direct/claude-sonnet-4", messages: [] }, sessionId: "s", signal: new AbortController().signal });
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toMatchObject({ kind: "quota", retryable: true });
+		expect(billedOut.available()).toBe(false);
+		expect(billedOut.lastTrip()?.kind).toBe("quota");
 		expect(classifyAnthropicStatus("a", 400, { error: { message: "prompt is too long: 250000 tokens" } })).toMatchObject({ kind: "context_length", retryable: false });
 		expect(classifyAnthropicStatus("a", 401, {})).toMatchObject({ kind: "auth", retryable: false });
+		// The credit card said no (402): the account, not the moment — quota, and the breaker hides the upstream.
+		expect(classifyAnthropicStatus("a", 402, { error: { message: "Your credit balance is too low" } })).toMatchObject({ kind: "quota", retryable: true });
 	});
 
 	test("a subscription upstream: OAuth bearer instead of x-api-key, and the Claude Code identity leads the system blocks", async () => {
