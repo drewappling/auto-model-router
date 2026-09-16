@@ -176,6 +176,61 @@ describe("selectToasts", () => {
 		expect(toasts).toHaveLength(1);
 		expect(toasts[0]?.model).toBe("keep");
 	});
+
+	test("task (subagent) turns toast even though they carry their own session id", async () => {
+		// A task's dispatches carry the subagent's own session id and the
+		// isSubagent flag, so the session filter must not drop them.
+		const entries = [
+			dec({ id: "d2", slug: "x/task-model", ompSessionId: "task-1", features: { isSubagent: true } }),
+			dec({ id: "d1", slug: "prior", ompSessionId: "sess-a" }),
+		];
+		const subModels = new Map<string, string | null>();
+		const toasts = selectToasts(entries, "d1", "", "sess-a", true, subModels);
+		expect(toasts).toHaveLength(1);
+		expect(toasts[0]?.model).toBe("x/task-model");
+		expect(toasts[0]!.text).toContain("task");
+	});
+
+	test("a task toasts once per model: the first dispatch and every change after", async () => {
+		const entries = [
+			dec({ id: "d5", slug: "x/m2", ompSessionId: "task-1", features: { isSubagent: true } }),
+			dec({ id: "d4", slug: "x/m1", ompSessionId: "task-1", features: { isSubagent: true } }),
+			dec({ id: "d3", slug: "x/m1", ompSessionId: "task-1", features: { isSubagent: true } }),
+			dec({ id: "d2", slug: "x/m1", ompSessionId: "task-1", features: { isSubagent: true } }),
+		];
+		const subModels = new Map<string, string | null>();
+		const first = selectToasts(entries, "d1", "", "sess-a", true, subModels);
+		// oldest→newest: m1 (first dispatch toasts), m1 (skip), m1 (skip), m2 (change, toasts)
+		expect(first.map((t) => t.model)).toEqual(["x/m1", "x/m2"]);
+		// The next tick remembers the task's last model: the same model again is not news.
+		const again = selectToasts([dec({ id: "d6", slug: "x/m2", ompSessionId: "task-1", features: { isSubagent: true } })], "d5", "", "sess-a", true, subModels);
+		expect(again).toHaveLength(0);
+		// A second task with its own session id toasts its own first dispatch.
+		const other = selectToasts([dec({ id: "d7", slug: "x/m3", ompSessionId: "task-2", features: { isSubagent: true } })], "d6", "", "sess-a", true, subModels);
+		expect(other).toHaveLength(1);
+		expect(other[0]?.model).toBe("x/m3");
+	});
+
+	test("task toasts respect the harness filter: another member's tasks stay out", async () => {
+		const entries = [
+			dec({ id: "d2", slug: "theirs", ompSessionId: "task-9", harnessId: "member-b", features: { isSubagent: true } }),
+			dec({ id: "d1", slug: "mine", ompSessionId: "task-8", harnessId: "member-a", features: { isSubagent: true } }),
+			dec({ id: "d0", slug: "prior", ompSessionId: "sess-a", harnessId: "member-a" }),
+		];
+		const subModels = new Map<string, string | null>();
+		const toasts = selectToasts(entries, "d0", "member-a", "sess-a", true, subModels);
+		expect(toasts).toHaveLength(1);
+		expect(toasts[0]?.model).toBe("mine");
+	});
+
+	test("a main-session turn still toasts every dispatch, unchanged", async () => {
+		const entries = [
+			dec({ id: "d3", slug: "x/m1", ompSessionId: "sess-a" }),
+			dec({ id: "d2", slug: "x/m1", ompSessionId: "sess-a" }),
+			dec({ id: "d1", slug: "prior", ompSessionId: "sess-a" }),
+		];
+		expect(selectToasts(entries, "d1", "", "sess-a", true)).toHaveLength(2);
+	});
 });
 
 describe("toToastText", () => {

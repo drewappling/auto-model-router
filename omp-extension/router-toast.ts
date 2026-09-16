@@ -27,7 +27,8 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
-import { routerAuthHeaders, routerBaseUrl } from "./router-url.ts";
+import { routerAuthHeaders, routerBaseUrl, routerHome } from "./router-url.ts";
+import { readRemoteRouter } from "./remote-logic.ts";
 import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
 
 /** Raw router config.yml, or null when there is none to read. */
@@ -35,8 +36,12 @@ import { newestId, selectToasts, type ToastDecision } from "./toast-logic.ts";
 /** Absolute path of the shared embed port file (main session writes it). */
 
 // This harness's id, matching the X-Omp-Harness header the router records.
-// Empty ⇒ toast every harness (single-harness default).
-const HARNESS_ID = process.env.OMP_HARNESS_ID ?? "";
+// In remote (team) mode the team rewrites that header to the member id from
+// the key, so remote.json's userId is the same fact — and the only way to
+// keep OTHER members' task toasts out, because task turns carry their own
+// session id and cannot be scoped by session. Empty ⇒ toast every harness
+// (single-harness default).
+const HARNESS_ID = process.env.OMP_HARNESS_ID ?? readRemoteRouter(routerHome())?.userId ?? "";
 const POLL_MS = 2_000;
 // The toast explains the choice by default: model, tier, cost, why it was picked
 // and what it was handed. `AUTO_MODEL_ROUTER_TOAST=compact` restores the one-liner.
@@ -47,6 +52,11 @@ export default function (pi: ExtensionAPI): void {
 
 	// The newest ledger entry already toasted. Ledger is `created_at_ms DESC`.
 	let lastSeenId: string | null = null;
+	// Task session → the model the task last toasted. Task turns belong to
+	// their own session ids, so this — not the session filter — is what keeps
+	// a task's forty same-model dispatches down to one toast, and surfaces the
+	// mid-task model change when an escalation switches the model.
+	const taskModels = new Map<string, string | null>();
 
 	pi.on("session_start", (_event, ctx) => {
 		// Headless/print/subagent sessions have no UI to toast into; skip the
@@ -94,7 +104,7 @@ export default function (pi: ExtensionAPI): void {
 				const entries = body.entries;
 				if (!Array.isArray(entries) || entries.length === 0) return;
 
-				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID, sessionId, VERBOSE)) {
+				for (const t of selectToasts(entries, lastSeenId, HARNESS_ID, sessionId, VERBOSE, taskModels)) {
 					ctx.ui.notify(t.text, "info");
 				}
 				lastSeenId = newestId(entries) ?? lastSeenId;

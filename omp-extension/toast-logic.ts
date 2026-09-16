@@ -91,7 +91,7 @@ export interface ToastDecision {
 	/** The router's own decision trail, already written for people. */
 	reasons?: string[];
 	/** Classifier inputs; only a few are worth surfacing. */
-	features?: { promptTokens?: number; toolCount?: number; turnDepth?: number; isToolResultContinuation?: boolean } | null;
+	features?: { promptTokens?: number; toolCount?: number; turnDepth?: number; isToolResultContinuation?: boolean; isSubagent?: boolean } | null;
 	/** Attempt index within the turn; >0 means this served after an escalation. */
 	attempt?: number;
 	/** Prompt tokens compaction removed before dispatch. */
@@ -172,6 +172,7 @@ const tokens = (n: number): string => (n >= 1000 ? `${Math.round(n / 100) / 10}k
 export function factsOf(d: ToastDecision): string[] {
 	const out: string[] = [];
 	const f = d.features ?? undefined;
+	if (f?.isSubagent === true) out.push("task");
 	if (f?.promptTokens !== undefined && f.promptTokens > 0) out.push(`${tokens(f.promptTokens)} prompt`);
 	if (d.promptTokensSaved !== undefined && d.promptTokensSaved > 0) out.push(`${tokens(d.promptTokensSaved)} compacted`);
 	if (f?.toolCount !== undefined && f.toolCount > 0) out.push(`${f.toolCount} tools`);
@@ -215,6 +216,14 @@ export function toToastText(d: ToastDecision, verbose = true): string {
  *
  * When `harnessId` is non-empty, only entries from that harness are toasted,
  * so multiple harnesses sharing one router don't spam each other's toasts.
+ *
+ * `ompSessionId` scopes the toast to this interactive session's own turns.
+ * Subagent (task) turns carry their OWN session id — the subagent process's —
+ * so they never match it and would otherwise be invisible. They are admitted
+ * whenever the harness matches, deduplicated per task session on the served
+ * model through `subModels` (the caller holds the map across ticks): the
+ * first dispatch of a task toasts, a mid-task model change (an escalation)
+ * toasts again, and the forty same-model dispatches after it toast nothing.
  */
 export function selectToasts(
 	entries: ToastDecision[],
@@ -222,6 +231,7 @@ export function selectToasts(
 	harnessId = "",
 	ompSessionId = "",
 	verbose = true,
+	subModels?: Map<string, string | null>,
 ): ToastMessage[] {
 	if (lastSeenId === null) return [];
 	// `entries` is newest-first. Entries strictly newer than lastSeenId are the
@@ -235,7 +245,15 @@ export function selectToasts(
 		if (d === undefined) continue;
 		if (d.wasted) continue;
 		if (harnessId !== "" && d.harnessId !== harnessId) continue;
-		if (ompSessionId !== "" && d.ompSessionId !== ompSessionId) continue;
+		const isTask = d.features?.isSubagent === true;
+		if (!isTask && ompSessionId !== "" && d.ompSessionId !== ompSessionId) continue;
+		if (isTask && subModels !== undefined) {
+			const session = d.ompSessionId ?? "";
+			const model = d.servedSlug ?? d.slug;
+			// Same task, same model as last toasted: not a change, not news.
+			if (subModels.get(session) === model) continue;
+			subModels.set(session, model);
+		}
 		out.push({ model: d.servedSlug ?? d.slug, tier: d.tier, costUsd: d.reportedUsd, text: toToastText(d, verbose) });
 	}
 	return out;
