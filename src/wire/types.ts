@@ -17,6 +17,11 @@ export type WireProtocol = "openai-chat" | "openai-responses" | "anthropic-messa
  * like `filters.allow`/`filters.deny` (a request allow list replaces the
  * configured one; a deny list adds to it); `minTier`/`maxTier` narrow the
  * profile's tier envelope; `pin` forces one slug, like `/router pin`.
+ * `providerLocks` restricts WHERE a model may be served from: a model whose
+ * slug matches the key may only dispatch through a provider whose id matches
+ * the value (`{"anthropic/*": "anthropic-subscription"}` keeps Claude on the
+ * subscription upstream and away from OpenRouter's billed twins). Keys and
+ * values are slug globs; a model matching several locks must satisfy each.
  */
 export interface RequestPolicy {
 	allow?: string[];
@@ -24,6 +29,7 @@ export interface RequestPolicy {
 	minTier?: "trivial" | "simple" | "moderate" | "hard";
 	maxTier?: "trivial" | "simple" | "moderate" | "hard";
 	pin?: string;
+	providerLocks?: Record<string, string>;
 }
 
 export type Role = "system" | "developer" | "user" | "assistant" | "tool";

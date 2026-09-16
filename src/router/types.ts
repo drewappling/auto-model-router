@@ -162,6 +162,8 @@ export type RejectionReason =
 	| "denylisted"
 	| "not_allowlisted"
 	| "free_tier_excluded"
+	/** filters.providerLocks: the model matches a lock whose provider glob excludes its upstream. */
+	| "provider_locked"
 	| "reasoning_mandatory"
 	| "untrusted"
 	/** The turn's `X-Omp-Upstream-Keys` names this model's upstream with an empty credential: it cannot be dispatched to. */

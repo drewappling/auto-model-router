@@ -137,7 +137,18 @@ describe("catalogView", () => {
 		// So is a pin naming no model.
 		expect(bySlug(catalogView({ models: MODELS, fetchedAtMs: 0, verdict: { filters, pin: "nobody/here" }, unserved: served })).get("anthropic/claude-sonnet-5")!.admitted).toBe(true);
 	});
+
+	test("a provider lock drops a model whose upstream cannot serve it", async () => {
+		// MODELS are all openrouter-served except vllm/ and azure-eu/; a lock
+		// confining anthropic to a named subscription upstream admits only the
+		// models that upstream actually carries.
+		const filters = { ...DEFAULT_CONFIG.filters, providerLocks: { "anthropic/*": "claude-sub" } };
+		const view = bySlug(catalogView({ models: MODELS, fetchedAtMs: 0, verdict: { filters }, unserved: served }));
+		expect(view.get("anthropic/claude-sonnet-5")).toMatchObject({ admitted: false, reason: "locked to providers matching claude-sub (filters.providerLocks)" });
+		expect(view.get("openai/gpt-5")).toMatchObject({ admitted: true }); // no key matches
+	});
 });
+
 
 describe("GET /v1/router/catalog", () => {
 	let handle: StartedServer;

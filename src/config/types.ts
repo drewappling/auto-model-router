@@ -226,6 +226,15 @@ export interface FilterConfig {
 	allow: string[];
 	/** Glob patterns; matching models are dropped. Applied after `allow`. */
 	deny: string[];
+	/**
+	 * Model-glob → provider-glob. A model matching a key may only dispatch
+	 * through a provider whose id matches the value, so a team can keep a
+	 * subscription's models on that subscription instead of its OpenRouter
+	 * twins (`{"anthropic/*": "anthropic-subscription"}`). Applied before
+	 * ranking; a model matching several locks must satisfy each. An empty
+	 * object locks nothing.
+	 */
+	providerLocks: Record<string, string>;
 	/** Consider zero-price models. Off by default: rate limits make them expensive in retries. */
 	includeFree: boolean;
 	/** Require `supported_parameters` to include `tools` whenever the request offers tools. */

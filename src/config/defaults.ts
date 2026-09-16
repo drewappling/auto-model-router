@@ -105,6 +105,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	filters: {
 		allow: [],
 		deny: [],
+		providerLocks: {},
 		// Free models are rate-limited hard enough that retries cost more than they save.
 		includeFree: false,
 		requireToolSupport: true,

@@ -164,6 +164,12 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 	const relaxTrust = relaxLevel >= 3;
 	const allowRes = filters.allow.map(globToRe);
 	const denyRes = filters.deny.map(globToRe);
+	// Compiled once per turn: pairs of [model glob, provider glob] regexes.
+	// Null when there are no locks, so the common path allocates nothing.
+	const lockRes =
+		filters.providerLocks && Object.keys(filters.providerLocks).length > 0
+			? Object.entries(filters.providerLocks).map(([m, p]) => [globToRe(m), globToRe(p)] as const)
+			: null;
 	const needTools = req.tools.length > 0 && filters.requireToolSupport;
 	const minContext = Math.ceil(features.promptTokens * filters.contextHeadroom) + expectedCompletionTokens;
 	// Task selects the quality axis and capability filters; the tier still
@@ -236,6 +242,17 @@ export function buildCandidates(args: BuildCandidatesArgs): { candidates: Candid
 		if (denyRes.some((re) => re.test(slug))) {
 			rejected.push({ slug, reason: "denylisted", detail: "filters.deny" });
 			continue;
+		}
+		// Provider locks: where a model may be served from. Checked like a
+		// filter (a lock the model cannot satisfy drops it before ranking)
+		// rather than at dispatch, so the catalog view, the rejection list and
+		// the turn all agree on what was available.
+		if (lockRes !== null) {
+			const violated = lockRes.find(([modelRe, providerRe]) => modelRe.test(slug) && !providerRe.test(model.provider));
+			if (violated !== undefined) {
+				rejected.push({ slug, reason: "provider_locked", detail: `${slug} is locked to providers matching "${violated[1].source}"` });
+				continue;
+			}
 		}
 		if (model.isFree && !filters.includeFree) {
 			rejected.push({ slug, reason: "free_tier_excluded" });

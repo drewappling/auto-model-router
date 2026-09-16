@@ -404,6 +404,57 @@ describe("adaptive price ceilings", () => {
 	});
 });
 
+describe("provider locks", () => {
+	const req = parseChatRequest(
+		{
+			model: "auto",
+			messages: [{ role: "user", content: "summarize the release notes" }],
+		},
+		new Headers(),
+	);
+	const features = extractFeatures(req, 100);
+
+	// claude/opus from the subscription upstream (cheap for a subscriber) and
+	// its expensive OpenRouter twin, priced as OpenRouter really bills.
+	const mk = (slug: string, provider: string, inPerMtok: number) => ({
+		slug, canonicalSlug: slug, name: slug, provider, vendor: provider,
+		contextLength: 200_000, maxCompletionTokens: 32_000, supportsTools: true, supportsReasoning: false,
+		reasoningMandatory: false, supportsToolChoice: true, inputModalities: ["text" as const],
+		price: { prompt: inPerMtok / 1e6, completion: (inPerMtok * 3) / 1e6 }, priceTiers: [],
+		quality: { intelligence: 80, coding: 80, agentic: 60 }, tokenizer: "Other",
+		isFree: false, createdAtMs: 0, author: "vendor",
+	});
+	const snap = { models: [mk("anthropic/claude-opus", "anthropic-subscription", 0.5), mk("anthropic/claude-opus-openrouter", "openrouter", 15)], fetchedAtMs: Date.now(), keyScoped: false };
+
+	const run = (locks: Record<string, string>) =>
+		buildCandidates({
+			req, features, tier: "moderate", task: "chat", snapshot: snap,
+			cfg: { ...BASE, filters: { ...BASE.filters, providerLocks: locks } },
+			expectedCompletionTokens: 512, warmSlug: null,
+		});
+
+	test("a model matching a lock key may only come from a provider matching the value", () => {
+		const { candidates, rejected } = run({ "anthropic/*": "anthropic-subscription" });
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]!.model.slug).toBe("anthropic/claude-opus");
+		expect(candidates[0]!.model.provider).toBe("anthropic-subscription");
+		expect(rejected.some((r) => r.slug === "anthropic/claude-opus-openrouter" && r.reason === "provider_locked")).toBe(true);
+	});
+
+	test("a model no key matches is untouched, and a provider glob keeps other providers serving", () => {
+		const only = { models: [mk("xai/grok", "openrouter", 2), mk("anthropic/claude-opus", "openrouter", 15)], fetchedAtMs: Date.now(), keyScoped: false };
+		const out = buildCandidates({
+			req, features, tier: "moderate", task: "chat", snapshot: only,
+			cfg: { ...BASE, filters: { ...BASE.filters, providerLocks: { "anthropic/*": "anthropic-subscription" } } },
+			expectedCompletionTokens: 512, warmSlug: null,
+		});
+		// grok matches no key: served from openrouter as usual. The claude slug
+		// matches the lock and openrouter does not match the value: dropped.
+		expect(out.candidates.map((c) => c.model.slug)).toEqual(["xai/grok"]);
+		expect(out.rejected.some((r) => r.slug === "anthropic/claude-opus" && r.reason === "provider_locked")).toBe(true);
+	});
+});
+
 describe("quality normalization and capability floor (benchmark findings 4/6)", () => {
 	const req = parseChatRequest(
 		{

@@ -49,7 +49,7 @@ export interface CatalogView {
 }
 
 /** The filters a turn routes under: the configured ones, or those `applyRequestPolicy` merged a policy into. */
-export type AdmissionFilters = Pick<FilterConfig, "allow" | "deny" | "includeFree" | "requireToolSupport">;
+export type AdmissionFilters = Pick<FilterConfig, "allow" | "deny" | "providerLocks" | "includeFree" | "requireToolSupport">;
 
 export interface CatalogViewArgs {
 	models: readonly CatalogModel[];
@@ -84,11 +84,17 @@ function filterReason(model: CatalogModel, filters: AdmissionFilters, allowRes: 
 	if (allowRes.length > 0 && !allowRes.some((re) => re.test(model.slug))) return "not in the allow list";
 	const denied = denyRes.findIndex((re) => re.test(model.slug));
 	if (denied !== -1) return `denied by ${filters.deny[denied]}`;
+	if (filters.providerLocks) {
+		for (const [modelGlob, providerGlob] of Object.entries(filters.providerLocks)) {
+			if (globToRe(modelGlob).test(model.slug) && !globToRe(providerGlob).test(model.provider)) {
+				return `locked to providers matching ${providerGlob} (filters.providerLocks)`;
+			}
+		}
+	}
 	if (model.isFree && !filters.includeFree) return "free models excluded (filters.includeFree)";
 	if (filters.requireToolSupport && !model.supportsTools) return "no tool support (filters.requireToolSupport)";
 	return null;
 }
-
 export function catalogView(args: CatalogViewArgs): CatalogView {
 	const sorted = [...args.models].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 	const verdict = args.verdict;
