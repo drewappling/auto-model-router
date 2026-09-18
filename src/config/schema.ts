@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_REDACTION_RULES, validateRedactionRule } from "./redaction.ts";
+import { MAX_EXTRA_SCORES } from "../catalog/benchmark-feeds.ts";
 
 /**
  * Input schema for `$AUTO_MODEL_ROUTER_HOME/config.yml`: a deep partial of
@@ -99,6 +100,26 @@ const upstream = z.strictObject({
 	models: z.array(upstreamModel),
 });
 
+const axisScore = z.number().min(0).max(100).optional();
+
+/**
+ * One `benchmarks.extraScores` row, as a config FILE may write it. Strict here
+ * on purpose: a typo in a file the operator edits is an error they want told,
+ * exactly like every other key. The same rows arriving over `reconfigure` from a
+ * front door skip this schema and are sanitised at use instead (`suppliedScores`),
+ * where a bad row is dropped with a warning rather than failing the whole patch.
+ */
+const extraScore = z.strictObject({
+	key: z.string().min(1),
+	// Only ever a tie-break between two rows sharing a key; absent is normal.
+	creator: z.string().default(""),
+	coding: axisScore,
+	intelligence: axisScore,
+	agentic: axisScore,
+	// Config supplies provenance; it may not claim a fetched feed or the local lane.
+	source: z.enum(["neutral", "vendor"]),
+});
+
 const benchmarks = z.strictObject({
 	enabled: z.boolean().optional(),
 	artificialAnalysisApiKey: z.string().optional(),
@@ -106,6 +127,7 @@ const benchmarks = z.strictObject({
 	refreshMs: z.number().nonnegative().optional(),
 	timeoutMs: z.number().positive().optional(),
 	useLocalScores: z.boolean().optional(),
+	extraScores: z.array(extraScore).max(MAX_EXTRA_SCORES).optional(),
 });
 
 const tierConfig = z.strictObject({

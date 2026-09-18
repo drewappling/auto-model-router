@@ -11,7 +11,7 @@ import { createFeedbackStore } from "../src/cost/feedback.ts";
 import { createSqlLedger } from "../src/cost/ledger-sql.ts";
 import { buildUsageReport } from "../src/cost/report.ts";
 import { buildDailySummary, createKv } from "../src/cost/summary.ts";
-import { exportRows, spendUsdSince } from "../src/cost/views.ts";
+import { decisionEntries, exportRows, spendUsdSince } from "../src/cost/views.ts";
 import { createConversationStore } from "../src/router/state.ts";
 
 /**
@@ -26,7 +26,7 @@ import { createConversationStore } from "../src/router/state.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "migrations");
 const files = readdirSync(FIXTURES).filter((f) => /^router-v\d+\.db$/.test(f)).sort((a, b) => Number(/\d+/.exec(a)![0]) - Number(/\d+/.exec(b)![0]));
-const CURRENT_VERSION = 19;
+const CURRENT_VERSION = 20;
 
 describe("schema migrations from every shipped version", () => {
 	test("fixtures exist for the versions that shipped", async () => {
@@ -42,14 +42,14 @@ describe("schema migrations from every shipped version", () => {
 			const cfg = structuredClone(DEFAULT_CONFIG);
 			cfg.ledger.path = path;
 			// `openDb` is the migration path for a SQLite file: it applies the
-			// nineteen versions in order. The shim handle then reads the result.
+			// twenty versions in order. The shim handle then reads the result.
 			const db = openDb(path);
 			const sdb = openSqlDb(path);
 			try {
 				expect((db.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(CURRENT_VERSION);
 				// Every column the current code writes exists after migration.
 				const ledgerCols = new Set((db.query("PRAGMA table_info(ledger)").all() as { name: string }[]).map((c) => c.name));
-				for (const c of ["harness_id", "error_kind", "omp_session_id", "features", "explored_from", "hold_arm", "prompt_tokens_saved", "scope", "redactions"]) expect(ledgerCols.has(c)).toBe(true);
+				for (const c of ["harness_id", "error_kind", "omp_session_id", "features", "explored_from", "hold_arm", "prompt_tokens_saved", "scope", "redactions", "request_id"]) expect(ledgerCols.has(c)).toBe(true);
 				const convCols = new Set((db.query("PRAGMA table_info(conversations)").all() as { name: string }[]).map((c) => c.name));
 				for (const c of ["context_version", "compaction_plan", "compaction_plan_tokens", "upgrade_deferred_tier"]) expect(convCols.has(c)).toBe(true);
 				// The fixture's ledger row survived the ALTERs with its values.
@@ -76,6 +76,13 @@ describe("schema migrations from every shipped version", () => {
 				// v19: the fixture's row predates `redactions`, so nothing claims a
 				// redaction happened on it and the report totals it as zero.
 				expect((await buildUsageReport(sdb, { windowDays: 3650 })).totals.redactions).toBe(0);
+				// v20: the fixture's row predates `request_id`, so it reads as ABSENT
+				// rather than as an error or an empty string — an old turn genuinely
+				// has no request id, and the decision trail says so by omission. The
+				// column is there and queryable, so a lookup by id simply finds nothing.
+				expect((await ledger.recentEntries(5))[0]?.requestId).toBeUndefined();
+				expect(await decisionEntries(sdb, { sinceMs: 0, harness: null, requestId: "anything-at-all" })).toEqual([]);
+				expect((await decisionEntries(sdb, { sinceMs: 0, harness: null }))[0]?.requestId).toBeUndefined();
 			} finally {
 				await sdb.close();
 				db.close();

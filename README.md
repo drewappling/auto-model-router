@@ -753,8 +753,9 @@ modelRoles:
 
 The router decides the concrete OpenRouter model **per turn**; omp only sees the
 virtual profile it picked. Every routed response carries
-`x-auto-model-router-model`, `x-auto-model-router-tier`, `x-auto-model-router-cost-usd`, and
-`x-auto-model-router-attempts`.
+`x-auto-model-router-model`, `x-auto-model-router-tier`, `x-auto-model-router-cost-usd`,
+`x-auto-model-router-attempts`, and `x-request-id` — the id the turn's ledger rows
+are filed under (see [Request ids](#request-ids)).
 
 ---
 
@@ -764,8 +765,10 @@ The ledger records every dispatch: model decided and served, tier, provider,
 tokens (including cached), reported cost, time to first token, total latency,
 escalation signal, error, the agentdox context scope the turn carried (the
 project it belongs to; NULL for a turn that carried none, and for every row
-written before v0.19.0) and how many strings redaction removed from the request
-(NULL when redaction was off, and for every row written before v0.21.0). Three views aggregate it, all from the same
+written before v0.19.0), how many strings redaction removed from the request
+(NULL when redaction was off, and for every row written before v0.21.0) and the
+`request_id` the turn answered (indexed; NULL for every row written before
+v0.37.0 — see [Request ids](#request-ids)). Three views aggregate it, all from the same
 `buildUsageReport` in `src/cost/report.ts`:
 
 - `/router report` in omp — a fullscreen hub with the `/models` look: views
@@ -786,9 +789,10 @@ written before v0.19.0) and how many strings redaction removed from the request
   lists verdicts by model and the recent ones with the harness that gave them, and
   `GET /v1/router/decisions?harness=&days=|since=&slug=&tier=&limit=` is the decision trail
   itself, newest first, each turn with its reasons, the classifier's view, forecast against
-  bill, escalation signal and verdicts (`?session=` narrows to one omp session, as `/router
-  why` does). These are what a front door such as the team edition reads instead of the
-  ledger file.
+  bill, escalation signal, verdicts and its `requestId` (`?session=` narrows to one omp
+  session, as `/router why` does; `?requestId=` narrows to the one request a customer
+  quoted, every attempt of it included). These are what a front door such as the team
+  edition reads instead of the ledger file.
 - `GET /v1/router/catalog[?policy=<X-Omp-Policy JSON>]` — the model catalog as data: every
   model the router knows, sorted by slug, with provider (`openrouter`, `ollama`, a named
   upstream's id), vendor, context, capabilities, prices in USD per million tokens and quality
@@ -829,6 +833,35 @@ to save money (after a burst, the next 15 minutes ran 84–1,577 successes per
 13–50 failures), and OpenRouter's provider failover plus the router's own
 escalation already cover the retry. Use a spike as the cue to `/router pin`
 or deny a model for the session.
+
+### Request ids
+
+Every turn is recorded under the id of the HTTP request it answered, so an id a
+customer quotes names **that** turn instead of "whichever turn of theirs was
+closest in time".
+
+- **Read.** `X-Request-Id` on `/v1/chat/completions`, `/v1/responses` and
+  `/v1/messages`. It is opaque, and it comes from outside, so it is accepted
+  only when it is at most 128 characters of letters, digits and `. _ - : + =`
+  (every id in circulation: a UUID, a ULID, a `traceparent`, a proxy's own).
+  Anything else — too long, a control character, a newline, whitespace — is
+  refused **whole** rather than truncated or stripped: a repaired id looks
+  valid and matches no row.
+- **Minted when absent.** A caller that sends no usable header gets one minted,
+  prefixed `amr-`, so every turn is addressable and a direct user of the router
+  has what a front door's customers have. The prefix is also refused *inbound*:
+  no caller can pass an id off as one the router minted.
+- **Returned.** The turn's response carries `x-request-id` (the caller's value
+  unchanged, or the minted one), and every ledger row of the turn — each
+  escalation attempt, and a digest taken during it — carries it as `request_id`,
+  reported as `requestId` on `GET /v1/router/decisions`. `?requestId=` there
+  filters to exactly those rows; an id nothing was recorded under answers with
+  no entries, and a mangled one is a 400 rather than a silently ignored filter.
+- **Both directions.** A caller that sends no header behaves exactly as before.
+  A row written before v0.37.0 reads as having no id (`null`), never as an
+  error, and is still found by every other filter. `/health` lists `request-id`
+  in `features`, so a front door can tell whether the router it is talking to
+  records ids before it relies on them.
 
 Spend follows the ledger's rule — the provider's reported cost when it gave
 one, else the usage-priced figure the router computed, else the forecast.
@@ -1648,9 +1681,30 @@ left alone with a note. A remote without skills answers 404 and nothing happens.
 
 A remote whose `/setup/info` says `mcp: true` (a team edition serving shared context) also
 gets a `team-context` MCP server written for omp (`~/.omp/agent/mcp.json`) and Claude Code
-(`~/.claude.json`): `type: http`, the remote's `/mcp`, the member key in the Authorization
-header. Every refresh rewrites it with the current key, like models.yml; other servers in
-those files are untouched, and a remote that stops serving MCP has the entry removed.
+(`~/.claude.json`): `type: http`, the remote's `/mcp`, and a bearer token in the
+Authorization header. Other servers in those files are untouched, and a remote that stops
+serving MCP has the entry removed.
+
+**Which bearer** is what `/setup/info`'s `mcpAuth` decides. An MCP client substitutes its
+configuration once, at startup, while a team edition rotates the member access key roughly
+every 72 hours - so an entry carrying the access key 401s mid-session every few days and
+reads to the member as "re-authorise". A team that answers `mcpAuth: "context-token"` mints
+a second credential instead (`amrctx_...`, a year long) that can do nothing but read and
+write that member's shared project context: it is refused on turns, on the admin API, on
+the portal and on SCIM. `connect` takes it from `/setup/exchange` when a setup token was
+used, and mints one at `POST /me/context-tokens` otherwise, so `--key` and `--setup-token`
+both end up with one; the team binds it to the calling device, so revoking the machine
+revokes the token with it.
+
+That token is a long-lived secret, so it goes where the refresh token goes - the OS
+credential store, in its own slot (`<refresh account>#context`, falling back to
+`<router home>/context.token`, owner-readable only). `remote.json` records only which store
+holds it, its expiry and its id. **A refresh does not rewrite the MCP entry**: it re-writes
+models.yml and every other harness config with the new access key and leaves `team-context`
+holding the token it already has, renewing it only when there is none or it is within 30
+days of expiring. A team edition that answers `mcpAuth: "member-key"`, or says nothing at
+all, keeps the old behaviour exactly - the entry carries the access key and every refresh
+rewrites it.
 
 ## Direct upstreams: OpenAI, Azure OpenAI, Anthropic, vLLM
 
@@ -2023,6 +2077,46 @@ a key pasted into a front door's settings, or cleared out of them, ages that cac
 out and rebuilds the catalog immediately instead of leaving the change inert until
 tomorrow. Every fetch stays best-effort — one that fails or returns nothing leaves
 the scores already serving in place.
+
+**A front door can supply the rest** (`benchmarks.extraScores`, empty by default).
+The feeds cover a lot and still leave holes, and a *partial* hole is the expensive
+kind: a model carrying intelligence and neither coding nor agentic clears no tier
+floor above the cheapest on those axes, so it is never picked no matter how good
+or how cheap it is. Whatever curates models in front of the router — a team
+dashboard, a config file you maintain — can hand over the numbers it has:
+
+```yaml
+benchmarks:
+  extraScores:
+    - key: deepseek/deepseek-v4.1-flash  # the OpenRouter slug is fine; it is normalised
+      creator: deepseek                  # optional, and only ever a tie-break
+      coding: 55.2
+      agentic: 31.8
+      source: vendor                     # or `neutral`
+```
+
+`source` is the provenance and only two values are accepted: **`neutral`**, a
+benchmark's own leaderboard, and **`vendor`**, a self-reported model-card number
+that the supplier is expected to have discounted already — the router applies no
+discount of its own, because a discount applied twice is its own distortion.
+Nothing else may be claimed: an entry calling itself `artificial_analysis` would
+outrank BenchLM on the strength of a label, and one calling itself `local` would
+write into the lane `useLocalScores` gates.
+
+These obey exactly the rules the feeds do, and sit exactly where the name says in
+the order: **Artificial Analysis → BenchLM → `neutral` → `vendor` → `local`**, and
+none of them touches an axis that already has a value. So a supplied score can
+only ever fill a hole; it can never move a number a published source measured.
+Which axis came from where is recorded per model under `benchmarks.fill_sources`.
+
+Rows arriving over a live config change (a dashboard save) are sanitised on use:
+a malformed one is dropped with a warning and the rest still apply, because the
+same patch carries unrelated settings and one bad row must not take an operator's
+key save down with it. An unreadable score leaves its axis **absent**, never zero
+— a zero would satisfy `trivial` and bid for every turn. Rows written into
+`config.yml` are validated strictly instead, like every other key in the file. A
+changed table ages the feed cache out and rebuilds the catalog straight away, so
+it applies on the next refresh rather than waiting out the day.
 
 ---
 

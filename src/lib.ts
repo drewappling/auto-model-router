@@ -20,6 +20,14 @@ export type { RedactionConfig, RedactionRule, RouterConfig, UpstreamEntry, Upstr
 // the same guard the router refuses it with, before the rule is ever saved.
 export { validateRedactionPattern, validateRedactionRule, defaultReplacement, MAX_REDACTION_RULES } from "./config/redaction.ts";
 export { RESERVED_UPSTREAM_IDS } from "./config/schema.ts";
+// `benchmarks.extraScores`: a front door supplies scores for axes the feeds leave
+// empty. The row shape and the two provenances config may claim are exported so
+// it can build and check the table against the same rules the router applies —
+// including the cap, past which the excess is dropped. There is deliberately no
+// writer for `local_scores` here: that table belongs to the eval runner and is
+// gated by `benchmarks.useLocalScores`, and a front door writing into it would
+// make the router's own switch a lie.
+export { MAX_EXTRA_SCORES, SUPPLIED_SOURCES, FILL_ORDER, type FeedScore, type FeedSource } from "./catalog/benchmark-feeds.ts";
 export { setKnownUpstreamIds, providerOfSlug } from "./cost/report.ts";
 export type { DeepPartial } from "./config/load.ts";
 export { buildUsageReport, renderUsageReport, type UsageReport, type ReportTotals } from "./cost/report.ts";
@@ -40,3 +48,7 @@ export type { AsyncLedger, LedgerEntry, PruneResult } from "./cost/types.ts";
 // Retention: a front door asks through `POST /v1/router/prune` rather than
 // deleting from the ledger itself. The interval is exported so it can say when.
 export { RETENTION_INTERVAL_MS } from "./cost/retention.ts";
+// Request ids. A front door that stamps `x-request-id` and then looks a turn up
+// by it judges an id with the SAME rules the router carried it under, and tells
+// a minted id from one its own edge assigned — rather than reimplementing either.
+export { acceptRequestId, isRequestId, isMintedRequestId, mintRequestId, requestIdFor, MINTED_REQUEST_ID_PREFIX, REQUEST_ID_MAX_LENGTH } from "./util/requestid.ts";

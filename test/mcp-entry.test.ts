@@ -144,14 +144,23 @@ describe("connect writes the team MCP endpoint", () => {
 
 describe("fetchSetupInfo", () => {
 	test("reads mcp from a team, and answers false for a plain router, a bad body or a dead remote", async () => {
-		expect(await fetchSetupInfo("https://t", (async () => Response.json({ mcp: true })) as unknown as typeof fetch)).toEqual({ mcp: true });
-		expect(await fetchSetupInfo("https://t", (async () => Response.json({ mcp: "yes" })) as unknown as typeof fetch)).toEqual({ mcp: false });
-		expect(await fetchSetupInfo("https://t", (async () => new Response("", { status: 404 })) as unknown as typeof fetch)).toEqual({ mcp: false });
-		expect(await fetchSetupInfo("https://t", (async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch)).toEqual({ mcp: false });
+		expect(await fetchSetupInfo("https://t", (async () => Response.json({ mcp: true })) as unknown as typeof fetch)).toEqual({ mcp: true, mcpAuth: "member-key" });
+		expect(await fetchSetupInfo("https://t", (async () => Response.json({ mcp: "yes" })) as unknown as typeof fetch)).toEqual({ mcp: false, mcpAuth: "member-key" });
+		expect(await fetchSetupInfo("https://t", (async () => new Response("", { status: 404 })) as unknown as typeof fetch)).toEqual({ mcp: false, mcpAuth: "member-key" });
+		expect(await fetchSetupInfo("https://t", (async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch)).toEqual({ mcp: false, mcpAuth: "member-key" });
 		expect(
 			await fetchSetupInfo("https://t", (async () => {
 				throw new Error("down");
 			}) as unknown as typeof fetch),
-		).toEqual({ mcp: false });
+		).toEqual({ mcp: false, mcpAuth: "member-key" });
+	});
+
+	test("mcpAuth says which credential the MCP entry carries; anything but context-token is the member key", async () => {
+		const info = async (body: Record<string, unknown>): Promise<{ mcp: boolean; mcpAuth: string }> => fetchSetupInfo("https://t", (async () => Response.json(body)) as unknown as typeof fetch);
+		expect(await info({ mcp: true, mcpAuth: "context-token" })).toEqual({ mcp: true, mcpAuth: "context-token" });
+		expect(await info({ mcp: true, mcpAuth: "member-key" })).toEqual({ mcp: true, mcpAuth: "member-key" });
+		// An older team edition says nothing at all; it must read as the member key.
+		expect(await info({ mcp: true })).toEqual({ mcp: true, mcpAuth: "member-key" });
+		expect(await info({ mcp: true, mcpAuth: 1 })).toEqual({ mcp: true, mcpAuth: "member-key" });
 	});
 });

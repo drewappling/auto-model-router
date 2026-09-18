@@ -7,6 +7,10 @@
  */
 
 import type { TaskType, Tier } from "../router/types.ts";
+// Type-only, and deliberately so: `benchmarks.extraScores` is the same row shape
+// the feeds produce, so there is one score vocabulary rather than two. The cycle
+// (benchmark-feeds imports RouterConfig) is erased at compile time.
+import type { FeedScore } from "../catalog/benchmark-feeds.ts";
 
 export type QualityAxis = "coding" | "agentic" | "intelligence";
 
@@ -173,6 +177,24 @@ export interface BenchmarksConfig {
 	 * e.g. after a data-collection window closes.
 	 */
 	useLocalScores: boolean;
+	/**
+	 * Scores supplied by the front door for axes the feeds leave empty. Applied by
+	 * the SAME fill-only-missing rule as the feeds, AFTER Artificial Analysis and
+	 * BenchLM and BEFORE `local`, so nothing a published source measured is ever
+	 * moved. Empty by default.
+	 *
+	 * Provenance is each entry's `source`, and only two values are accepted:
+	 * `neutral` (a benchmark's own leaderboard, taken as given) and `vendor` (a
+	 * self-reported model-card number, which the supplier discounts before sending
+	 * — the router never rescales a number it is handed). An entry claiming any
+	 * other source is dropped: config must not be able to impersonate a published
+	 * feed, nor write into the `local` lane that `useLocalScores` gates.
+	 *
+	 * Entries are sanitised on every use (`suppliedScores`), so a malformed one is
+	 * dropped with a warning rather than failing a refresh or zeroing a score, and
+	 * `key`/`creator` are normalised on the way in — the OpenRouter slug works.
+	 */
+	extraScores?: FeedScore[];
 }
 
 /** Quality/price envelope for one complexity tier. */

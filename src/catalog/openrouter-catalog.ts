@@ -31,7 +31,7 @@ import type {
  */
 const SHRINK_KEEP_RATIO = 0.5;
 const SHRINK_MIN_PREVIOUS = 20;
-import { applyFeedScores, loadLocalScores, refreshFeedScores } from "./benchmark-feeds.ts";
+import { applyFeedScores, loadLocalScores, refreshFeedScores, suppliedScores } from "./benchmark-feeds.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -394,10 +394,16 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 		if (cfg.benchmarks.enabled) {
 			try {
 				const feeds = await refreshFeedScores(cfg, db, { log });
+				// Scores the front door supplied for axes the feeds leave empty. Read
+				// from the live config on every refresh, never cached — a set that just
+				// arrived over a patch applies to the very next catalog build.
+				const supplied = suppliedScores(cfg, log);
 				// Local eval scores are last-resort and gated: they change routing, so
 				// they apply only when the operator opts in.
 				const local = cfg.benchmarks.useLocalScores ? loadLocalScores(db) : [];
-				const filled = applyFeedScores(raw, [...feeds, ...local]);
+				// Order within this array is irrelevant: `applyFeedScores` ranks by
+				// `source` through FILL_ORDER, not by position.
+				const filled = applyFeedScores(raw, [...feeds, ...supplied, ...local]);
 				if (filled.modelsFilled > 0) {
 					log.debug("backfilled missing benchmarks from external feeds", {
 						models: filled.modelsFilled,
@@ -406,6 +412,8 @@ export function createCatalog(cfg: RouterConfig, upstream: UpstreamClient, db: D
 						agentic: filled.axes.agentic,
 						aa: filled.sources.artificial_analysis,
 						benchlm: filled.sources.benchlm,
+						neutral: filled.sources.neutral,
+						vendor: filled.sources.vendor,
 						local: filled.sources.local,
 					});
 				}

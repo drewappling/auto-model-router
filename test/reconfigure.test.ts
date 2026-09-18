@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { suppliedScores, type FeedScore } from "../src/catalog/benchmark-feeds.ts";
 import { applyConfigPatch, assignInPlace, touched } from "../src/config/apply.ts";
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import type { RouterConfig } from "../src/config/types.ts";
@@ -146,6 +147,60 @@ describe("a running server reconfigures", () => {
 			db.query("UPDATE benchmark_cache SET fetched_at_ms = ? WHERE id = 1").run(seeded);
 			const cleared = await started.reconfigure({ benchmarks: { artificialAnalysisApiKey: "" } });
 			expect(cleared.catalogRefreshing).toBe(true);
+			expect(fetchedAt()).toBe(0);
+		} finally {
+			db.close();
+			await started.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("supplied benchmark scores arrive live and apply on the next catalog build", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "amr-extrascores-"));
+		const cfg: RouterConfig = {
+			...base(),
+			ledger: { ...DEFAULT_CONFIG.ledger, path: join(dir, "ledger.db") },
+			benchmarks: { ...DEFAULT_CONFIG.benchmarks, enabled: false },
+		};
+		const started = startServer(cfg);
+		const db = openDb(cfg.ledger.path);
+		const fetchedAt = (): number | null => {
+			const row = db.query("SELECT fetched_at_ms FROM benchmark_cache WHERE id = 1").get() as { fetched_at_ms: number } | null;
+			return row === null ? null : row.fetched_at_ms;
+		};
+		try {
+			const seeded = Date.now();
+			db.query("INSERT INTO benchmark_cache (id, payload, fetched_at_ms) VALUES (1, ?, ?)").run("[]", seeded);
+			// An older front door sends no such field; the default is simply absent.
+			expect(cfg.benchmarks.extraScores).toBeUndefined();
+
+			const table: FeedScore[] = [{ key: "deepseek/deepseek-v4.1-flash", creator: "DeepSeek", coding: 55.2, source: "vendor" }];
+			const r = await started.reconfigure({ benchmarks: { extraScores: table } });
+			expect(r.rejected).toEqual([]);
+			expect(r.changed).toEqual(["benchmarks.extraScores"]);
+
+			// Two things make the table take effect NOW rather than tomorrow: the
+			// feed cache is aged out (it is a benchmarks change like any other) and a
+			// catalog rebuild is started. The scores themselves are never cached —
+			// `suppliedScores` reads the live config the rebuild will read.
+			expect(fetchedAt()).toBe(0);
+			expect(r.catalogRefreshing).toBe(true);
+			expect(suppliedScores(cfg)).toEqual([{ key: "deepseek-v4-1-flash", creator: "deepseek", coding: 55.2, source: "vendor" }]);
+
+			// A patch cannot alias the live table, and re-sending the same one is not
+			// a change — the ~daily feed cadence is not every settings save's to reset.
+			table.push({ key: "later", creator: "", source: "vendor" });
+			expect(cfg.benchmarks.extraScores).toHaveLength(1);
+			db.query("UPDATE benchmark_cache SET fetched_at_ms = ? WHERE id = 1").run(seeded);
+			const again = await started.reconfigure({ benchmarks: { extraScores: [table[0] as FeedScore] } });
+			expect(again.changed).toEqual([]);
+			expect(again.catalogRefreshing).toBe(false);
+			expect(fetchedAt()).toBe(seeded);
+
+			// And taking the table away is a change too: supplied scores stop.
+			const cleared = await started.reconfigure({ benchmarks: { extraScores: [] } });
+			expect(cleared.changed).toEqual(["benchmarks.extraScores"]);
+			expect(suppliedScores(cfg)).toEqual([]);
 			expect(fetchedAt()).toBe(0);
 		} finally {
 			db.close();

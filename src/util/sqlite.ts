@@ -18,7 +18,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** Bump when a migration is added; guarded below so reopening never regresses it. */
-const USER_VERSION = 19;
+const USER_VERSION = 20;
 
 const MIGRATIONS = `
 CREATE TABLE IF NOT EXISTS catalog_cache (
@@ -306,6 +306,24 @@ const MIGRATE_V19 = `
 ALTER TABLE ledger ADD COLUMN redactions INTEGER;
 `;
 
+// v20: ledger records the id of the HTTP request the turn answered — the
+// `X-Request-Id` a front door stamps on the response a customer sees, or one
+// the router minted for a caller that sent none (`util/requestid.ts`). Without
+// it, placing a quoted request id on a turn was a join on member and time,
+// which can only answer "probably this one" and answers nothing when two turns
+// of one member overlap.
+//
+// Indexed because that lookup — one id, straight to its rows — is the whole
+// point of the column, and an escalated turn writes several rows under the
+// same id. NULL on every row written before this, and on the router's own side
+// calls (a standalone digest whose caller named no request); there is nothing
+// to backfill from, and a time-window guess written into the column would be
+// indistinguishable from a fact.
+const MIGRATE_V20 = `
+ALTER TABLE ledger ADD COLUMN request_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_ledger_request ON ledger (request_id);
+`;
+
 // v9: benchmark_cache holds the external benchmark feeds (Artificial Analysis,
 // BenchLM) that backfill quality scores OpenRouter leaves unpublished. It is a
 // whole new table, created idempotently by the MIGRATIONS block above, so there
@@ -360,6 +378,7 @@ export function openDb(path: string): Database {
 		if (!ledgerCols.some((c) => c.name === "prompt_tokens_saved")) db.exec(MIGRATE_V12);
 		if (!ledgerCols.some((c) => c.name === "scope")) db.exec(MIGRATE_V18);
 		if (!ledgerCols.some((c) => c.name === "redactions")) db.exec(MIGRATE_V19);
+		if (!ledgerCols.some((c) => c.name === "request_id")) db.exec(MIGRATE_V20);
 		const convCols = db.query("PRAGMA table_info(conversations)").all() as { name: string }[];
 		if (!convCols.some((c) => c.name === "context_version")) db.exec(MIGRATE_V11);
 		if (!convCols.some((c) => c.name === "compaction_plan")) db.exec(MIGRATE_V13);

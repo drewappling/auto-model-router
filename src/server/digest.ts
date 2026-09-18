@@ -48,6 +48,14 @@ export interface DigestRequest {
 	 * and is gated on `compaction.digestToolResults` instead.
 	 */
 	source?: "tool_result" | "compaction";
+	/**
+	 * The HTTP request this digest belongs to, recorded on its ledger row. A
+	 * digest taken DURING a turn carries that turn's id, so the cheap side call
+	 * and the turn it saved money on answer to one request id; a standalone
+	 * digest carries whatever its own caller sent, and nothing when it sent
+	 * none (a side call is not a turn, so none is minted for it).
+	 */
+	requestId?: string;
 }
 
 export type DigestResult =
@@ -260,6 +268,9 @@ export function createDigester(deps: DigesterDeps): Digester {
 				upstreamGenerationId: null,
 				error,
 				promptTokensSaved: 0,
+				// The request this digest served, when it has one: inside a turn that
+				// is the turn's id, so both rows answer to what a customer quotes.
+				...(req.requestId === undefined || req.requestId === "" ? {} : { requestId: req.requestId }),
 				priceModel: model,
 			};
 			try {

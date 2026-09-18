@@ -2,7 +2,7 @@
  * The store's schema, for either engine.
  *
  * `util/sqlite.ts` remains the migration path for a SQLite FILE that already
- * exists: nineteen versions have shipped, and an old file still needs its
+ * exists: twenty versions have shipped, and an old file still needs its
  * `ALTER TABLE`s applied in order. This module declares the FINAL shape of
  * every table instead, which is what a fresh store needs — a Postgres database
  * has no history to migrate, and on an already-migrated file every statement
@@ -65,6 +65,34 @@ async function createIfAbsent(db: SqlDb, statement: string): Promise<void> {
 	} catch (err) {
 		const code = err !== null && typeof err === "object" && "errno" in err ? String(err.errno) : "";
 		if (!RACED.has(code)) throw err;
+	}
+}
+
+/**
+ * Columns added to `ledger` AFTER this shim shipped, as `<name> <type>`.
+ *
+ * `CREATE TABLE IF NOT EXISTS` declares the final shape for a store that does
+ * not exist yet and does exactly nothing for one that does — so a Postgres
+ * deployment that has been running since before a column was added would never
+ * grow it, and the very next turn would fail its INSERT on an unknown column.
+ * SQLite reaches the same place through `util/sqlite.ts`'s guarded ALTERs;
+ * this is that path for the other engine, and it stays a list rather than a
+ * version counter because `ADD COLUMN IF NOT EXISTS` is already the guard.
+ *
+ * On a partitioned ledger the ALTER applies to the parent and every partition
+ * with it, which is what keeps a day's table from diverging from its parent.
+ */
+const PG_LEDGER_COLUMNS = ["request_id TEXT"] as const;
+
+/** `42701` is "column already exists": another replica added it between the check and the ALTER. */
+const ADDED_ALREADY = new Set([...RACED, "42701"]);
+
+async function addColumnIfAbsent(db: SqlDb, table: string, column: string): Promise<void> {
+	try {
+		await db.sql.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column}`);
+	} catch (err) {
+		const code = err !== null && typeof err === "object" && "errno" in err ? String(err.errno) : "";
+		if (!ADDED_ALREADY.has(code)) throw err;
 	}
 }
 
@@ -157,7 +185,7 @@ export async function migrateStore(db: SqlDb, log?: Logger): Promise<void> {
 		singleton("benchmark_cache"),
 		singleton("local_scores"),
 
-		// One row per dispatched upstream generation. The columns nineteen
+		// One row per dispatched upstream generation. The columns twenty
 		// migrations added are declared here as they finally stand.
 		//
 		// Partitioned by day on Postgres, which forces the primary key to
@@ -201,7 +229,8 @@ export async function migrateStore(db: SqlDb, log?: Logger): Promise<void> {
 			hold_arm INTEGER,
 			prompt_tokens_saved INTEGER,
 			scope TEXT,
-			redactions INTEGER${partitioned ? ",\n\t\t\tPRIMARY KEY (id, created_at_ms)" : ""}
+			redactions INTEGER,
+			request_id TEXT${partitioned ? ",\n\t\t\tPRIMARY KEY (id, created_at_ms)" : ""}
 		)${partitioned ? " PARTITION BY RANGE (created_at_ms)" : ""}`,
 		// The composite key above cannot serve a lookup by `id` alone, which is
 		// what the feedback join and `markWasted` do.
@@ -216,6 +245,9 @@ export async function migrateStore(db: SqlDb, log?: Logger): Promise<void> {
 		"CREATE INDEX IF NOT EXISTS idx_ledger_harness_created ON ledger (harness_id, created_at_ms DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_ledger_slug_harness_created ON ledger (slug, harness_id, created_at_ms DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_ledger_session ON ledger (omp_session_id, created_at_ms DESC)",
+		// One request id straight to its rows: what support does with an id a
+		// customer quoted, and an escalated turn files several rows under it.
+		"CREATE INDEX IF NOT EXISTS idx_ledger_request ON ledger (request_id)",
 
 		`CREATE TABLE IF NOT EXISTS token_calibration (
 			tokenizer TEXT PRIMARY KEY,
@@ -292,6 +324,13 @@ export async function migrateStore(db: SqlDb, log?: Logger): Promise<void> {
 			created_at_ms ${big} NOT NULL
 		)`,
 	];
+
+	// Before the statements, so the indexes below can name a column an existing
+	// deployment is only now growing. A store that has no ledger yet gets the
+	// whole shape from the CREATE TABLE and needs no top-up.
+	if (db.dialect === "postgres" && (await db.tableExists("ledger"))) {
+		for (const column of PG_LEDGER_COLUMNS) await addColumnIfAbsent(db, "ledger", column);
+	}
 
 	for (const statement of statements) await createIfAbsent(db, statement);
 

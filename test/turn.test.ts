@@ -18,6 +18,7 @@ import { runTurn } from "../src/server/turn.ts";
 import { BudgetExceededError } from "../src/router/select.ts";
 import { parseMessagesRequest } from "../src/wire/anthropic/messages.ts";
 import { parseChatRequest } from "../src/wire/openai/request.ts";
+import { isMintedRequestId } from "../src/util/requestid.ts";
 import { UpstreamError, type DispatchOptions, type UpstreamClient } from "../src/upstream/types.ts";
 import type {
 	FinishReason,
@@ -600,6 +601,60 @@ describe("the context scope reaches the ledger", () => {
 		expect((await run(mkReq(), withDefault))[0]!.scope).toBe("solo");
 		// Neither: no scope at all, which the ledger stores as NULL.
 		expect((await run(mkReq(), mkConfig()))[0]!.scope).toBe("");
+	});
+});
+
+describe("the request id reaches the ledger", () => {
+	const runOne = async (req: NormRequest) => {
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" })]);
+		const { upstream } = mkUpstream([{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("hi"), finishChunk("stop"), usageChunk({ promptTokens: 10, completionTokens: 2 }, 0.0001)] }]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink } = mkSink();
+		await runTurn(req, sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+		return entries;
+	};
+
+	test("the front door's id is recorded verbatim, so a quoted id names this exact turn", async () => {
+		const req = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers({ "x-request-id": "abc123" }));
+		expect((await runOne(req))[0]!.requestId).toBe("abc123");
+	});
+
+	test("a caller that sends none still gets an addressable row, marked as minted", async () => {
+		const req = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers());
+		const id = (await runOne(req))[0]!.requestId ?? "";
+		expect(isMintedRequestId(id)).toBe(true);
+		// And it is the id the caller was handed back, not a second one invented
+		// for the row: the header the wire read is what the ledger stores.
+		expect(id).toBe(req.requestId ?? "");
+	});
+
+	test("every attempt of an escalated turn files under the ONE id the caller holds", async () => {
+		// The customer made one request; support must land on the whole turn,
+		// including the attempt that was thrown away.
+		const { router } = mkRouter([mkDecision("trivial", "cheap/model", { escalateTo: "simple" }), mkDecision("simple", "better/model", { escalateTo: "moderate" })]);
+		const { upstream } = mkUpstream([
+			{ kind: "chunks", chunks: [startChunk("cheap/model"), textChunk("I'm sorry, but I can't help with that request."), finishChunk("stop")] },
+			{ kind: "chunks", chunks: [startChunk("better/model"), textChunk("Here is the answer."), finishChunk("stop"), usageChunk({ promptTokens: 130, completionTokens: 6 }, 0.0009)] },
+		]);
+		const { ledger, entries } = mkLedger();
+		const { store } = mkConversations();
+		const { sink } = mkSink();
+		const req = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers({ "x-request-id": "one-request" }));
+
+		await runTurn(req, sink, { config: mkConfig(), router, upstream, ledger, conversations: store, catalog, context: createDisabledBridge() }, new AbortController().signal);
+
+		expect(entries).toHaveLength(2);
+		expect(entries.map((e) => e.requestId)).toEqual(["one-request", "one-request"]);
+	});
+
+	test("a hostile header never reaches the row; the turn is recorded under a minted id instead", async () => {
+		for (const hostile of ["x".repeat(129), "id with spaces", "amr-forged0000", '"><script>', "tab\tseparated"]) {
+			const req = parseChatRequest({ model: "auto", messages: [{ role: "user", content: "hi" }] }, new Headers({ "x-request-id": hostile }));
+			const id = (await runOne(req))[0]!.requestId ?? "";
+			expect(id).not.toBe(hostile);
+			expect(isMintedRequestId(id)).toBe(true);
+		}
 	});
 });
 

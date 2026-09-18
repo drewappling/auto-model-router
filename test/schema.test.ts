@@ -2,7 +2,7 @@
  * The shim's schema against the SQLite bootstrap's.
  *
  * `util/schema.ts` declares the FINAL shape of every table; `util/sqlite.ts`
- * reaches the same shape by replaying nineteen migrations. They are written
+ * reaches the same shape by replaying twenty migrations. They are written
  * twice, so they can drift — and drift here is silent: a missing column makes
  * the real owner's statements fail only when that code path runs, which is how
  * a live server refused to start earlier in this port.
@@ -43,7 +43,7 @@ describe("store schema", () => {
 	test("the shim creates every table the sqlite bootstrap does, with the same columns", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "amr-schema-"));
 		try {
-			// The bootstrap's result, after all nineteen migrations.
+			// The bootstrap's result, after all twenty migrations.
 			const legacyPath = join(dir, "legacy.db");
 			openDb(legacyPath).close();
 			const legacy = await columnsOf(legacyPath);

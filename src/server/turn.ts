@@ -349,6 +349,11 @@ export async function runTurn(
 				// row back to a project. The resolved one the bridge used, header or
 				// configured default; "" stores as NULL.
 				scope: doxScope,
+				// The HTTP request this turn is answering, so a request id quoted in
+				// a ticket names the turn exactly rather than by member and time. The
+				// wire has already decided it: the caller's header, or a minted one.
+				// Every attempt of the turn is recorded under the same id.
+				...(req.requestId === undefined ? {} : { requestId: req.requestId }),
 				ompSessionId: req.ompSessionId,
 				slug: decision.slug,
 				servedSlug,

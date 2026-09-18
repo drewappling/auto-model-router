@@ -37,11 +37,12 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileS
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
+import { readRemoteRouter, refreshAccountOf, remoteFilePath } from "../../omp-extension/remote-logic.ts";
 import { ORIGIN_ENV, SCOPE_ENV } from "../context/scope.ts";
 import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
 import { fetchSkills, installSkills, type SkillsBundle, type SkillsInstallReport, type SkillsTarget } from "./skills.ts";
-import { pickStore, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
+import { contextAccountOf, pickStore, saveContextToken, saveRefreshToken, type StoreDeps, type StoreKind } from "./credential-store.ts";
+import { ensureContextToken, type ContextToken, type McpAuth } from "./context-token.ts";
 import { flagString, type CliArgs } from "./args.ts";
 import { cursorSnippet, mergeClineProviders, mergeContinueConfig, mergeOpenCodeConfig, windsurfSnippet, type ManualSnippet } from "./harnesses.ts";
 
@@ -80,10 +81,17 @@ export interface ConnectOptions {
 	skills?: SkillsBundle;
 	/**
 	 * The remote's MCP endpoint (a team edition serving shared context): written as the
-	 * `team-context` server for omp and Claude Code with the member key, rewritten on every
-	 * refresh like models.yml. `null` removes an entry a previous connect wrote.
+	 * `team-context` server for omp and Claude Code. `null` removes an entry a previous
+	 * connect wrote.
+	 *
+	 * `token` is the team's **context token** when it mints them (`/setup/info` says
+	 * `mcpAuth: "context-token"`): a year-long credential good for nothing but that member's
+	 * shared context, which is what the entry carries so a key rotation every 72 hours does
+	 * not kill a running MCP client. It is filed in the OS credential store like the refresh
+	 * token, and remote.json records only the store, the expiry and the id. Without one —
+	 * an older team edition — the entry carries the access key exactly as it always did.
 	 */
-	mcp?: { url: string | null };
+	mcp?: { url: string | null; token?: string; tokenExpiresAtMs?: number; tokenId?: string };
 	platform: string;
 	pathHas: (bin: string) => boolean;
 }
@@ -112,9 +120,10 @@ export const MCP_SERVER_NAME = "team-context";
 /**
  * Merges the team-context server into an `mcpServers` JSON file (omp's mcp.json, Claude
  * Code's ~/.claude.json), leaving every other key and server alone; `url` null removes it.
+ * `bearer` is the team's context token when it mints one, else the member's access key.
  * Returns the new text, or null when nothing changes.
  */
-export function mergeMcpServers(before: string, url: string | null, key: string): string | null {
+export function mergeMcpServers(before: string, url: string | null, bearer: string): string | null {
 	let root: Record<string, unknown> = {};
 	if (before.trim() !== "") {
 		try {
@@ -130,7 +139,7 @@ export function mergeMcpServers(before: string, url: string | null, key: string)
 		if (!(MCP_SERVER_NAME in servers)) return null;
 		delete servers[MCP_SERVER_NAME];
 	} else {
-		const next = { type: "http", url, headers: { Authorization: `Bearer ${key}` } };
+		const next = { type: "http", url, headers: { Authorization: `Bearer ${bearer}` } };
 		if (JSON.stringify(servers[MCP_SERVER_NAME]) === JSON.stringify(next)) return null;
 		servers[MCP_SERVER_NAME] = next;
 	}
@@ -315,6 +324,27 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		refreshTokenStore = saveRefreshToken(rh, refreshAccount, o.refreshToken, wanted, o.storeDeps ?? { pathHas: o.pathHas });
 		if (refreshTokenStore !== wanted) report.notes.push(`the ${wanted} credential store was not usable; the refresh token is in ${join(rh, "refresh.token")} (owner-readable only)`);
 	} else if (o.refreshToken !== undefined && o.refreshToken !== "") refreshTokenStore = o.store ?? pickStore(o.platform, o.pathHas);
+	// The context token is the other long-lived secret and goes to the same store, in its own
+	// slot. When this connect learned nothing about one (a plain router, or a /setup/info that
+	// did not answer) what the previous remote.json recorded is carried forward rather than
+	// dropped: the store still holds that token, and forgetting it would orphan it for a year.
+	let contextTokenStore: StoreKind | undefined;
+	const contextAccount = contextAccountOf(refreshAccount);
+	const contextToken = o.mcp?.token !== undefined && o.mcp.token !== "" ? o.mcp.token : undefined;
+	if (contextToken !== undefined && !o.dryRun) {
+		const wanted = o.store ?? pickStore(o.platform, o.pathHas);
+		contextTokenStore = saveContextToken(rh, contextAccount, contextToken, wanted, o.storeDeps ?? { pathHas: o.pathHas });
+		if (contextTokenStore !== wanted) report.notes.push(`the ${wanted} credential store was not usable; the shared-context token is in ${join(rh, "context.token")} (owner-readable only)`);
+	} else if (contextToken !== undefined) contextTokenStore = o.store ?? pickStore(o.platform, o.pathHas);
+	const contextFields =
+		contextToken !== undefined
+			? { contextTokenStore: contextTokenStore!, contextAccount, ...(o.mcp?.tokenExpiresAtMs === undefined ? {} : { contextTokenExpiresAtMs: o.mcp.tokenExpiresAtMs }), ...(o.mcp?.tokenId === undefined ? {} : { contextTokenId: o.mcp.tokenId }) }
+			: {
+					...(typeof previous.contextTokenStore === "string" ? { contextTokenStore: previous.contextTokenStore } : {}),
+					...(typeof previous.contextAccount === "string" ? { contextAccount: previous.contextAccount } : {}),
+					...(typeof previous.contextTokenExpiresAtMs === "number" ? { contextTokenExpiresAtMs: previous.contextTokenExpiresAtMs } : {}),
+					...(typeof previous.contextTokenId === "string" ? { contextTokenId: previous.contextTokenId } : {}),
+				};
 	write(
 		report.remoteFile,
 		`${JSON.stringify(
@@ -325,6 +355,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 				name: o.name,
 				joinedAtMs: typeof previous.joinedAtMs === "number" ? previous.joinedAtMs : Date.now(),
 				...(refreshTokenStore !== undefined ? { refreshTokenStore, refreshAccount } : {}),
+				...contextFields,
 				...(o.keyExpiresAtMs !== undefined ? { keyExpiresAtMs: o.keyExpiresAtMs } : {}),
 				...(o.refreshExpiresAtMs !== undefined ? { refreshExpiresAtMs: o.refreshExpiresAtMs } : {}),
 				...(o.device !== undefined && o.device !== "" ? { device: o.device } : {}),
@@ -438,8 +469,10 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 	}
 
 	// 6c. The remote's MCP endpoint (shared context tools), for the harnesses configured above
-	// that read a user-level mcpServers file; the member key travels in the header and is
-	// rewritten with every refresh, like models.yml.
+	// that read a user-level mcpServers file. The bearer is the team's context token when it
+	// mints one — an MCP client reads its configuration once at startup, so an entry carrying
+	// the 72-hour access key 401s mid-session every few days. Without a context token (an
+	// older team edition) it is the access key, rewritten by every refresh as it always was.
 	if (o.mcp !== undefined) {
 		const files: string[] = [];
 		if (report.configured.some((c) => c.startsWith("omp ("))) files.push(join(agentDir, "mcp.json"));
@@ -447,7 +480,7 @@ export function connectRemote(o: ConnectOptions): ConnectReport {
 		report.mcp = [];
 		for (const path of files) {
 			const before = existsSync(path) ? readFileSync(path, "utf8") : "";
-			const after = mergeMcpServers(before, o.mcp.url, o.key);
+			const after = mergeMcpServers(before, o.mcp.url, contextToken ?? o.key);
 			if (after === null) continue;
 			write(path, after);
 			report.mcp.push(path);
@@ -595,6 +628,14 @@ export interface IssuedCredential {
 	refreshExpiresAtMs?: number;
 	userId: string;
 	name: string;
+	/**
+	 * The team's shared-context credential, when it mints them: handed over with the rest so
+	 * onboarding costs no extra round trip. Absent from an older team edition's answer, and
+	 * then `connect` either mints one at /me/context-tokens or keeps using the access key.
+	 */
+	contextToken?: string;
+	contextTokenExpiresAtMs?: number;
+	contextTokenId?: string;
 }
 
 /**
@@ -615,18 +656,27 @@ export async function exchangeSetupToken(url: string, token: string, device: str
 		...(typeof body.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: body.refreshExpiresAtMs } : {}),
 		userId: typeof body.userId === "string" ? body.userId : "",
 		name: typeof body.name === "string" ? body.name : "",
+		...(typeof body.contextToken === "string" && body.contextToken !== "" ? { contextToken: body.contextToken } : {}),
+		...(typeof body.contextTokenExpiresAtMs === "number" ? { contextTokenExpiresAtMs: body.contextTokenExpiresAtMs } : {}),
+		...(typeof body.contextTokenId === "string" && body.contextTokenId !== "" ? { contextTokenId: body.contextTokenId } : {}),
 	};
 }
 
-/** What a team edition says about itself at /setup/info; a plain router answers nothing. */
-export async function fetchSetupInfo(url: string, fetchImpl: typeof fetch = fetch): Promise<{ mcp: boolean }> {
+/**
+ * What a team edition says about itself at /setup/info; a plain router answers nothing.
+ *
+ * `mcpAuth` says which credential belongs in the MCP entry. It is `member-key` whenever the
+ * field is missing — a team edition older than context tokens, a plain router, an
+ * unreachable remote — so nothing about those deployments changes.
+ */
+export async function fetchSetupInfo(url: string, fetchImpl: typeof fetch = fetch): Promise<{ mcp: boolean; mcpAuth: McpAuth }> {
 	try {
 		const res = await fetchImpl(`${url}/setup/info`, { signal: AbortSignal.timeout(10_000) });
-		if (!res.ok) return { mcp: false };
-		const body = (await res.json()) as { mcp?: unknown };
-		return { mcp: body.mcp === true };
+		if (!res.ok) return { mcp: false, mcpAuth: "member-key" };
+		const body = (await res.json()) as { mcp?: unknown; mcpAuth?: unknown };
+		return { mcp: body.mcp === true, mcpAuth: body.mcpAuth === "context-token" ? "context-token" : "member-key" };
 	} catch {
-		return { mcp: false };
+		return { mcp: false, mcpAuth: "member-key" };
 	}
 }
 
@@ -666,6 +716,8 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	let refreshToken = flagString(args, "refresh-token") ?? "";
 	let keyExpires = Number.parseInt(flagString(args, "key-expires") ?? "", 10);
 	let refreshExpires = Number.parseInt(flagString(args, "refresh-expires") ?? "", 10);
+	// The team's shared-context credential, when the exchange hands one over.
+	let issuedContext: ContextToken | undefined;
 	if (setupToken !== "") {
 		if (device === "") device = hostname();
 		const issued = await exchangeSetupToken(url, setupToken, device);
@@ -675,6 +727,12 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 		refreshExpires = issued.refreshExpiresAtMs ?? Number.NaN;
 		if (issued.userId !== "") userId = issued.userId;
 		if (issued.name !== "") name = issued.name;
+		if (issued.contextToken !== undefined)
+			issuedContext = {
+				value: issued.contextToken,
+				...(issued.contextTokenExpiresAtMs === undefined ? {} : { expiresAtMs: issued.contextTokenExpiresAtMs }),
+				...(issued.contextTokenId === undefined ? {} : { id: issued.contextTokenId }),
+			};
 		console.log(`credential issued for ${name === "" ? userId : name} (device ${device})`);
 	}
 	// Verify the key against the route every router serves before touching anything.
@@ -694,6 +752,17 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 	const skills = await fetchSkills(url, key, fetchImpl);
 	// Its shared-context MCP endpoint, when it is a team edition serving one.
 	const info = await fetchSetupInfo(url, fetchImpl);
+	// The credential that entry carries. A setup token's exchange hands one over; a credential
+	// given with --key has no exchange, so one is minted at /me/context-tokens with the key —
+	// both paths end up with a year-long token instead of the 72-hour access key. A machine
+	// that already holds one keeps it (see ensureContextToken), so re-running connect does not
+	// leave a trail of tokens in the member's portal.
+	const rh = expand(process.env.AUTO_MODEL_ROUTER_HOME ?? join(home, ".auto-model-router"), home);
+	const contextToken =
+		info.mcp && info.mcpAuth === "context-token"
+			? await ensureContextToken({ url, key, mcpAuth: info.mcpAuth, routerHome: rh, remote: readRemoteRouter(rh), issued: issuedContext, name: device === "" ? hostname() : device, fetchImpl, mint: !args.flags.has("dry-run") })
+			: null;
+	if (contextToken !== null) console.log(`shared context uses a context token (${contextToken.id ?? "new"}), not the access key: a key rotation no longer restarts your MCP client`);
 	const report = connectRemote({
 		url,
 		key,
@@ -714,7 +783,10 @@ export async function connectCommand(args: CliArgs): Promise<void> {
 		...(device === "" ? {} : { device }),
 		...(exePath === null ? {} : { exePath }),
 		...(skills.bundle === null ? {} : { skills: skills.bundle }),
-		mcp: { url: info.mcp ? `${url}/mcp` : null },
+		mcp: {
+			url: info.mcp ? `${url}/mcp` : null,
+			...(contextToken === null ? {} : { token: contextToken.value, ...(contextToken.expiresAtMs === undefined ? {} : { tokenExpiresAtMs: contextToken.expiresAtMs }), ...(contextToken.id === undefined ? {} : { tokenId: contextToken.id }) }),
+		},
 	});
 	if (skills.note !== undefined) report.notes.push(skills.note);
 	if (exePath !== null) console.log(`executable ${exePath}; package files under ${packageDir}`);

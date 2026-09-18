@@ -11,6 +11,11 @@
  *
  * A refresh a day early costs nothing: the remote keeps the old key valid until
  * its own expiry, so a session still holding it is never cut.
+ *
+ * One thing a refresh deliberately does NOT rewrite: the `team-context` MCP
+ * entry, when the team edition mints context tokens. See context-token.ts —
+ * an MCP client substitutes its configuration once at startup, so a fresh key
+ * written there every three days is a 401 mid-session, not an update.
  */
 
 import { executablePath, materializePackage, readEmbeddedPackage } from "./embedded.ts";
@@ -21,6 +26,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasRefresh, readRemoteRouter, refreshAccountOf, type RemoteRouter } from "../../omp-extension/remote-logic.ts";
 import { loadRefreshToken, type StoreDeps } from "./credential-store.ts";
+import { ensureContextToken } from "./context-token.ts";
 import { routerHome } from "../../omp-extension/router-url.ts";
 import type { CliArgs } from "./args.ts";
 import { connectRemote } from "./connect.ts";
@@ -101,6 +107,22 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 	// A refresh is when the team's skills reach a machine that has not re-run connect.
 	const skills = await fetchSkills(opts.remote.url, fresh.key, opts.fetchImpl ?? fetch);
 	const info = await fetchSetupInfo(opts.remote.url, opts.fetchImpl ?? fetch);
+	// The MCP entry must NOT take the new access key: an MCP client reads its configuration
+	// once, at startup, so rewriting the entry every 72 hours is what makes the context tools
+	// die mid-session. The team's context token is held for a year and reused here untouched;
+	// it is minted (or renewed) only when there is none or it is within a month of expiring.
+	const context = info.mcp
+		? await ensureContextToken({
+				url: opts.remote.url,
+				key: fresh.key,
+				mcpAuth: info.mcpAuth,
+				routerHome: rh,
+				remote: opts.remote,
+				name: fresh.device ?? opts.remote.device ?? "this machine",
+				fetchImpl: opts.fetchImpl ?? fetch,
+				...(opts.storeDeps === undefined ? {} : { storeDeps: opts.storeDeps }),
+			})
+		: null;
 	connectRemote({
 		url: opts.remote.url,
 		key: fresh.key,
@@ -123,7 +145,10 @@ export async function refreshAndRewrite(opts: { remote: RemoteRouter; fetchImpl?
 		...(opts.storeDeps !== undefined ? { storeDeps: opts.storeDeps } : {}),
 		...(exePath !== undefined ? { exePath } : {}),
 		...(skills.bundle === null ? {} : { skills: skills.bundle }),
-		mcp: { url: info.mcp ? `${opts.remote.url}/mcp` : null },
+		mcp: {
+			url: info.mcp ? `${opts.remote.url}/mcp` : null,
+			...(context === null ? {} : { token: context.value, ...(context.expiresAtMs === undefined ? {} : { tokenExpiresAtMs: context.expiresAtMs }), ...(context.id === undefined ? {} : { tokenId: context.id }) }),
+		},
 		// undefined keeps whatever scope the managed models.yml block already carries.
 	});
 	return fresh;

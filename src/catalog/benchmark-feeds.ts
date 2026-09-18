@@ -11,14 +11,23 @@
  *    baseline, but only when a key is configured.
  *  - BenchLM (`/api/data/leaderboard`, keyless): covers the models AA omits.
  *
+ * Both still leave holes, and the expensive kind is a PARTIAL one: a model with
+ * intelligence and neither coding nor agentic clears no tier floor above the
+ * cheapest on those axes and is simply never picked. `benchmarks.extraScores`
+ * is the seam for that — curated rows a front door supplies (`suppliedScores`),
+ * under exactly the rules below.
+ *
  * Three rules, all load-bearing:
  *
  *  - FILL, NEVER OVERWRITE. A score OpenRouter already published wins; the feeds
  *    only supply axes that are absent. Two suites measure the same idea on
  *    different tests, so letting one overwrite the other would make a model's
  *    score jump with whichever feed refreshed last.
- *  - PER AXIS, AA BEFORE BENCHLM. AA is the stronger source and fills first;
- *    BenchLM fills whatever axis AA still left empty.
+ *  - PER AXIS, STRONGEST SOURCE FIRST (`FILL_ORDER`). AA fills first, BenchLM
+ *    fills whatever axis AA left empty, then anything the front door supplied
+ *    through `benchmarks.extraScores` (a neutral leaderboard ahead of a
+ *    self-reported vendor number), then our own eval. Every one of them only
+ *    ever fills a hole the ones above it left.
  *  - MATCH EXACTLY OR NOT AT ALL. Matching is on a normalized model-name key,
  *    with the creator used only to break a tie between two rows that share a
  *    key. A fuzzy match would let a 7B inherit a 72B's score and then be handed
@@ -36,7 +45,40 @@ import type { QualityAxis } from "../config/types.ts";
 export const AA_MODELS_URL = "https://artificialanalysis.ai/api/v2/data/llms/models";
 export const BENCHLM_URL = "https://benchlm.ai/api/data/leaderboard";
 
-export type FeedSource = "artificial_analysis" | "benchlm" | "local";
+/**
+ * Where one score came from, and — through `FILL_ORDER` — what it may outrank.
+ *
+ *  - `artificial_analysis`, `benchlm`: the fetched feeds described above.
+ *  - `neutral`, `vendor`: supplied through `benchmarks.extraScores` by whatever
+ *    sits in front of the router. `neutral` is a benchmark's own leaderboard;
+ *    `vendor` is a self-reported model-card number. They stay two members rather
+ *    than collapsing into one `supplied` because that distinction is the whole
+ *    reason the supplier curated the table, and collapsing would discard it at
+ *    the boundary. The router rescales neither: a `vendor` number is expected to
+ *    arrive already discounted, and a discount applied twice is its own lie.
+ *  - `local`: our own eval harness, gated by `benchmarks.useLocalScores`.
+ */
+export type FeedSource = "artificial_analysis" | "benchlm" | "neutral" | "vendor" | "local";
+
+/**
+ * Fill priority, strongest first — one list rather than a chain of ifs, so the
+ * ordering rule is a thing a test can point at. A published score is not in it
+ * at all: an axis that already has a value is skipped before this is consulted.
+ */
+export const FILL_ORDER: readonly FeedSource[] = ["artificial_analysis", "benchlm", "neutral", "vendor", "local"];
+
+/** The sources the fetched-feed cache may hold — exactly what fetches write it. */
+const FETCHED_SOURCES: readonly FeedSource[] = ["artificial_analysis", "benchlm"];
+
+/** The sources `benchmarks.extraScores` may claim. Anything else is dropped. */
+export const SUPPLIED_SOURCES: readonly FeedSource[] = ["neutral", "vendor"];
+
+/**
+ * Cap on `benchmarks.extraScores`. The curated table is a few hundred rows; this
+ * sits far above it and exists only so one config patch cannot hand the fill
+ * path an unbounded list. The excess is dropped; the rest still applies.
+ */
+export const MAX_EXTRA_SCORES = 2_000;
 
 /** One model's scores from one feed, on the router's three axes (0-100). */
 export interface FeedScore {
@@ -60,6 +102,13 @@ export interface FillResult {
 }
 
 const AXES: readonly QualityAxis[] = ["coding", "intelligence", "agentic"];
+
+/** A zeroed per-source counter, derived from `FILL_ORDER` so it cannot drift from it. */
+function zeroSources(): Record<FeedSource, number> {
+	const out = {} as Record<FeedSource, number>;
+	for (const source of FILL_ORDER) out[source] = 0;
+	return out;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -231,7 +280,7 @@ export function applyFeedScores(rawModels: unknown[], feeds: FeedScore[]): FillR
 	const result: FillResult = {
 		modelsFilled: 0,
 		axes: { coding: 0, intelligence: 0, agentic: 0 },
-		sources: { artificial_analysis: 0, benchlm: 0, local: 0 },
+		sources: zeroSources(),
 	};
 	if (feeds.length === 0) return result;
 
@@ -258,22 +307,21 @@ export function applyFeedScores(rawModels: unknown[], feeds: FeedScore[]): FillR
 
 		for (const axis of AXES) {
 			if (score100(aa[`${axis}_index`]) !== null) continue; // published; never overwrite
-			const aaHit = pick(candidates, "artificial_analysis", author);
-			let value = aaHit === null ? undefined : axisValue(aaHit, axis);
-			let source: FeedSource = "artificial_analysis";
-			if (value === undefined) {
-				const blHit = pick(candidates, "benchlm", author);
-				value = blHit === null ? undefined : axisValue(blHit, axis);
-				source = "benchlm";
+			// Walk the sources strongest-first and take the first that has this axis:
+			// the measured feeds, then whatever the front door supplied (a neutral
+			// leaderboard ahead of a self-reported vendor number), then our own
+			// calibrated eval, which only ever fills what nothing else does.
+			let value: number | undefined;
+			let source: FeedSource | undefined;
+			for (const candidate of FILL_ORDER) {
+				const hit = pick(candidates, candidate, author);
+				const found = hit === null ? undefined : axisValue(hit, axis);
+				if (found === undefined) continue;
+				value = found;
+				source = candidate;
+				break;
 			}
-			if (value === undefined) {
-				// Our own calibrated eval is the weakest source: only where neither
-				// published nor third-party feeds have anything.
-				const localHit = pick(candidates, "local", author);
-				value = localHit === null ? undefined : axisValue(localHit, axis);
-				source = "local";
-			}
-			if (value === undefined) continue;
+			if (value === undefined || source === undefined) continue;
 			aa[`${axis}_index`] = value;
 			fillSources[axis] = source;
 			result.axes[axis] += 1;
@@ -317,7 +365,7 @@ export async function refreshFeedScores(cfg: RouterConfig, db: Database, opts: R
 	const bm = cfg.benchmarks;
 
 	const row = db.query("SELECT payload, fetched_at_ms FROM benchmark_cache WHERE id = 1").get() as CacheRow | null;
-	const cached: FeedScore[] | null = row === null ? null : parseFeedScores(row.payload);
+	const cached: FeedScore[] | null = row === null ? null : parseFeedScores(row.payload, FETCHED_SOURCES);
 	// A zero timestamp is `invalidateFeedCache`'s marker, not a real fetch time:
 	// the payload stays readable as a fallback but never counts as fresh again.
 	const fresh = row !== null && row.fetched_at_ms > 0 && now - row.fetched_at_ms < bm.refreshMs;
@@ -365,8 +413,76 @@ export function invalidateFeedCache(db: Database): void {
 	db.query("UPDATE benchmark_cache SET fetched_at_ms = 0 WHERE id = 1").run();
 }
 
-/** Validate a persisted `FeedScore[]` blob, skipping any entry that drifted. */
-function parseFeedScores(payload: string): FeedScore[] | null {
+interface SanitizeOpts {
+	/** Which `source` values are acceptable here. */
+	allow: readonly FeedSource[];
+	/** Re-run `normalizeModelKey`/`normalizeCreator` on the way in. */
+	normalize?: boolean;
+}
+
+interface SanitizeResult {
+	scores: FeedScore[];
+	/** Entries thrown away whole: not an object, no key, or a source not allowed. */
+	dropped: number;
+	/** Axes thrown away from an otherwise usable entry: not a finite number in [0, 100]. */
+	droppedAxes: number;
+}
+
+/**
+ * Turn an arbitrary array into `FeedScore[]`, keeping only what is usable.
+ *
+ * The one invariant everything downstream leans on: an axis this cannot read is
+ * OMITTED, never defaulted. `applyFeedScores` writes only defined values, so a
+ * `"61"` or a `-3` or a `NaN` leaves the axis exactly as unscored as it was —
+ * a bad entry can no more zero a score than it can raise one.
+ */
+function sanitizeFeedScores(value: unknown, opts: SanitizeOpts): SanitizeResult {
+	const result: SanitizeResult = { scores: [], dropped: 0, droppedAxes: 0 };
+	if (!Array.isArray(value)) return result;
+	for (const item of value) {
+		const rec = asRecord(item);
+		if (rec === null || typeof rec.key !== "string") {
+			result.dropped += 1;
+			continue;
+		}
+		const source = rec.source;
+		if (typeof source !== "string" || !opts.allow.includes(source as FeedSource)) {
+			result.dropped += 1;
+			continue;
+		}
+		const rawCreator = typeof rec.creator === "string" ? rec.creator : "";
+		const key = opts.normalize === true ? normalizeModelKey(rec.key) : rec.key;
+		if (key === "") {
+			result.dropped += 1;
+			continue;
+		}
+		const entry: FeedScore = {
+			key,
+			creator: opts.normalize === true ? normalizeCreator(rawCreator) : rawCreator,
+			source: source as FeedSource,
+		};
+		for (const axis of AXES) {
+			const present = rec[axis];
+			if (present === undefined || present === null) continue;
+			const parsed = score100(present);
+			if (parsed === null) {
+				result.droppedAxes += 1;
+				continue;
+			}
+			entry[axis] = parsed;
+		}
+		result.scores.push(entry);
+	}
+	return result;
+}
+
+/**
+ * Validate a persisted `FeedScore[]` blob, skipping any entry that drifted.
+ * `allow` is what WROTE this particular blob, so a row can never reach a rank by
+ * sitting in a table that does not produce that source — the keys are already
+ * normalized here, having been normalized when they were parsed out of a feed.
+ */
+function parseFeedScores(payload: string, allow: readonly FeedSource[]): FeedScore[] | null {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(payload);
@@ -374,25 +490,45 @@ function parseFeedScores(payload: string): FeedScore[] | null {
 		return null;
 	}
 	if (!Array.isArray(parsed)) return null;
-	const out: FeedScore[] = [];
-	for (const item of parsed) {
-		const rec = asRecord(item);
-		if (rec === null || typeof rec.key !== "string") continue;
-		if (rec.source !== "artificial_analysis" && rec.source !== "benchlm" && rec.source !== "local") continue;
-		const entry: FeedScore = {
-			key: rec.key,
-			creator: typeof rec.creator === "string" ? rec.creator : "",
-			source: rec.source,
-		};
-		const coding = score100(rec.coding);
-		if (coding !== null) entry.coding = coding;
-		const intelligence = score100(rec.intelligence);
-		if (intelligence !== null) entry.intelligence = intelligence;
-		const agentic = score100(rec.agentic);
-		if (agentic !== null) entry.agentic = agentic;
-		out.push(entry);
+	return sanitizeFeedScores(parsed, { allow }).scores;
+}
+
+/**
+ * `benchmarks.extraScores`, sanitised. The front door curates a table of
+ * vendor-published and neutral-leaderboard numbers for axes the feeds leave
+ * empty — the case this exists for is a model carrying intelligence and nothing
+ * else, which no tier floor above the cheapest can admit.
+ *
+ * Three decisions live here, all about the fact that this arrives over a config
+ * patch from ANOTHER PROCESS rather than out of a file the operator wrote:
+ *
+ *  - A malformed entry is DROPPED, LOUDLY — never a refused patch. The patch
+ *    carries unrelated settings (the Artificial Analysis key rides in the same
+ *    `benchmarks` block), and one bad row out of six hundred must not take an
+ *    operator's key save down with it. Silence was the other option and is worse:
+ *    a table that quietly stopped applying looks exactly like one that worked.
+ *  - Only `neutral` and `vendor` are accepted. Config claiming
+ *    `artificial_analysis` would outrank BenchLM on the strength of a label, and
+ *    config claiming `local` would write into the lane `useLocalScores` gates —
+ *    which is precisely the switch this design refuses to make into a lie.
+ *  - Keys are normalised here, so the supplier may send the OpenRouter slug
+ *    (`deepseek/deepseek-v4.1-flash`) and need not reimplement the match key.
+ */
+export function suppliedScores(cfg: RouterConfig, log?: Logger): FeedScore[] {
+	const supplied = cfg.benchmarks.extraScores;
+	if (supplied === undefined || supplied.length === 0) return [];
+	const capped = supplied.length > MAX_EXTRA_SCORES ? supplied.slice(0, MAX_EXTRA_SCORES) : supplied;
+	const { scores, dropped, droppedAxes } = sanitizeFeedScores(capped, { allow: SUPPLIED_SOURCES, normalize: true });
+	const over = supplied.length - capped.length;
+	if (dropped > 0 || droppedAxes > 0 || over > 0) {
+		(log ?? createLogger(cfg.logLevel)).warn("supplied benchmark scores partly unusable; the rest still apply", {
+			kept: scores.length,
+			droppedEntries: dropped + over,
+			droppedAxes,
+			...(over > 0 ? { overCap: MAX_EXTRA_SCORES } : {}),
+		});
 	}
-	return out;
+	return scores;
 }
 
 /**
@@ -403,7 +539,9 @@ function parseFeedScores(payload: string): FeedScore[] | null {
 export function loadLocalScores(db: Database): FeedScore[] {
 	const row = db.query("SELECT payload FROM local_scores WHERE id = 1").get() as { payload: string } | null;
 	if (row === null) return [];
-	return parseFeedScores(row.payload) ?? [];
+	// Only `local` may come out of the local lane: the table `useLocalScores`
+	// gates must not be a way to claim a rank it does not have.
+	return parseFeedScores(row.payload, ["local"]) ?? [];
 }
 
 /** Persist local eval scores (source `local`) for `doRefresh` to pick up when enabled. */

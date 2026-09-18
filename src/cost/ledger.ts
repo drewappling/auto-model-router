@@ -82,6 +82,7 @@ export interface LedgerRow {
 	prompt_tokens_saved: number | null;
 	scope: string | null;
 	redactions: number | null;
+	request_id: string | null;
 }
 
 interface TrustRow {
@@ -257,6 +258,9 @@ export function toEntry(row: LedgerRow): LedgerEntry {
 		// Likewise a row from before v19, or a turn with redaction off: absent,
 		// which is a different fact from 0 (the rules ran and matched nothing).
 		...(row.redactions === null || row.redactions === undefined ? {} : { redactions: row.redactions }),
+		// A row from before v20, or one the router wrote for a caller that named
+		// no request: absent, and never guessed at from anything else.
+		...(row.request_id === null || row.request_id === undefined ? {} : { requestId: row.request_id }),
 		// A row recorded before pricing, or one whose model could not be priced,
 		// stores NULL; absent is the front door's cue to fall back to the blend.
 		...(row.cost_breakdown === null || row.cost_breakdown === undefined ? {} : { costBreakdown: JSON.parse(row.cost_breakdown) as CostBreakdown }),

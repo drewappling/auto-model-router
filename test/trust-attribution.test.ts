@@ -271,7 +271,7 @@ describe("v4 migration", () => {
 		await db.close();
 	});
 
-	test("schema is at user_version 19", () => {
+	test("schema is at user_version 20", () => {
 		// `PRAGMA user_version` is SQLite's own migration marker, so this reads
 		// through the bootstrap handle rather than the engine-agnostic one.
 		const path = join(tmpdir(), `uv-${process.pid}-${Date.now()}.db`);
@@ -279,7 +279,7 @@ describe("v4 migration", () => {
 		try {
 			// Our own pragma against our own file; the shape is fixed by SQLite.
 			const row = db.query("PRAGMA user_version").get() as { user_version: number } | null;
-			expect(row?.user_version).toBe(19);
+			expect(row?.user_version).toBe(20);
 		} finally {
 			db.close();
 		}

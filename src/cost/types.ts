@@ -162,6 +162,18 @@ export interface LedgerEntry {
 	 */
 	redactions?: number;
 	/**
+	 * The id of the HTTP request this row belongs to: the `X-Request-Id` the
+	 * caller sent, or the one the router minted for a caller that sent none
+	 * (prefixed `amr-`, so the two are never confused — see
+	 * `util/requestid.ts`). An escalated turn writes several rows under one id.
+	 *
+	 * This is what turns "my request id was abc123" into exactly this turn. A
+	 * front door that had to guess from member and time can stop guessing.
+	 * Absent on every row written before v20, and on the router's own side
+	 * calls whose caller named no request.
+	 */
+	requestId?: string;
+	/**
 	 * The catalog model that served, for the cost split. The ledger can price
 	 * OpenRouter slugs from its own cached catalog payload; a model from another
 	 * provider (Ollama) exists only in memory, so the orchestrator hands it over.

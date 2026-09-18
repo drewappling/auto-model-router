@@ -41,6 +41,7 @@ import { PINNED_CONFIG_PATHS, watchConfig } from "../config/hot-reload.ts";
 import type { RouterConfig } from "../config/types.ts";
 import { createLogger } from "../util/log.ts";
 import { openDb } from "../util/sqlite.ts";
+import { acceptRequestId, isRequestId } from "../util/requestid.ts";
 import { dialectOf, openSqlDb } from "../util/sql.ts";
 import { migrateStore } from "../util/schema.ts";
 import { WireErrorException, renderErrorEnvelope } from "../wire/openai/errors.ts";
@@ -275,7 +276,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 	const postgres = dialectOf(storePath) === "postgres";
 	const cachePath = postgres ? join(routerHome(), "cache.db") : storePath;
 	mkdirSync(dirname(cachePath), { recursive: true });
-	// `openDb` is the migration path for a SQLite file: nineteen versions, in
+	// `openDb` is the migration path for a SQLite file: twenty versions, in
 	// order, on whatever an older release left behind.
 	const db = openDb(cachePath);
 	const sqlDb = openSqlDb(storePath);
@@ -510,7 +511,25 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				releaseTurn();
 			});
 
-		return response;
+		// The id this turn's ledger rows are filed under, echoed so the caller
+		// holds it: a front door that sent one gets its own value back
+		// unchanged, and a direct caller that sent none learns the minted id it
+		// would otherwise never see. Set on the response object the wire just
+		// built (a fresh `new Response`, so its headers are still mutable) —
+		// for a buffered turn that is a promise, awaited here as it was before.
+		const stamp = async (r: Response | Promise<Response>): Promise<Response> => {
+			const res = await r;
+			if (normReq.requestId !== undefined) {
+				try {
+					res.headers.set("x-request-id", normReq.requestId);
+				} catch {
+					// An immutable response: the id still reached the ledger, which is
+					// what support reads. Never fail a served turn over a header.
+				}
+			}
+			return res;
+		};
+		return stamp(response);
 	};
 
 	const server: Server<undefined> = Bun.serve({
@@ -692,13 +711,26 @@ export function startServer(cfg: RouterConfig): StartedServer {
 				if (req.method === "GET" && url.pathname === "/v1/router/decisions") {
 					// The decision trail, newest first. ?session=<omp session id> narrows to one
 					// session (/router why); ?harness=a,b to a harness set (a team's user or group),
-					// ?since=<ms> or ?days=N to a window, ?slug= and ?tier= to a model or a tier.
+					// ?since=<ms> or ?days=N to a window, ?slug= and ?tier= to a model or a tier,
+					// and ?requestId= to the rows of ONE request — the id a customer quotes,
+					// which an escalated turn's every attempt shares. That last one is
+					// exact: an id nothing was recorded under answers with no entries
+					// rather than with the nearest turn in time.
 					const rawLimit = url.searchParams.get("limit");
 					const parsed = rawLimit === null ? 50 : Number.parseInt(rawLimit, 10);
 					const limit = Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), 1_000) : 50;
 					const sinceRaw = Number.parseInt(url.searchParams.get("since") ?? "", 10);
 					const daysRaw = url.searchParams.get("days");
 					const sinceMs = Number.isFinite(sinceRaw) ? sinceRaw : daysRaw === null ? 0 : Date.now() - clampDays(daysRaw, 30) * 86_400_000;
+					// A lookup accepts a MINTED id as readily as a caller's — the header
+					// refuses the prefix so nobody can claim to have minted one, but
+					// asking about one the router minted is the ordinary case. An id
+					// this router could never have recorded is a mangled paste, and
+					// saying so beats silently answering with the whole trail.
+					const askedRequestId = (url.searchParams.get("requestId") ?? "").trim();
+					if (askedRequestId !== "" && !isRequestId(askedRequestId)) {
+						return wireErrorResponse({ status: 400, code: "invalid_request_error", message: "requestId is not a request id this router records" });
+					}
 					const entries = await decisionEntries(sqlDb, {
 						sinceMs,
 						harness: harnessScopeParam(url.searchParams.get("harness")),
@@ -706,6 +738,7 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						slug: url.searchParams.get("slug") ?? "",
 						tier: url.searchParams.get("tier") ?? "",
 						ompSessionId: url.searchParams.get("session") ?? "",
+						requestId: askedRequestId,
 					});
 					return json({ entries });
 				}
@@ -757,6 +790,10 @@ export function startServer(cfg: RouterConfig): StartedServer {
 							input: typeof body.input === "object" && body.input !== null ? (body.input as Record<string, unknown>) : {},
 							content: body.content,
 							query: typeof body.query === "string" ? body.query : "",
+							// The caller's own request id when it sent one. None is minted
+							// here: a digest is a side call, and an id invented for it would
+							// address a row no client could ever ask about.
+							...(acceptRequestId(req.headers.get("x-request-id")) === "" ? {} : { requestId: acceptRequestId(req.headers.get("x-request-id")) }),
 						}),
 					);
 				}
@@ -923,7 +960,12 @@ export function startServer(cfg: RouterConfig): StartedServer {
 						// `upstream-keys` would have them ignored, and its tenants served on
 						// the deployment's own credential — a silent cross-charge. A name it
 						// can check turns that into a refusal it can explain.
-						features: ["upstream-keys"],
+						// `request-id`: this router reads `X-Request-Id` on a turn and
+						// records it on the ledger row, so a front door can stop matching
+						// its own request log against the ledger by member and time and
+						// read the id off the row instead. One without the name still
+						// serves every turn; its front door keeps the approximate join.
+						features: ["upstream-keys", "request-id"],
 						apiKeyConfigured: cfg.openrouter.apiKey !== "",
 						// Which upstreams turns can actually be served from: OpenRouter needs
 						// its key; Ollama needs to be on and out of cooldown.

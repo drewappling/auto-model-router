@@ -32,6 +32,17 @@ export interface RemoteRouter {
 	refreshTokenStore?: "dpapi" | "keychain" | "secret-service" | "file";
 	/** The account the store files it under (`<userId>@<remote host>`). */
 	refreshAccount?: string;
+	/**
+	 * The team edition's context token — the credential the shared-context MCP
+	 * server holds. It is long-lived (a year) and powerless outside that member's
+	 * project context, so it never sits in remote.json: the store named here holds
+	 * it, under `contextAccount` (`<refresh account>#context`). The expiry and the
+	 * id are recorded so a refresh knows when to renew it and which one it is.
+	 */
+	contextTokenStore?: "dpapi" | "keychain" | "secret-service" | "file";
+	contextAccount?: string;
+	contextTokenExpiresAtMs?: number;
+	contextTokenId?: string;
 	keyExpiresAtMs?: number;
 	refreshExpiresAtMs?: number;
 	/** What the remote calls this machine. */
@@ -62,6 +73,10 @@ export function parseRemoteRouter(text: string): RemoteRouter | null {
 			...(typeof raw.refreshToken === "string" && raw.refreshToken !== "" ? { refreshToken: raw.refreshToken } : {}),
 			...(raw.refreshTokenStore === "dpapi" || raw.refreshTokenStore === "keychain" || raw.refreshTokenStore === "secret-service" || raw.refreshTokenStore === "file" ? { refreshTokenStore: raw.refreshTokenStore } : {}),
 			...(typeof raw.refreshAccount === "string" && raw.refreshAccount !== "" ? { refreshAccount: raw.refreshAccount } : {}),
+			...(raw.contextTokenStore === "dpapi" || raw.contextTokenStore === "keychain" || raw.contextTokenStore === "secret-service" || raw.contextTokenStore === "file" ? { contextTokenStore: raw.contextTokenStore } : {}),
+			...(typeof raw.contextAccount === "string" && raw.contextAccount !== "" ? { contextAccount: raw.contextAccount } : {}),
+			...(typeof raw.contextTokenExpiresAtMs === "number" ? { contextTokenExpiresAtMs: raw.contextTokenExpiresAtMs } : {}),
+			...(typeof raw.contextTokenId === "string" && raw.contextTokenId !== "" ? { contextTokenId: raw.contextTokenId } : {}),
 			...(typeof raw.keyExpiresAtMs === "number" ? { keyExpiresAtMs: raw.keyExpiresAtMs } : {}),
 			...(typeof raw.refreshExpiresAtMs === "number" ? { refreshExpiresAtMs: raw.refreshExpiresAtMs } : {}),
 			...(typeof raw.device === "string" && raw.device !== "" ? { device: raw.device } : {}),

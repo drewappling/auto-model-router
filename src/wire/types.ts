@@ -127,6 +127,18 @@ export interface NormRequest {
 	/** `X-Omp-Subagent: 1`: the caller is an omp subagent (a session without a UI). */
 	isSubagent: boolean;
 	/**
+	 * The id of the HTTP request this turn is answering, recorded on every
+	 * ledger row it writes so support can go from a request id a customer
+	 * quoted straight to the turn, rather than joining on member and time.
+	 *
+	 * Taken from the `X-Request-Id` header when the caller sends one this
+	 * router will carry (the rules are in `util/requestid.ts`), and MINTED —
+	 * with the `amr-` prefix that says so — when it does not. Every wire sets
+	 * it; it is optional only because the router's own synthetic requests
+	 * (advise, a standalone digest) are not answering a turn of their own.
+	 */
+	requestId?: string;
+	/**
 	 * Per-request routing policy from the `X-Omp-Policy` header (JSON), set by
 	 * a front door such as the team edition: narrows what this turn may route
 	 * to. Absent ⇒ the configured profile and filters alone.

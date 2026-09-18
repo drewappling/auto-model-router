@@ -41,7 +41,7 @@ function entry(over: Partial<LedgerEntry> & { id: string; slug: string }): Ledge
 		conversationKey: `conv-${over.id}`,
 		// `LedgerEntry.sessionId` is a string and the column is NOT NULL: a null
 		// here only ever passed because the second bootstrap declared the column
-		// laxer than the nineteen shipped migrations do.
+		// laxer than the twenty shipped migrations do.
 		sessionId: `sess-${over.id}`,
 		turn: 1,
 		requestedModel: "auto",

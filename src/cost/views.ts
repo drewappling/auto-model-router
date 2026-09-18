@@ -82,6 +82,13 @@ export interface DecisionFilter {
 	tier?: string;
 	/** Only one omp session (`/router why`). */
 	ompSessionId?: string;
+	/**
+	 * Only the rows written for one request id — the `x-request-id` a customer
+	 * quotes. Every attempt of an escalated turn shares it, so this is the
+	 * whole turn rather than one dispatch. Exact: an id nothing was recorded
+	 * under returns nothing, which is a different answer from a guess.
+	 */
+	requestId?: string;
 }
 
 /**
@@ -106,6 +113,11 @@ export async function decisionEntries(db: SqlDb, filter: DecisionFilter): Promis
 	if (filter.ompSessionId !== undefined && filter.ompSessionId !== "") {
 		where.push("omp_session_id = $session");
 		bind.$session = filter.ompSessionId;
+	}
+	if (filter.requestId !== undefined && filter.requestId !== "") {
+		// Indexed, and the only exact way in: `idx_ledger_request`.
+		where.push("request_id = $requestId");
+		bind.$requestId = filter.requestId;
 	}
 	const limit = Math.min(Math.max(filter.limit ?? 50, 1), 1_000);
 	const rows = await db.query<unknown>(

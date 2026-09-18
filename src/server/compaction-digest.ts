@@ -107,6 +107,9 @@ export async function digestCompactionEdits(args: DigestCompactionArgs): Promise
 					query,
 					tier,
 					source: "compaction",
+					// The turn's own request id: the digest row and the turn row are
+					// then one request, which is how they are read in support.
+					...(req.requestId === undefined ? {} : { requestId: req.requestId }),
 				});
 				return { edit: e, result };
 			} catch (err) {

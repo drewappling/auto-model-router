@@ -11,6 +11,7 @@ import type {
 	UpstreamMutations,
 } from "../types.ts";
 import { conversationKeyOf } from "../../util/hash.ts";
+import { requestIdFor } from "../../util/requestid.ts";
 import { invalidRequest, modelNotFound } from "./errors.ts";
 
 const ROLES: Record<string, true> = { system: true, developer: true, user: true, assistant: true, tool: true };
@@ -374,6 +375,12 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 	// Subagent marker from the embed extension (sessions without a UI).
 	const isSubagent = (headers.get("x-omp-subagent") ?? "").trim() === "1";
 
+	// The id of the request this turn answers, recorded on every ledger row the
+	// turn writes. A front door's `X-Request-Id` when it passes the rules
+	// (bounded, safe characters, not wearing the minted prefix); otherwise one
+	// minted here, so a turn is addressable whether or not a caller named it.
+	const requestId = requestIdFor(headers.get("x-request-id"));
+
 	// Per-request routing policy (team edition): JSON in X-Omp-Policy.
 	const policy = parsePolicyHeader(headers.get("x-omp-policy"));
 
@@ -444,6 +451,7 @@ export function parseChatRequest(body: unknown, headers: Headers): NormRequest {
 		agentdoxPersonal,
 		agentdoxOrigin,
 		isSubagent,
+		requestId,
 		...(policy === undefined ? {} : { policy }),
 		...(upstreamKeys === undefined ? {} : { upstreamKeys }),
 		requestedModel,

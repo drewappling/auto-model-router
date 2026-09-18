@@ -20,6 +20,14 @@
  * account name; it never holds the token itself once a store other than
  * `file` is in use. A remote.json written before this existed may still carry
  * the token inline; reading honours that until the next refresh moves it.
+ *
+ * The team edition's CONTEXT TOKEN (`amrctx_…`, a year long, good for nothing
+ * but that member's shared project context) is the same kind of secret and
+ * gets the same treatment, in its own slot: its own account name
+ * (`<refresh account>#context`) in the OS store, its own `context.token` /
+ * `context.dpapi` beside the refresh token's files, and its own names in
+ * remote.json (`contextTokenStore`, `contextAccount`). One slot never
+ * overwrites the other, and revoking one leaves the other alone.
  */
 
 import { spawnSync } from "node:child_process";
@@ -60,8 +68,14 @@ function dpapiUnprotect(blob: string, pathHas: (bin: string) => boolean): string
 	return r.stdout.replace(/\r?\n$/, "");
 }
 
-const filePath = (routerHome: string): string => join(routerHome, "refresh.token");
-const dpapiPath = (routerHome: string): string => join(routerHome, "refresh.dpapi");
+/** Which secret is being stored: they share the machinery and share nothing else. */
+export type SecretSlot = "refresh" | "context";
+
+const filePath = (routerHome: string, slot: SecretSlot = "refresh"): string => join(routerHome, slot === "refresh" ? "refresh.token" : "context.token");
+const dpapiPath = (routerHome: string, slot: SecretSlot = "refresh"): string => join(routerHome, slot === "refresh" ? "refresh.dpapi" : "context.dpapi");
+
+/** The store account a member's context token is filed under, derived from the refresh token's. */
+export const contextAccountOf = (refreshAccount: string): string => `${refreshAccount}#context`;
 
 export interface StoreDeps {
 	pathHas?: (bin: string) => boolean;
@@ -70,11 +84,12 @@ export interface StoreDeps {
 }
 
 /**
- * Saves the refresh token and returns the store that took it. A store that
- * fails (keychain locked, tool missing) falls back to the file, so a member is
- * never left without a refresh token; the caller records what was used.
+ * Saves a secret in the slot named and returns the store that took it. A store
+ * that fails (keychain locked, tool missing) falls back to the file, so a
+ * member is never left without their credential; the caller records what was
+ * used.
  */
-export function saveRefreshToken(routerHome: string, account: string, secret: string, kind: StoreKind, deps: StoreDeps = {}): StoreKind {
+export function saveSecret(routerHome: string, account: string, secret: string, kind: StoreKind, slot: SecretSlot, deps: StoreDeps = {}): StoreKind {
 	const pathHas = deps.pathHas ?? ((bin) => Bun.which(bin) !== null);
 	mkdirSync(routerHome, { recursive: true });
 	try {
@@ -84,19 +99,19 @@ export function saveRefreshToken(routerHome: string, account: string, secret: st
 		}
 		switch (kind) {
 			case "dpapi":
-				writeFileSync(dpapiPath(routerHome), `${dpapiProtect(secret, pathHas)}\n`, { encoding: "utf8", mode: 0o600 });
-				rmSync(filePath(routerHome), { force: true });
+				writeFileSync(dpapiPath(routerHome, slot), `${dpapiProtect(secret, pathHas)}\n`, { encoding: "utf8", mode: 0o600 });
+				rmSync(filePath(routerHome, slot), { force: true });
 				return "dpapi";
 			case "keychain": {
 				const r = spawnSync("security", ["add-generic-password", "-U", "-a", account, "-s", SERVICE, "-w", secret], { encoding: "utf8" });
 				if (r.status !== 0) throw new Error(r.stderr.trim());
-				rmSync(filePath(routerHome), { force: true });
+				rmSync(filePath(routerHome, slot), { force: true });
 				return "keychain";
 			}
 			case "secret-service": {
 				const r = spawnSync("secret-tool", ["store", `--label=${SERVICE} ${account}`, "service", SERVICE, "account", account], { encoding: "utf8", input: secret });
 				if (r.status !== 0) throw new Error(r.stderr.trim());
-				rmSync(filePath(routerHome), { force: true });
+				rmSync(filePath(routerHome, slot), { force: true });
 				return "secret-service";
 			}
 			case "file":
@@ -105,23 +120,33 @@ export function saveRefreshToken(routerHome: string, account: string, secret: st
 	} catch {
 		// fall through to the file
 	}
-	writeFileSync(filePath(routerHome), `${secret}\n`, { encoding: "utf8", mode: 0o600 });
+	writeFileSync(filePath(routerHome, slot), `${secret}\n`, { encoding: "utf8", mode: 0o600 });
 	try {
-		chmodSync(filePath(routerHome), 0o600);
+		chmodSync(filePath(routerHome, slot), 0o600);
 	} catch {
 		/* Windows */
 	}
 	return "file";
 }
 
-/** The refresh token from the store `remote.json` names, or null when it is gone. */
-export function loadRefreshToken(routerHome: string, account: string, kind: StoreKind, deps: StoreDeps = {}): string | null {
+/** Saves the refresh token; see saveSecret. */
+export function saveRefreshToken(routerHome: string, account: string, secret: string, kind: StoreKind, deps: StoreDeps = {}): StoreKind {
+	return saveSecret(routerHome, account, secret, kind, "refresh", deps);
+}
+
+/** Saves the team's long-lived context token, in its own slot. */
+export function saveContextToken(routerHome: string, account: string, secret: string, kind: StoreKind, deps: StoreDeps = {}): StoreKind {
+	return saveSecret(routerHome, account, secret, kind, "context", deps);
+}
+
+/** The secret in that slot from the store `remote.json` names, or null when it is gone. */
+export function loadSecret(routerHome: string, account: string, kind: StoreKind, slot: SecretSlot, deps: StoreDeps = {}): string | null {
 	const pathHas = deps.pathHas ?? ((bin) => Bun.which(bin) !== null);
 	try {
 		if (deps.backend !== undefined) return deps.backend.load(account);
 		switch (kind) {
 			case "dpapi": {
-				const p = dpapiPath(routerHome);
+				const p = dpapiPath(routerHome, slot);
 				if (!existsSync(p)) return null;
 				return dpapiUnprotect(readFileSync(p, "utf8").trim(), pathHas);
 			}
@@ -134,7 +159,7 @@ export function loadRefreshToken(routerHome: string, account: string, kind: Stor
 				return r.status === 0 && r.stdout !== "" ? r.stdout.replace(/\r?\n$/, "") : null;
 			}
 			case "file": {
-				const p = filePath(routerHome);
+				const p = filePath(routerHome, slot);
 				return existsSync(p) ? readFileSync(p, "utf8").trim() : null;
 			}
 		}
@@ -144,14 +169,34 @@ export function loadRefreshToken(routerHome: string, account: string, kind: Stor
 	return null;
 }
 
-/** Forgets the token everywhere it might be. */
-export function removeRefreshToken(routerHome: string, account: string, deps: StoreDeps = {}): void {
-	rmSync(filePath(routerHome), { force: true });
-	rmSync(dpapiPath(routerHome), { force: true });
+/** The refresh token from the store `remote.json` names, or null when it is gone. */
+export function loadRefreshToken(routerHome: string, account: string, kind: StoreKind, deps: StoreDeps = {}): string | null {
+	return loadSecret(routerHome, account, kind, "refresh", deps);
+}
+
+/** The context token from the store `remote.json` names, or null when it is gone. */
+export function loadContextToken(routerHome: string, account: string, kind: StoreKind, deps: StoreDeps = {}): string | null {
+	return loadSecret(routerHome, account, kind, "context", deps);
+}
+
+/** Forgets the secret in that slot everywhere it might be. */
+export function removeSecret(routerHome: string, account: string, slot: SecretSlot, deps: StoreDeps = {}): void {
+	rmSync(filePath(routerHome, slot), { force: true });
+	rmSync(dpapiPath(routerHome, slot), { force: true });
 	if (deps.backend !== undefined) {
 		deps.backend.remove(account);
 		return;
 	}
 	if (process.platform === "darwin") spawnSync("security", ["delete-generic-password", "-a", account, "-s", SERVICE], { encoding: "utf8" });
 	if (process.platform === "linux") spawnSync("secret-tool", ["clear", "service", SERVICE, "account", account], { encoding: "utf8" });
+}
+
+/** Forgets the refresh token everywhere it might be. */
+export function removeRefreshToken(routerHome: string, account: string, deps: StoreDeps = {}): void {
+	removeSecret(routerHome, account, "refresh", deps);
+}
+
+/** Forgets the context token everywhere it might be. */
+export function removeContextToken(routerHome: string, account: string, deps: StoreDeps = {}): void {
+	removeSecret(routerHome, account, "context", deps);
 }

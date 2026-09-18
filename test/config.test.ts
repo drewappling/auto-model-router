@@ -118,4 +118,30 @@ describe("loadConfig", () => {
 		const cfg = loadConfig({ path });
 		expect(cfg.server.port).toBe(DEFAULT_CONFIG.server.port);
 	});
+
+	test("a config file may carry supplied benchmark scores, and a bad row is named", async () => {
+		const path = writeConfig(
+			"benchmarks:\n  extraScores:\n    - key: deepseek/deepseek-v4.1-flash\n      coding: 55.2\n      source: vendor\n",
+		);
+		const cfg = loadConfig({ path });
+		// `creator` defaults rather than going absent: it is only ever a tie-break.
+		expect(cfg.benchmarks.extraScores).toEqual([
+			{ key: "deepseek/deepseek-v4.1-flash", creator: "", coding: 55.2, source: "vendor" },
+		]);
+		// Absent by default, so a deployment that sets nothing is untouched.
+		expect(DEFAULT_CONFIG.benchmarks.extraScores).toBeUndefined();
+
+		// A FILE is strict, like every other key in it: a source config may not claim
+		// is an error the operator wants told, not a row silently dropped. A patch
+		// from a front door is the lenient path instead — see `suppliedScores`.
+		const bad = writeConfig("benchmarks:\n  extraScores:\n    - key: x\n      source: artificial_analysis\n");
+		let message = "";
+		try {
+			loadConfig({ path: bad });
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+		}
+		expect(message).toContain("extraScores");
+		expect(message).toContain("source");
+	});
 });

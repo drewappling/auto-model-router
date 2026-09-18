@@ -302,7 +302,7 @@ export function createSqlLedger(db: SqlDb, cfg: RouterConfig, deps: LedgerDeps):
 					slug, served_slug, tier, classification_source, reasons, predicted_usd, reported_usd, usage,
 					cost_breakdown, attempt, escalation_signal, latency_ms, ttft_ms, finish_reason, wasted,
 					upstream_generation_id, error, error_kind, features, score, confidence, task, classifier_reasons,
-					explored_from, hold_arm, prompt_tokens_saved, scope, redactions
+					explored_from, hold_arm, prompt_tokens_saved, scope, redactions, request_id
 				) VALUES (
 					${entry.id}, ${entry.createdAtMs}, ${entry.conversationKey}, ${entry.sessionId}, ${entry.turn},
 					${entry.requestedModel}, ${entry.harnessId}, ${entry.ompSessionId}, ${entry.slug}, ${entry.servedSlug},
@@ -313,7 +313,8 @@ export function createSqlLedger(db: SqlDb, cfg: RouterConfig, deps: LedgerDeps):
 					${jsonParam(db, entry.features)}, ${entry.score}, ${entry.confidence}, ${entry.task},
 					${jsonParam(db, entry.classifierReasons)}, ${entry.exploredFrom}, ${entry.holdArm},
 					${entry.promptTokensSaved},
-					${entry.scope === undefined || entry.scope === "" ? null : entry.scope}, ${entry.redactions ?? null}
+					${entry.scope === undefined || entry.scope === "" ? null : entry.scope}, ${entry.redactions ?? null},
+					${entry.requestId === undefined || entry.requestId === "" ? null : entry.requestId}
 				)
 				ON CONFLICT DO NOTHING`;
 			};
