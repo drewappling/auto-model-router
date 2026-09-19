@@ -226,4 +226,29 @@ describe("createProbe", () => {
 		expect(verdict.action).toBe("escalate");
 		if (verdict.action === "escalate") expect(verdict.signal).toBe("empty_completion");
 	});
+
+	test("a content_filter finish with text escalates on the refusal trigger", async () => {
+		// The PROVIDER stopped the completion mid-answer; another model may serve
+		// the turn whole, so this is a provider signal (same-tier failover).
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		expect(p.observe(text("The first part of the answer is"))).toBeNull();
+		const verdict = p.observe(chunk([{ type: "finish", reason: "content_filter" }]));
+		expect(verdict?.action).toBe("escalate");
+		if (verdict?.action === "escalate") expect(verdict.signal).toBe("content_filter");
+	});
+
+	test("a content_filter finish with NO text is an empty completion: nothing was filtered", async () => {
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), ALL_TRIGGERS);
+		const verdict = p.observe(chunk([{ type: "finish", reason: "content_filter" }]));
+		expect(verdict?.action).toBe("escalate");
+		if (verdict?.action === "escalate") expect(verdict.signal).toBe("empty_completion");
+	});
+
+	test("a content_filter finish commits when the refusal trigger is off", async () => {
+		const triggers = new Set([...ALL_TRIGGERS].filter((t) => t !== "refusal"));
+		const p = createProbe(plan({ maxTokens: 1_000 }), req(), triggers);
+		expect(p.observe(text("The first part of the answer is"))).toBeNull();
+		const verdict = p.observe(chunk([{ type: "finish", reason: "content_filter" }]));
+		expect(verdict?.action).toBe("commit");
+	});
 });

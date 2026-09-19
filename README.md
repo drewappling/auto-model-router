@@ -1071,11 +1071,19 @@ Each task (`coding`, `vision`, `documentation`, `data`, `chat`) is a
 
 The model that produced the rejected output never serves the retry, at this
 tier or the next. Signals that indict the *provider* rather than the tier —
-`empty_completion`, `refusal`, and an error finish — first try a different
-model in the **same** tier (bounded, like a 5xx failover) and only then step
-up; structural signals (`malformed_tool_args`, `repeat_tool_call`, a truncated
-tool call) escalate a tier directly. A client that hangs up after the finish
-event has already arrived is treated as a completed turn, not an error.
+`empty_completion`, `refusal`, `content_filter`, and an error finish — first
+try a different model in the **same** tier (bounded, like a 5xx failover) and
+only then step up; structural signals (`malformed_tool_args`,
+`repeat_tool_call`, a truncated tool call) escalate a tier directly. A client
+that hangs up after the finish event has already arrived is treated as a
+completed turn, not an error.
+
+A `content_filter` finish (the provider's filter stopping the completion,
+including Anthropic's `refusal` stop reason, which maps to it) rides the
+`refusal` trigger: the same failure class — the provider declining the work —
+so a config that already opts into refusal escalation gets it without a
+change. A filter finish that produced NO text is an `empty_completion`
+instead: nothing was filtered, so a plain retry is the fix.
 
 ### `hysteresis` — cache-aware model stickiness
 

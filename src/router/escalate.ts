@@ -165,6 +165,17 @@ export function createProbe(
 		if (matchesRefusal() && triggers.has("refusal")) {
 			return escalate("refusal", "completion opens with a refusal");
 		}
+		if (finishReason === "content_filter") {
+			// The PROVIDER stopped the completion, not the model. Whatever text
+			// arrived ends mid-answer, and a different model — one whose filter
+			// does not read this content the same way — may serve the turn whole.
+			// It rides the `refusal` trigger: the same failure class, the provider
+			// declining the work rather than the model. A filter finish with NO
+			// text was never generated, so nothing was filtered; that is the
+			// empty_completion case above, and a plain retry is the fix.
+			if (triggers.has("refusal")) return escalate("content_filter", "the provider's content filter stopped the completion");
+			return commit("content_filter finish tolerated; signal disabled");
+		}
 		if (finishReason === "error" && triggers.has("upstream_error")) {
 			return escalate("upstream_error", "upstream reported an error finish");
 		}

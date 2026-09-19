@@ -54,7 +54,7 @@ const MAX_SAME_TIER_FAILOVERS = 2;
  * signals (malformed arguments, a repeated call) still escalate directly — a
  * stronger model is the remedy there.
  */
-const PROVIDER_SIGNALS: ReadonlySet<string> = new Set(["empty_completion", "refusal", "upstream_error"]);
+const PROVIDER_SIGNALS: ReadonlySet<string> = new Set(["empty_completion", "refusal", "upstream_error", "content_filter"]);
 
 /** A client hang-up: the request signal fired, or the transport reported the abort. */
 function isClientAbort(err: unknown, signal: AbortSignal): boolean {

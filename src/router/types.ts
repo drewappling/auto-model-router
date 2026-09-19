@@ -329,7 +329,8 @@ export type EscalationSignal =
 	| "repeat_tool_call"
 	| "length_stop"
 	| "missing_expected_tool_call"
-	| "upstream_error";
+	| "upstream_error"
+	| "content_filter";
 
 export type ProbeVerdict =
 	| { action: "commit"; reason: string }
