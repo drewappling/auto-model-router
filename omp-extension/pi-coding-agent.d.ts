@@ -113,8 +113,6 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		model: { provider: string; id: string } | undefined;
 		/** Looks a model up in omp's registry by provider and id. */
 		modelRegistry: { find(provider: string, modelId: string): unknown };
-		/** Sets the session's active model; false when omp has no key for it. */
-		setModel(model: unknown): Promise<boolean>;
 	}
 
 	export interface CommandDefinition {
@@ -154,6 +152,8 @@ declare module "@oh-my-pi/pi-coding-agent" {
 		registerCommand(name: string, command: CommandDefinition): void;
 		/** Appends a custom message to the session; `triggerTurn: false` leaves the agent idle. */
 		sendMessage(message: CustomMessagePayload | string, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): void;
+		/** Sets the session's active model; false when omp has no key for it. */
+		setModel(model: unknown): Promise<boolean>;
 	}
 }
 
