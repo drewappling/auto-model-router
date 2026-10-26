@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { DEFAULT_CONFIG } from "../src/config/defaults.ts";
 import { TIER_ORDER } from "../src/router/types.ts";
 import { advise } from "../src/server/advise.ts";
+import routerSwitch from "../omp-extension/router-switch.ts";
 import { decideSwitch, nativeModelFor, parseSwitchPolicy, type SwitchPolicy } from "../omp-extension/switch-logic.ts";
 
 /**
@@ -55,5 +61,60 @@ describe("decideSwitch", () => {
 		expect(decideSwitch({ policy, advised: { tier: "trivial", confidence: 0.9 }, active: "openai/gpt-5", activeIsRouter: false, switchedTo: "anthropic/claude-opus-4-8", returnTo: router }).action).toBe("none");
 		// Disabled: nothing moves.
 		expect(decideSwitch({ policy: { ...policy, enabled: false }, advised: { tier: "hard", confidence: 0.9 }, active: router, activeIsRouter: true, switchedTo: null, returnTo: null }).action).toBe("none");
+	});
+});
+
+describe("router-switch extension", () => {
+	test("moves the active model through the extension API, where omp and pi expose setModel", async () => {
+		const home = mkdtempSync(join(tmpdir(), "router-switch-"));
+		const router = Bun.serve({
+			port: 0,
+			hostname: "127.0.0.1",
+			fetch: (req) => {
+				const path = new URL(req.url).pathname;
+				if (path === "/v1/router/advise/policy") return Response.json({ enabled: true, models: { hard: "anthropic/claude-opus-4-8" }, minConfidence: 0.6 });
+				if (path === "/v1/router/advise") return Response.json({ tier: "hard", confidence: 0.9 });
+				return new Response("not found", { status: 404 });
+			},
+		});
+		const savedEnv = { AUTO_MODEL_ROUTER_HOME: process.env.AUTO_MODEL_ROUTER_HOME, AUTO_MODEL_ROUTER_URL: process.env.AUTO_MODEL_ROUTER_URL };
+		process.env.AUTO_MODEL_ROUTER_HOME = home;
+		process.env.AUTO_MODEL_ROUTER_URL = `http://127.0.0.1:${router.port}`;
+		try {
+			const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+			const target = { provider: "anthropic", id: "claude-opus-4-8" };
+			const moved: unknown[] = [];
+			const pi: ExtensionAPI = {
+				setLabel: () => {},
+				sendMessage: () => {},
+				on: (event, handler) => {
+					handlers.set(event, handler);
+				},
+				registerProvider: () => {},
+				unregisterProvider: () => {},
+				registerCommand: () => {},
+				setModel: async (model) => {
+					moved.push(model);
+					return true;
+				},
+			};
+			routerSwitch(pi);
+			// Only the members router-switch reads; like omp's and pi's real context, it has no setModel.
+			const ctx = {
+				hasUI: false,
+				model: { provider: "auto-model-router", id: "auto" },
+				modelRegistry: { find: (provider: string, id: string) => (provider === target.provider && id === target.id ? target : undefined) },
+				sessionManager: { getSessionId: () => "s" },
+			} as ExtensionContext;
+			await handlers.get("before_agent_start")?.({ type: "before_agent_start", prompt: "Redesign the retry loop" }, ctx);
+			expect(moved).toEqual([target]);
+		} finally {
+			router.stop(true);
+			for (const [key, value] of Object.entries(savedEnv)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

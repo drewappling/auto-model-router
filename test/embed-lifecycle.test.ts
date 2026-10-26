@@ -44,6 +44,7 @@ const pi: ExtensionAPI = {
 	},
 	unregisterProvider: () => {},
 	registerCommand: () => {},
+	setModel: async () => true,
 };
 
 async function fire(event: string, sessionId: string): Promise<void> {

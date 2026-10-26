@@ -82,7 +82,7 @@ export default function (pi: ExtensionAPI): void {
 			if (ctx.hasUI) ctx.ui.notify(`router switch: ${decision.model} is not in omp's model registry`, "warn");
 			return undefined;
 		}
-		const ok = await ctx.setModel(target);
+		const ok = await pi.setModel(target);
 		if (!ok) {
 			if (ctx.hasUI) ctx.ui.notify(`router switch: omp has no key for ${decision.model}`, "warn");
 			return undefined;
